@@ -1,0 +1,15 @@
+{
+  "name": "appd-example-astro",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^13.1.8",
+    "@tailwindcss/vite": "^4.2.2",
+    "astro": "^6.1.5",
+    "tailwindcss": "^4.2.2"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "appd-example-astro",
+  "main": "dist/server/entry.mjs",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS"
+  }
+}

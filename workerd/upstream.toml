@@ -1,0 +1,6 @@
+[upstream]
+repository = "https://github.com/cloudflare/workerd"
+tag = "v1.20260501.1"
+commit = "37ff673e9df2b628533da9a221d97ca54436d9e2"
+source_url = "https://github.com/cloudflare/workerd/archive/refs/tags/v1.20260501.1.tar.gz"
+source_sha256 = "9b4437a836356e414ac9fb74c0cb419ece999685abf80b4f79acc8d55efc0d81"

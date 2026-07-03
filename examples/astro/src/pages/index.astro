@@ -1,0 +1,51 @@
+---
+// SSR page — rendered on every request. Server timestamp proves it.
+import Base from "../layouts/Base.astro";
+import PingPong from "../components/PingPong.astro";
+import heroSvg from "../assets/hero.svg";
+
+const now = new Date();
+const timestamp = now.toISOString();
+const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
+---
+
+<Base title="appd Example">
+  <img
+    src={heroSvg.src}
+    alt="appd hero"
+    width="800"
+    height="400"
+    class="rounded-xl w-full mb-8"
+  />
+
+  <div class="grid gap-6 md:grid-cols-2 mb-8">
+    <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+      <h2 class="text-lg font-semibold text-white mb-2">Server-Side Rendered</h2>
+      <p class="text-indigo-300 mb-4">
+        This page is rendered on every request. The timestamp below changes on
+        each reload.
+      </p>
+      <div class="font-mono text-sm bg-indigo-950/50 rounded-lg p-3">
+        <div class="text-indigo-400">Server time (UTC):</div>
+        <div class="text-white">{rendered}</div>
+        <div class="text-indigo-500 text-xs mt-1">{timestamp}</div>
+      </div>
+    </div>
+
+    <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+      <h2 class="text-lg font-semibold text-white mb-2">Navigation Test</h2>
+      <p class="text-indigo-300 mb-4">
+        The <a href="/about" class="text-indigo-200 underline">About page</a> is
+        prerendered at build time. Its timestamp is fixed.
+      </p>
+      <a
+        href="/about"
+        class="inline-block px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium"
+      >
+        Go to About
+      </a>
+    </div>
+  </div>
+
+  <PingPong />
+</Base>

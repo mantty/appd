@@ -1,0 +1,38 @@
+--- a/src/workerd/server/BUILD.bazel
++++ b/src/workerd/server/BUILD.bazel
+@@ -78,6 +78,35 @@ wd_cc_binary(
+     ],
+ )
+ 
++wd_cc_library(
++    name = "appd-workerd",
++    srcs = ["appd_workerd.cpp"],
++    hdrs = ["appd_workerd.h"],
++    visibility = ["//visibility:public"],
++    deps = [
++        ":cpp-capnp-schema",
++        ":server",
++        ":v8-platform-impl",
++        ":workerd-capnp-schema",
++        ":workerd_capnp",
++        "//src/workerd/jsg",
++        "//src/workerd/util:autogate",
++        "//src/workerd/util:entropy",
++        "@capnp-cpp//src/capnp:capnpc",
++        "@capnp-cpp//src/kj",
++        "@capnp-cpp//src/kj:kj-async",
++    ],
++)
++
++wd_cc_binary(
++    name = "appd-workerd-link-anchor",
++    srcs = ["appd_workerd_link_anchor.cpp"],
++    visibility = ["//visibility:public"],
++    deps = [
++        ":appd-workerd",
++    ],
++)
++
+ wd_cc_library(
+     name = "alarm-scheduler",
+     srcs = [

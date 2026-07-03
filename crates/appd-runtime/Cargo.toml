@@ -1,0 +1,90 @@
+[package]
+name = "appd-runtime"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+workerd-ffi = []
+workerd-test-stubs = []
+
+[[bin]]
+name = "appd-runtime"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+base64.workspace = true
+capnp.workspace = true
+jsonc-parser = { workspace = true, features = ["serde"] }
+mime_guess.workspace = true
+p12-keystore.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+x509-parser.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-foundation.workspace = true
+objc2-foundation.workspace = true
+objc2-security.workspace = true
+objc2-web-kit.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-core-foundation.workspace = true
+objc2-foundation.workspace = true
+objc2-security.workspace = true
+objc2-ui-kit = { workspace = true, features = [
+    "UIApplication",
+    "UIResponder",
+    "UIScreen",
+    "UIView",
+    "UIViewController",
+    "UIWindow",
+    "objc2-core-foundation",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit6.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+openssl.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

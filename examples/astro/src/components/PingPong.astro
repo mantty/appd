@@ -1,0 +1,58 @@
+---
+// Client-side WebSocket ping/pong component
+---
+
+<div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+  <h2 class="text-lg font-semibold text-white mb-4">WebSocket Ping/Pong</h2>
+  <div class="flex items-center gap-4 mb-4">
+    <button
+      id="ping-btn"
+      class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium cursor-pointer"
+    >
+      Ping
+    </button>
+    <span id="ws-status" class="text-sm text-indigo-400">Connecting...</span>
+  </div>
+  <div
+    id="ws-log"
+    class="font-mono text-sm text-indigo-300 bg-indigo-950/50 rounded-lg p-4 h-40 overflow-y-auto"
+  ></div>
+</div>
+
+<script>
+  const btn = document.getElementById("ping-btn") as HTMLButtonElement;
+  const status = document.getElementById("ws-status")!;
+  const log = document.getElementById("ws-log")!;
+
+  function appendLog(msg: string) {
+    const line = document.createElement("div");
+    line.textContent = `[${new Date().toISOString().slice(11, 23)}] ${msg}`;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+
+  function setStatus(text: string, className: string, enabled: boolean) {
+    status.textContent = text;
+    status.className = className;
+    btn.disabled = !enabled;
+    appendLog(text);
+  }
+
+  ws.onopen = () => setStatus("Connected", "text-sm text-emerald-400", true);
+  ws.onmessage = (e) => appendLog(`Received: ${e.data}`);
+  ws.onclose = () => setStatus("Disconnected", "text-sm text-red-400", false);
+
+  ws.onerror = () => {
+    appendLog("WebSocket error");
+  };
+
+  btn.disabled = true;
+  btn.addEventListener("click", () => {
+    const msg = `ping ${Date.now()}`;
+    ws.send(msg);
+    appendLog(`Sent: ${msg}`);
+  });
+</script>
