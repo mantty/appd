@@ -49,12 +49,11 @@ DEFAULT_R2_ACCOUNT_ID = "dacf3ead71e534fdef9555c28d81774c"
 DEFAULT_R2_BUCKET = "appd-workerd-bazel-cache"
 DEFAULT_R2_PREFIX = "shared-cache"
 DEFAULT_BAZEL_REMOTE_MAX_SIZE_GIB = 8
-# v2.6.1. To upgrade: pull the new tag, run
-# `docker inspect buchgr/bazel-remote-cache:<tag> --format '{{index .RepoDigests 0}}'`,
-# and update both this comment and the digest together.
-BAZEL_REMOTE_DOCKER_IMAGE = (
-    "buchgr/bazel-remote-cache@sha256:d9b104d02bea731f5a8ce6d3c518f814953ef54c2e0218744ce7643ff9d85ca8"
-)
+# Pinned to match the same install command CI uses (weekly workflow), so
+# local dev and CI run the identical bazel-remote build, not just the same
+# version number.
+BAZEL_REMOTE_VERSION = "v2.6.1"
+BAZEL_REMOTE_MODULE = f"github.com/buchgr/bazel-remote/v2@{BAZEL_REMOTE_VERSION}"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,6 +70,7 @@ class R2CacheSettings:
 class BuildCacheConfig:
     mode: str = "local"
     cache_dir: Path = DEFAULT_CACHE_ROOT
+    bazel_remote_bin: str | None = None
     bazel_remote_port: int = 0
     max_size_gib: int = DEFAULT_BAZEL_REMOTE_MAX_SIZE_GIB
     r2: R2CacheSettings | None = None
@@ -419,6 +419,7 @@ def cache_config_from_env(
     *,
     mode: str | None = None,
     cache_dir: Path | None = None,
+    bazel_remote_bin: str | None = None,
     bazel_remote_port: int | None = None,
     max_size_gib: int | None = None,
     r2_endpoint: str | None = None,
@@ -433,6 +434,7 @@ def cache_config_from_env(
     env = env or os.environ
     resolved_mode = mode or env.get("APPD_WORKERD_CACHE") or default_cache_mode(env)
     resolved_cache_dir = cache_dir or Path(env.get("APPD_WORKERD_CACHE_DIR", DEFAULT_CACHE_ROOT))
+    resolved_bazel_remote_bin = bazel_remote_bin or env.get("APPD_BAZEL_REMOTE_BIN")
     resolved_bazel_remote_port = bazel_remote_port
     if resolved_bazel_remote_port is None:
         resolved_bazel_remote_port = int(env.get("APPD_BAZEL_REMOTE_PORT", "0"))
@@ -445,6 +447,7 @@ def cache_config_from_env(
     return BuildCacheConfig(
         mode=resolved_mode,
         cache_dir=resolved_cache_dir,
+        bazel_remote_bin=resolved_bazel_remote_bin,
         bazel_remote_port=resolved_bazel_remote_port,
         max_size_gib=resolved_max_size_gib,
         r2=r2_settings_from_env(
@@ -605,72 +608,64 @@ def bazel_remote_s3_env(config: BuildCacheConfig) -> dict[str, str]:
     return env
 
 
+def ensure_bazel_remote_bin(bazel_remote_bin: str | None) -> str:
+    if bazel_remote_bin:
+        return bazel_remote_bin
+
+    gopath_result = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True)
+    if gopath_result.returncode != 0:
+        raise RuntimeError(
+            f"bazel-remote isn't installed and Go isn't available to install it: "
+            f"{gopath_result.stderr.strip()}"
+        )
+    bin_path = Path(gopath_result.stdout.strip()) / "bin" / "bazel-remote"
+    if not bin_path.exists():
+        install = subprocess.run(["go", "install", BAZEL_REMOTE_MODULE], capture_output=True, text=True)
+        if install.returncode != 0:
+            raise RuntimeError(f"failed to install bazel-remote: {install.stderr.strip()}")
+    return str(bin_path)
+
+
 @contextlib.contextmanager
 def running_bazel_remote(config: BuildCacheConfig, port: int) -> Iterator[None]:
-    # bazel-remote runs as a Docker container rather than a native binary:
-    # measured directly against this same R2 bucket, the container's
-    # networking path showed zero large-transfer stalls across repeated
-    # trials, while the native binary showed the same intermittent
-    # per-object slowdowns whether run standalone or from here -- so this
-    # is a deliberate choice, not incidental. Pinned by digest (not just
-    # tag) to match this repo's supply-chain-verification convention
-    # elsewhere: to upgrade, pull the new tag, then update both the tag
-    # comment and the digest together.
-    data_dir = config.cache_dir / "bazel-remote"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    container_name = f"appd-bazel-remote-{port}"
+    bazel_remote_bin = ensure_bazel_remote_bin(config.bazel_remote_bin)
+    log_dir = config.cache_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = log_dir / "bazel-remote.stdout.log"
+    stderr_path = log_dir / "bazel-remote.stderr.log"
 
-    env_args = []
-    for key, value in bazel_remote_s3_env(config).items():
-        env_args += ["-e", f"{key}={value}"]
+    env = dict(os.environ)
+    env.update(bazel_remote_s3_env(config))
+    env.update(
+        {
+            "BAZEL_REMOTE_DIR": str(config.cache_dir / "bazel-remote"),
+            "BAZEL_REMOTE_MAX_SIZE": str(config.max_size_gib),
+            "BAZEL_REMOTE_HTTP_ADDRESS": f"127.0.0.1:{port}",
+        }
+    )
 
-    run_cmd = [
-        "docker",
-        "run",
-        "-d",
-        "--rm",
-        "--name",
-        container_name,
-        "-p",
-        f"127.0.0.1:{port}:8080",
-        "-v",
-        f"{data_dir}:/data",
-        *env_args,
-        BAZEL_REMOTE_DOCKER_IMAGE,
-        f"--max_size={config.max_size_gib}",
-        "--http_address=0.0.0.0:8080",
-    ]
-    result = subprocess.run(run_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"failed to start bazel-remote container (is Docker running?): {result.stderr.strip()}"
-        )
-
-    try:
-        wait_for_bazel_remote(port, container_name)
-        yield
-    finally:
-        subprocess.run(
-            ["docker", "stop", "--time", "10", container_name],
-            capture_output=True,
-        )
+    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+        process = subprocess.Popen([bazel_remote_bin], env=env, stdout=stdout, stderr=stderr)
+        try:
+            wait_for_bazel_remote(port, process)
+            yield
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
-def wait_for_bazel_remote(port: int, container_name: str, timeout_seconds: int = 30) -> None:
+def wait_for_bazel_remote(port: int, process: subprocess.Popen[bytes], timeout_seconds: int = 30) -> None:
     url = f"http://127.0.0.1:{port}/status"
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
 
     while time.monotonic() < deadline:
-        running = subprocess.run(
-            ["docker", "inspect", "--format={{.State.Running}}", container_name],
-            capture_output=True,
-            text=True,
-        )
-        if running.returncode != 0 or running.stdout.strip() != "true":
-            raise RuntimeError(
-                f"bazel-remote container exited before it became ready: {running.stderr.strip()}"
-            )
+        if process.poll() is not None:
+            raise RuntimeError(f"bazel-remote exited before it became ready: {process.returncode}")
         try:
             with urllib.request.urlopen(url, timeout=1) as response:
                 if response.status == 200:

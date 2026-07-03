@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--cache", choices=appd_workerd.CACHE_MODES)
     parser.add_argument("--cache-dir", type=Path)
+    parser.add_argument("--bazel-remote-bin")
     parser.add_argument("--bazel-remote-port", type=int)
     parser.add_argument("--bazel-remote-max-size-gib", type=int)
     parser.add_argument("--r2-endpoint")
@@ -42,6 +43,7 @@ def main() -> None:
         cache_config=appd_workerd.cache_config_from_env(
             mode=args.cache,
             cache_dir=args.cache_dir,
+            bazel_remote_bin=args.bazel_remote_bin,
             bazel_remote_port=args.bazel_remote_port,
             max_size_gib=args.bazel_remote_max_size_gib,
             r2_endpoint=args.r2_endpoint,

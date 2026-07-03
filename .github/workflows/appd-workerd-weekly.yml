@@ -2,6 +2,13 @@ name: appd workerd weekly
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        options:
+          - macos
+        default: macos
   schedule:
     - cron: "17 3 * * 0"
 
@@ -17,11 +24,9 @@ defaults:
     shell: bash
 
 env:
-  BAZEL_REMOTE_VERSION: "v2.6.1"
   GO_VERSION: "1.24.2"
   PYTHON_VERSION: "3.13"
   PYTHONUNBUFFERED: "1"
-  TERRAFORM_VERSION: "1.15.6"
 
 jobs:
   validate:
@@ -37,25 +42,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4.0.1
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
-
       - name: Validate workerd tooling
         run: |
           set -euxo pipefail
           python3 -m py_compile workerd/scripts/*.py
           python3 -m unittest discover -s workerd/tests -v
-
-      - name: Validate R2 cache Terraform
-        working-directory: infra/cloudflare/r2-cache
-        run: |
-          set -euxo pipefail
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false
-          terraform validate
 
       - name: Fetch and patch pinned upstream
         run: |
@@ -71,14 +62,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
           - target: aarch64-apple-darwin
             runner: macos-15
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2022
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -94,19 +79,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-
-      - name: Install bazel-remote
-        run: |
-          set -euxo pipefail
-          go install "github.com/buchgr/bazel-remote/v2@${BAZEL_REMOTE_VERSION}"
-          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
-
-      - name: Install Linux build packages
-        if: runner.os == 'Linux'
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y clang lld libc++-dev libc++abi-dev
 
       - name: Cache pinned upstream downloads
         uses: actions/cache@v5.0.5
@@ -124,17 +96,16 @@ jobs:
 
       - name: Build SDK
         env:
-          APPD_R2_ACCOUNT_ID: ${{ secrets.APPD_R2_ACCOUNT_ID }}
-          APPD_R2_ACCESS_KEY_ID: ${{ secrets.APPD_R2_ACCESS_KEY_ID }}
-          APPD_R2_BUCKET: ${{ secrets.APPD_R2_BUCKET }}
-          APPD_R2_PREFIX: ${{ vars.APPD_R2_PREFIX }}
-          APPD_R2_SECRET_ACCESS_KEY: ${{ secrets.APPD_R2_SECRET_ACCESS_KEY }}
+          # bazel-remote itself is installed by build-sdk.py (go install, same
+          # code path used locally) -- no separate install step here, so this
+          # runner exercises the identical flow a developer's machine does.
+          APPD_BAZEL_S3_ACCESS_KEY_ID: ${{ vars.APPD_BAZEL_CACHE_ACCESS_KEY_ID }}
+          APPD_BAZEL_S3_SECRET_ACCESS_KEY: ${{ secrets.APPD_BAZEL_CACHE_SECRET_ACCESS_KEY }}
         run: |
           set -euxo pipefail
           python3 workerd/scripts/build-sdk.py \
             --target "${{ matrix.target }}" \
             --output "target/workerd/sdk/${{ matrix.target }}" \
-            --cache r2-read-write \
             --bazel-remote-max-size-gib 8 \
             -- --verbose_failures
 
@@ -146,7 +117,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Mobile workerd SDKs are intentionally not in this weekly matrix yet.
-  # The pinned upstream workerd release does not currently expose appd's old
-  # Android or iOS Bazel platform configs. Add android-arm64, ios-arm64, and
-  # ios-simulator-arm64 here once those configs live in appd/workerd patches.
+  # Only macOS arm64 is built for now. Linux, Windows, macOS Intel, and
+  # mobile (Android/iOS) targets are intentionally not in this weekly matrix
+  # yet -- the pinned upstream workerd release doesn't currently expose
+  # appd's old mobile Bazel platform configs, and the other desktop targets
+  # haven't been validated against this cache setup. Add a matrix entry and
+  # a matching `workflow_dispatch.inputs.platform.options` value once each
+  # is ready.
