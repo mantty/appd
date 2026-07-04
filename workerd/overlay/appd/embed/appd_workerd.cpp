@@ -1,8 +1,8 @@
 #include "appd_workerd.h"
 
-#include "server.h"
-#include "v8-platform-impl.h"
 #include <workerd/jsg/setup.h>
+#include <workerd/server/server.h>
+#include <workerd/server/v8-platform-impl.h>
 #include <workerd/server/cpp-capnp-schema.embed.h>
 #include <workerd/server/workerd-capnp-schema.embed.h>
 #include <workerd/server/workerd.capnp.h>

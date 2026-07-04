@@ -17,53 +17,76 @@ def load_module():
     return module
 
 
+# A stand-in for the slice of upstream's real src/workerd/server/BUILD.bazel
+# that widen_visibility() needs to edit: four plainly-named targets, plus a
+# wd_capnp_library(src = "workerd.capnp", ...) macro call that (like the real
+# one) never writes a literal `name = "workerd_capnp"`.
+FAKE_SERVER_BUILD = textwrap.dedent(
+    """\
+    cc_library(
+        name = "server",
+        srcs = ["server.c++"],
+    )
+
+    cc_library(
+        name = "v8-platform-impl",
+        srcs = ["v8-platform-impl.c++"],
+    )
+
+    cc_library(
+        name = "cpp-capnp-schema",
+        srcs = ["cpp-capnp-schema.c++"],
+    )
+
+    cc_library(
+        name = "workerd-capnp-schema",
+        srcs = ["workerd-capnp-schema.c++"],
+    )
+
+    wd_capnp_library(
+        src = "workerd.capnp",
+        visibility = [":__pkg__"],
+    )
+    """
+)
+
+
 class ApplyOverlayTests(unittest.TestCase):
-    def test_copies_overlay_files_and_applies_ordered_patches(self):
+    def test_copies_overlay_files_and_widens_visibility_idempotently(self):
         workerd = load_module()
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source"
             overlay = root / "overlay"
-            patches = root / "patches"
 
             (source / "src" / "workerd" / "server").mkdir(parents=True)
+            # buildozer walks up from -root_dir looking for a workspace
+            # marker (like real Bazel does) to resolve package-relative
+            # labels; the real fetched source has one, so this needs one too.
+            (source / "MODULE.bazel").write_text('module(name = "workerd")\n', encoding="utf-8")
             (source / "src" / "workerd" / "server" / "BUILD.bazel").write_text(
-                "line one\nline two\n", encoding="utf-8"
+                FAKE_SERVER_BUILD, encoding="utf-8"
             )
-            (overlay / "src" / "workerd" / "server").mkdir(parents=True)
-            (overlay / "src" / "workerd" / "server" / "appd_workerd.h").write_text(
+            (overlay / "appd" / "embed").mkdir(parents=True)
+            (overlay / "appd" / "embed" / "appd_workerd.h").write_text(
                 "#pragma once\n", encoding="utf-8"
             )
-            patches.mkdir()
-            (patches / "0001-test.patch").write_text(
-                textwrap.dedent(
-                    """\
-                    --- a/src/workerd/server/BUILD.bazel
-                    +++ b/src/workerd/server/BUILD.bazel
-                    @@ -1,2 +1,3 @@
-                     line one
-                    +appd target
-                     line two
-                    """
-                ),
-                encoding="utf-8",
-            )
 
-            workerd.apply_overlay(source, overlay, patches)
-            workerd.apply_overlay(source, overlay, patches)
+            workerd.apply_overlay(source, overlay)
+            workerd.apply_overlay(source, overlay)
 
             self.assertEqual(
-                (source / "src" / "workerd" / "server" / "appd_workerd.h").read_text(
-                    encoding="utf-8"
-                ),
+                (source / "appd" / "embed" / "appd_workerd.h").read_text(encoding="utf-8"),
                 "#pragma once\n",
             )
-            self.assertEqual(
-                (source / "src" / "workerd" / "server" / "BUILD.bazel").read_text(
-                    encoding="utf-8"
-                ),
-                "line one\nappd target\nline two\n",
+
+            built = (source / "src" / "workerd" / "server" / "BUILD.bazel").read_text(
+                encoding="utf-8"
             )
+            for label in workerd.VISIBILITY_WIDENING_TARGETS:
+                name = label.rsplit(":", 1)[-1]
+                self.assertIn(f'name = "{name}"', built)
+            self.assertEqual(built.count('visibility = ["//visibility:public"]'), 5)
 
 
 if __name__ == "__main__":

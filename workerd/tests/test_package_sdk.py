@@ -86,12 +86,11 @@ class PackageSdkTests(unittest.TestCase):
             params = (
                 source
                 / "bazel-bin"
-                / "src"
-                / "workerd"
-                / "server"
-                / "appd-workerd-link-anchor.params"
+                / "appd"
+                / "embed"
+                / "libappd-workerd-appd-link-inputs.dylib-0.params"
             )
-            header = source / "src" / "workerd" / "server" / "appd_workerd.h"
+            header = source / "appd" / "embed" / "appd_workerd.h"
             lib = source / "bazel-bin" / "libappd.a"
 
             header.parent.mkdir(parents=True)
@@ -133,6 +132,8 @@ class PackageSdkTests(unittest.TestCase):
                 [
                     "bazel",
                     "build",
+                    f"--aspects={workerd.APPD_LINK_INPUTS_ASPECT}",
+                    f"--output_groups={workerd.APPD_LINK_INPUTS_OUTPUT_GROUP}",
                     workerd.APPD_BAZEL_TARGET,
                     "--config=release_macos",
                     f"--disk_cache={cache / 'bazel-disk'}",
@@ -236,43 +237,50 @@ class PackageSdkTests(unittest.TestCase):
         self.assertEqual(environment["BAZEL_REMOTE_S3_BUCKET"], "appd-workerd-bazel-cache")
         self.assertEqual(environment["BAZEL_REMOTE_S3_BUCKET_LOOKUP_TYPE"], "path")
 
-    def test_packages_link_inputs_and_excludes_link_anchor_object(self):
+    def test_packages_link_inputs_and_excludes_introspection_artifacts(self):
         workerd = load_module()
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             bazel_bin = root / "bazel-bin"
             output = root / "out"
             include = root / "appd_workerd.h"
-            lib_a = bazel_bin / "src" / "workerd" / "server" / "libappd.a"
+            lib_a = bazel_bin / "appd" / "embed" / "libappd-workerd.a"
             lib_b = bazel_bin / "external" / "v8" / "libv8.a"
             lib_lo = bazel_bin / "external" / "v8" / "libv8_icu.lo"
-            anchor = bazel_bin / "src" / "workerd" / "server" / "appd_workerd_link_anchor.o"
+            # The link-inputs aspect's own throwaway dylib and its LTO object
+            # -- neither is a real appd-workerd dependency.
+            lto_object = bazel_bin / "appd" / "embed" / "libappd-workerd-appd-link-inputs.dylib.lto.o"
 
             lib_a.parent.mkdir(parents=True)
             lib_b.parent.mkdir(parents=True)
             lib_lo.parent.mkdir(parents=True, exist_ok=True)
-            anchor.parent.mkdir(parents=True, exist_ok=True)
             lib_a.write_bytes(b"appd archive")
             lib_b.write_bytes(b"v8 archive")
             lib_lo.write_bytes(b"v8 lo archive")
-            anchor.write_bytes(b"anchor")
+            lto_object.write_bytes(b"lto summary")
             include.write_text("#pragma once\n", encoding="utf-8")
 
-            params = root / "anchor.params"
+            dylib = "bazel-out/darwin_arm64-opt/bin/appd/embed/libappd-workerd-appd-link-inputs.dylib"
+            params = root / "appd-link-inputs.params"
             params.write_text(
                 "\n".join(
                     [
+                        "-shared",
                         "-o",
-                        "bazel-out/darwin_arm64-opt/bin/src/workerd/server/appd-workerd-link-anchor",
-                        "LINKED_BINARY=bazel-out/darwin_arm64-opt/bin/src/workerd/server/appd-workerd-link-anchor",
+                        dylib,
+                        f"LINKED_BINARY={dylib}",
                         "-Xlinker",
                         "-object_path_lto",
                         "-Xlinker",
-                        "bazel-out/darwin_arm64-opt/bin/src/workerd/server/appd-workerd-link-anchor.lto.o",
+                        "bazel-out/darwin_arm64-opt/bin/appd/embed/libappd-workerd-appd-link-inputs.dylib.lto.o",
                         f"-Wl,-force_load,{lib_a}",
-                        str(anchor),
                         f"-Wl,-force_load,{lib_lo}",
                         str(lib_b),
+                        str(lto_object),
+                        "-Xlinker",
+                        "-install_name",
+                        "-Xlinker",
+                        "@rpath/libappd-workerd-appd-link-inputs.dylib",
                     ]
                 )
                 + "\n",
@@ -294,14 +302,16 @@ class PackageSdkTests(unittest.TestCase):
             self.assertEqual(manifest["upstream"]["tag"], "v1.20260501.1")
             self.assertEqual(len(manifest["link_inputs"]), 3)
             self.assertTrue((output / "include" / "appd_workerd.h").is_file())
-            self.assertFalse(any("link_anchor" in item["source"] for item in manifest["link_inputs"]))
+            self.assertFalse(any("appd-link-inputs" in item["source"] for item in manifest["link_inputs"]))
+            self.assertNotIn("-shared", manifest["link_args"])
             self.assertNotIn("-o", manifest["link_args"])
             self.assertNotIn("-object_path_lto", manifest["link_args"])
+            self.assertNotIn("-install_name", manifest["link_args"])
             self.assertFalse(any(arg.startswith("LINKED_BINARY=") for arg in manifest["link_args"]))
             self.assertFalse(any("bazel-out/" in arg for arg in manifest["link_args"]))
             self.assertTrue(any(arg.startswith("-Wl,-force_load,lib/") for arg in manifest["link_args"]))
             self.assertTrue(all((output / item["path"]).is_file() for item in manifest["link_inputs"]))
-            self.assertTrue(all("link_anchor" not in arg for arg in manifest["link_args"]))
+            self.assertTrue(all("appd-link-inputs" not in arg for arg in manifest["link_args"]))
 
     def test_packages_bazel_root_relative_link_inputs(self):
         workerd = load_module()

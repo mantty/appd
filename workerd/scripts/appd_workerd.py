@@ -30,9 +30,27 @@ DEFAULT_TARGET_ROOT = APPD_ROOT / "target" / "workerd"
 DEFAULT_CACHE_ROOT = DEFAULT_TARGET_ROOT / "cache"
 DEFAULT_UPSTREAM_CONFIG = WORKERD_ROOT / "upstream.toml"
 DEFAULT_OVERLAY_ROOT = WORKERD_ROOT / "overlay"
-DEFAULT_PATCHES_ROOT = WORKERD_ROOT / "patches"
-APPD_BAZEL_TARGET = "//src/workerd/server:appd-workerd-link-anchor"
+APPD_BAZEL_TARGET = "//appd/embed:appd-workerd"
+APPD_LINK_INPUTS_ASPECT = "//appd/embed:link_inputs.bzl%link_inputs_aspect"
+APPD_LINK_INPUTS_OUTPUT_GROUP = "appd_link_inputs"
 LINK_SUFFIXES = (".a", ".lib", ".lo", ".o", ".obj", ".rlib")
+# :server, :v8-platform-impl, :cpp-capnp-schema and :workerd-capnp-schema are
+# private by default (no visibility set upstream); :workerd_capnp is
+# public-ish but scoped to a handful of upstream packages. appd/embed is the
+# first cross-package consumer of any of them, so all need widening.
+VISIBILITY_WIDENING_TARGETS = (
+    "//src/workerd/server:server",
+    "//src/workerd/server:v8-platform-impl",
+    "//src/workerd/server:cpp-capnp-schema",
+    "//src/workerd/server:workerd-capnp-schema",
+)
+# buildtools' v7/v8 tags declare `module github.com/bazelbuild/buildtools`
+# without the /v7 or /v8 suffix Go's module system requires for a major
+# version that high, so `go install ...@v8.5.1` is rejected outright. Pin a
+# commit pseudo-version instead -- reproducible the same way a tag would be,
+# just not a pretty one.
+BUILDOZER_VERSION = "v0.0.0-20260622120422-77b9b380c0a4"
+BUILDOZER_MODULE = f"github.com/bazelbuild/buildtools/buildozer@{BUILDOZER_VERSION}"
 TARGET_ALIASES = {
     "linux-x64": "x86_64-unknown-linux-gnu",
     "macos-arm64": "aarch64-apple-darwin",
@@ -159,10 +177,9 @@ def safe_extract(archive: tarfile.TarFile, destination: Path) -> None:
 def apply_overlay(
     source_dir: Path,
     overlay_root: Path = DEFAULT_OVERLAY_ROOT,
-    patches_root: Path = DEFAULT_PATCHES_ROOT,
 ) -> None:
     copy_overlay_files(source_dir, overlay_root)
-    apply_patches(source_dir, patches_root)
+    widen_visibility(source_dir)
 
 
 def copy_overlay_files(source_dir: Path, overlay_root: Path) -> None:
@@ -179,38 +196,77 @@ def copy_overlay_files(source_dir: Path, overlay_root: Path) -> None:
         shutil.copy2(path, target)
 
 
-def apply_patches(source_dir: Path, patches_root: Path) -> None:
-    if not patches_root.is_dir():
-        return
-
-    for patch_path in sorted(patches_root.glob("*.patch")):
-        if patch_is_already_applied(source_dir, patch_path):
-            continue
-
-        result = subprocess.run(
-            ["git", "apply", "--check", str(patch_path)],
-            cwd=source_dir,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"patch check failed for {patch_path}\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-        subprocess.run(["git", "apply", str(patch_path)], cwd=source_dir, check=True)
+def widen_visibility(source_dir: Path, buildozer_bin: str | None = None) -> None:
+    buildozer_bin = ensure_buildozer_bin(buildozer_bin)
+    for label in VISIBILITY_WIDENING_TARGETS:
+        run_buildozer(buildozer_bin, source_dir, "set visibility //visibility:public", label)
+    run_buildozer(
+        buildozer_bin,
+        source_dir,
+        "set visibility //visibility:public",
+        workerd_capnp_label(buildozer_bin, source_dir),
+    )
 
 
-def patch_is_already_applied(source_dir: Path, patch_path: Path) -> bool:
+def workerd_capnp_label(buildozer_bin: str, source_dir: Path) -> str:
+    # wd_capnp_library(src = "workerd.capnp", ...) generates a "workerd_capnp"
+    # target without ever writing that name literally -- it's derived inside
+    # the macro from `src`. buildozer parses BUILD files at the syntax level,
+    # so it can't look a macro-generated name up directly; address the call
+    # by the line it starts on instead, discovered via its `src` attribute.
     result = subprocess.run(
-        ["git", "apply", "--reverse", "--check", str(patch_path)],
-        cwd=source_dir,
-        check=False,
+        [
+            buildozer_bin,
+            "-root_dir",
+            str(source_dir),
+            "print src startline",
+            "//src/workerd/server:%wd_capnp_library",
+        ],
         capture_output=True,
         text=True,
     )
-    return result.returncode == 0
+    if result.returncode not in (0, 3):
+        raise RuntimeError(
+            f"buildozer couldn't list wd_capnp_library() calls\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    for line in result.stdout.splitlines():
+        src, _, startline = line.strip().rpartition(" ")
+        if src == "workerd.capnp":
+            return f"//src/workerd/server:%{startline}"
+    raise RuntimeError("no wd_capnp_library(src = \"workerd.capnp\", ...) call found to widen")
+
+
+def run_buildozer(buildozer_bin: str, source_dir: Path, command: str, label: str) -> None:
+    result = subprocess.run(
+        [buildozer_bin, "-root_dir", str(source_dir), command, label],
+        capture_output=True,
+        text=True,
+    )
+    # 0 = applied, 3 = already had that visibility -- both are success.
+    if result.returncode not in (0, 3):
+        raise RuntimeError(
+            f"buildozer failed for {label} ({command!r})\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
+def ensure_buildozer_bin(buildozer_bin: str | None) -> str:
+    if buildozer_bin:
+        return buildozer_bin
+
+    gopath_result = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True)
+    if gopath_result.returncode != 0:
+        raise RuntimeError(
+            f"buildozer isn't installed and Go isn't available to install it: "
+            f"{gopath_result.stderr.strip()}"
+        )
+    bin_path = Path(gopath_result.stdout.strip()) / "bin" / "buildozer"
+    if not bin_path.exists():
+        install = subprocess.run(["go", "install", BUILDOZER_MODULE], capture_output=True, text=True)
+        if install.returncode != 0:
+            raise RuntimeError(f"failed to install buildozer: {install.stderr.strip()}")
+    return str(bin_path)
 
 
 def package_sdk(
@@ -239,7 +295,7 @@ def package_sdk(
 
     for token in tokens:
         candidates = list(link_input_candidates(token))
-        if any(is_link_anchor(candidate) for candidate in candidates):
+        if any(is_introspection_artifact(candidate) for candidate in candidates):
             continue
 
         rewritten = token
@@ -302,11 +358,25 @@ def reusable_link_tokens(tokens: list[str]) -> list[str]:
         if token == "-target":
             index += 2
             continue
-        if token in {"-no-canonical-prefixes", "-Wl,-oso_prefix,__BAZEL_EXECUTION_ROOT__/"}:
+        if token in {
+            "-no-canonical-prefixes",
+            "-Wl,-oso_prefix,__BAZEL_EXECUTION_ROOT__/",
+            # The link-inputs aspect links a throwaway dynamic library (so it
+            # never needs a `main`); these only make sense for that shared
+            # object, never for the real static executable the SDK is for.
+            "-shared",
+            "/DLL",
+        }:
             index += 1
             continue
-        if token == "-Xlinker" and index + 1 < len(tokens) and tokens[index + 1] == "-object_path_lto":
-            index = skip_xlinker_object_path_lto(tokens, index)
+        if token.startswith("-Wl,-soname,") or token.startswith("-Wl,-install_name,"):
+            index += 1
+            continue
+        if token == "-Xlinker" and index + 1 < len(tokens) and tokens[index + 1] in {
+            "-object_path_lto",
+            "-install_name",
+        }:
+            index = skip_xlinker_pair(tokens, index)
             continue
         if token == "-object_path_lto":
             index += 2
@@ -318,7 +388,7 @@ def reusable_link_tokens(tokens: list[str]) -> list[str]:
     return reusable
 
 
-def skip_xlinker_object_path_lto(tokens: list[str], index: int) -> int:
+def skip_xlinker_pair(tokens: list[str], index: int) -> int:
     index += 2
     if index < len(tokens) and tokens[index] == "-Xlinker":
         index += 1
@@ -333,9 +403,11 @@ def link_input_candidates(token: str) -> Iterable[str]:
             yield fragment
 
 
-def is_link_anchor(path_text: str) -> bool:
-    name = Path(path_text).name
-    return "appd_workerd_link_anchor" in name or "appd-workerd-link-anchor" in name
+def is_introspection_artifact(path_text: str) -> bool:
+    # The link-inputs aspect links its own throwaway dynamic library to
+    # harvest CcInfo as real linker tokens; that library's own object/LTO
+    # output is never a real appd-workerd dependency and must be excluded.
+    return "appd-link-inputs" in Path(path_text).name
 
 
 def resolve_link_input(path_text: str, base_dir: Path) -> Path:
@@ -692,14 +764,20 @@ def build_sdk(
     apply_overlay(source_dir)
 
     with bazel_cache(cache_config) as cache_args:
-        command = ["bazel", "build", APPD_BAZEL_TARGET]
+        command = [
+            "bazel",
+            "build",
+            f"--aspects={APPD_LINK_INPUTS_ASPECT}",
+            f"--output_groups={APPD_LINK_INPUTS_OUTPUT_GROUP}",
+            APPD_BAZEL_TARGET,
+        ]
         command.extend(default_bazel_args(normalized_target))
         command.extend(cache_args)
         command.extend(bazel_args or [])
         subprocess.run(command, cwd=source_dir, check=True)
 
     params_path = find_link_params(source_dir)
-    header_path = source_dir / "src" / "workerd" / "server" / "appd_workerd.h"
+    header_path = source_dir / "appd" / "embed" / "appd_workerd.h"
     return package_sdk(
         params_path=params_path,
         output_dir=output_dir,
@@ -712,7 +790,7 @@ def build_sdk(
 
 def find_link_params(source_dir: Path) -> Path:
     bazel_bin = source_dir / "bazel-bin"
-    matches = sorted(bazel_bin.rglob("*appd-workerd-link-anchor*.params"))
+    matches = sorted(bazel_bin.rglob("*appd-link-inputs*.params"))
     if not matches:
         raise FileNotFoundError(f"no appd workerd link params found under {bazel_bin}")
     if len(matches) > 1:

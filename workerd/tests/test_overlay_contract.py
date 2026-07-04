@@ -3,18 +3,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OVERLAY_SOURCE = ROOT / "overlay" / "src" / "workerd" / "server" / "appd_workerd.cpp"
-PATCHES_DIR = ROOT / "patches"
+OVERLAY_SOURCE = ROOT / "overlay" / "appd" / "embed" / "appd_workerd.cpp"
+OVERLAY_BUILD = ROOT / "overlay" / "appd" / "embed" / "BUILD.bazel"
+OVERLAY_ASPECT = ROOT / "overlay" / "appd" / "embed" / "link_inputs.bzl"
 
 
 def read_overlay_source():
     return OVERLAY_SOURCE.read_text(encoding="utf-8")
 
 
-def read_patches():
-    return "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(PATCHES_DIR.glob("*.patch"))
-    )
+def read_overlay_build():
+    return OVERLAY_BUILD.read_text(encoding="utf-8")
 
 
 class OverlayContractTests(unittest.TestCase):
@@ -37,14 +36,32 @@ class OverlayContractTests(unittest.TestCase):
         self.assertIn("#include <capnp/dynamic.h>", source)
         self.assertIn("constSchema.as<server::config::Config>()", source)
 
-    def test_overlay_keeps_appd_target_patch_without_disk_kv_patch(self):
-        patches = read_patches()
+    def test_overlay_source_uses_full_paths_for_relocated_workerd_headers(self):
+        # appd_workerd.cpp lives outside src/workerd/server now, so it can no
+        # longer reach server.h/v8-platform-impl.h via same-directory quotes.
+        source = read_overlay_source()
 
-        self.assertIn('name = "appd-workerd"', patches)
-        self.assertIn('name = "appd-workerd-link-anchor"', patches)
-        self.assertNotIn("When used as a KV backend", patches)
-        self.assertNotIn("remaining.findFirst('/')", patches)
-        self.assertNotIn("url.path = fixedPath.releaseAsArray();", patches)
+        self.assertIn("#include <workerd/server/server.h>", source)
+        self.assertIn("#include <workerd/server/v8-platform-impl.h>", source)
+        self.assertNotIn('#include "server.h"', source)
+        self.assertNotIn('#include "v8-platform-impl.h"', source)
+
+    def test_build_defines_appd_workerd_as_a_public_plain_cc_library(self):
+        build = read_overlay_build()
+
+        self.assertIn('name = "appd-workerd"', build)
+        self.assertIn('visibility = ["//visibility:public"]', build)
+        # A plain cc_library, not workerd's own wd_cc_library macro -- this
+        # package can't load workerd's build-internal .bzl files.
+        self.assertIn('load("@rules_cc//cc:cc_library.bzl", "cc_library")', build)
+        self.assertNotIn("wd_cc_library(", build)
+        self.assertNotIn("appd-workerd-link-anchor", build)
+
+    def test_aspect_exposes_the_documented_output_group(self):
+        aspect = OVERLAY_ASPECT.read_text(encoding="utf-8")
+
+        self.assertIn("link_inputs_aspect = aspect(", aspect)
+        self.assertIn("appd_link_inputs", aspect)
 
 
 if __name__ == "__main__":
