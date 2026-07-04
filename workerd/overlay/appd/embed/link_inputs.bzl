@@ -1,13 +1,12 @@
 """Aspect that harvests the static link inputs for an appd-workerd cc_library.
 
-Replaces the old approach (a dummy `wd_cc_binary` whose only job was to force
-a real link action so its `.params` file could be scraped). Instead of
-linking an executable -- which needs a `main` symbol nothing here provides --
-this links a throwaway dynamic library from the target's own CcInfo. Dynamic
-libraries don't need an entry point, and Bazel's own cc_common.link resolves
-alwayslink/whole-archive flags exactly the way a real cc_binary link would,
-so the resulting `.params` file is link-order- and flag-correct without this
-aspect having to hand-roll per-platform linker syntax.
+Links a throwaway dynamic library from the target's own CcInfo rather than
+an executable, since an executable needs a `main` symbol nothing here
+provides. Dynamic libraries don't need an entry point, and Bazel's own
+cc_common.link resolves alwayslink/whole-archive flags exactly the way a
+real cc_binary link would, so the resulting `.params` file is link-order-
+and flag-correct without this aspect having to hand-roll per-platform
+linker syntax.
 """
 
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")

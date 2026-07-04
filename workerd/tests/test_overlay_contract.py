@@ -37,8 +37,8 @@ class OverlayContractTests(unittest.TestCase):
         self.assertIn("constSchema.as<server::config::Config>()", source)
 
     def test_overlay_source_uses_full_paths_for_relocated_workerd_headers(self):
-        # appd_workerd.cpp lives outside src/workerd/server now, so it can no
-        # longer reach server.h/v8-platform-impl.h via same-directory quotes.
+        # appd_workerd.cpp lives outside src/workerd/server, so same-directory
+        # quotes can't reach server.h/v8-platform-impl.h from here.
         source = read_overlay_source()
 
         self.assertIn("#include <workerd/server/server.h>", source)
