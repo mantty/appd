@@ -77,11 +77,16 @@ jobs:
           APPD_BAZEL_S3_SECRET_ACCESS_KEY: ${{ secrets.APPD_BAZEL_CACHE_SECRET_ACCESS_KEY }}
         run: |
           set -euxo pipefail
+          # --jobs=32 despite this runner having 3 cores: most actions here
+          # are remote-cache hits, which are I/O-bound (waiting on R2), not
+          # CPU-bound -- Bazel's auto-detected default caps concurrency to
+          # core count, serializing thousands of cache checks that don't
+          # actually need a free CPU to proceed.
           python3 workerd/scripts/build-sdk.py \
             --target "${{ matrix.target }}" \
             --output "target/workerd/sdk/${{ matrix.target }}" \
             --bazel-remote-max-size-gib 8 \
-            -- --verbose_failures
+            -- --verbose_failures --jobs=32
 
       - name: Upload SDK artifact
         uses: actions/upload-artifact@v7.0.1
@@ -93,8 +98,5 @@ jobs:
 
   # Only macOS arm64 is built for now. Linux, Windows, macOS Intel, and
   # mobile (Android/iOS) targets are intentionally not in this weekly matrix
-  # yet -- the pinned upstream workerd release doesn't currently expose
-  # appd's old mobile Bazel platform configs, and the other desktop targets
-  # haven't been validated against this cache setup. Add a matrix entry and
-  # a matching `workflow_dispatch.inputs.platform.options` value once each
-  # is ready.
+  # yet. Add a matrix entry and a matching `workflow_dispatch.inputs.platform.options`
+  # value once each is ready.
