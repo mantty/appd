@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "appd:macos": "astro build && ../../target/release/appd build macos --project . --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^13.1.8",
