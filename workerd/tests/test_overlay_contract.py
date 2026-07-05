@@ -51,8 +51,7 @@ class OverlayContractTests(unittest.TestCase):
 
         self.assertIn('name = "appd-workerd"', build)
         self.assertIn('visibility = ["//visibility:public"]', build)
-        # A plain cc_library, not workerd's own wd_cc_library macro -- this
-        # package can't load workerd's build-internal .bzl files.
+        # The package cannot load workerd's internal wd_cc_library macro.
         self.assertIn('load("@rules_cc//cc:cc_library.bzl", "cc_library")', build)
         self.assertNotIn("wd_cc_library(", build)
         self.assertNotIn("appd-workerd-link-anchor", build)

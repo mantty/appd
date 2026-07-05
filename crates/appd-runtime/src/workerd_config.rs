@@ -62,8 +62,8 @@ fn render_config(
 
 fn render_root_config(out: &mut String, options: &ConfigOptions) {
     let v8_flags = if options.jitless {
-        // V8 only auto-implies --wasm-jitless from --jitless on tvOS; macOS
-        // and iOS need it passed explicitly for WASM to run under jitless.
+        // V8 only auto-implies --wasm-jitless from --jitless on tvOS;
+        // elsewhere it must be explicit.
         r#"["--jitless", "--wasm-jitless"]"#
     } else {
         "[]"
@@ -161,9 +161,8 @@ fn render_app_worker(
     );
 
     for module in modules {
-        // workerd compiles wasm modules at worker load time, the only point
-        // its embedder policy (matching production Workers) permits wasm code
-        // generation; imports then receive a ready WebAssembly.Module.
+        // workerd only permits wasm code generation while a worker loads, so
+        // .wasm files ship as modules compiled at load.
         let field = if is_wasm_module(module) { "wasm" } else { "esModule" };
         let _ = writeln!(
             out,

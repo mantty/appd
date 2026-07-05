@@ -1,6 +1,4 @@
 import type { APIRoute } from "astro";
-// Bundled as a WebAssembly module and compiled by the runtime at worker load,
-// the same way a .wasm import works on deployed Cloudflare Workers.
 import wordPickerModule from "../../wasm/word_picker.wasm";
 
 export const prerender = false;

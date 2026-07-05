@@ -9,17 +9,13 @@ vendoring the upstream `cloudflare/workerd` source tree.
    `upstream.toml` into `target/workerd/src/<tag>` and verifies the archive
    checksum.
 2. `scripts/apply-overlay.py` copies the appd C ABI overlay (`overlay/appd/embed/`)
-   into that source tree, then widens visibility on the handful of upstream
+   into that source tree, then widens visibility on the upstream
    `src/workerd/server` targets `//appd/embed:appd-workerd` depends on
-   (`buildozer`, auto-installed via `go install` the same way `bazel-remote`
-   is -- see `ensure_buildozer_bin()`). No source patching is involved.
+   (via `buildozer`, auto-installed by `go install`).
 3. `scripts/build-sdk.py` builds `//appd/embed:appd-workerd` with Bazel using
    the `link_inputs_aspect` aspect (`overlay/appd/embed/link_inputs.bzl`),
-   which links a throwaway dynamic library from the target's `CcInfo` to
-   harvest a real, toolchain-correct linker command line without needing an
-   executable (and therefore without needing a `main`). It reads the
-   resulting `.params` file and packages the static link inputs plus
-   `appd_workerd.h` into an SDK directory under
+   reads the resulting `.params` file, and packages the static link inputs
+   plus `appd_workerd.h` into an SDK directory under
    `target/workerd/sdk/<cargo-target-triple>`.
 
 The overlay exposes:

@@ -17,10 +17,8 @@ def load_module():
     return module
 
 
-# A stand-in for the slice of upstream's real src/workerd/server/BUILD.bazel
-# that widen_visibility() needs to edit: four plainly-named targets, plus a
-# wd_capnp_library(src = "workerd.capnp", ...) macro call that (like the real
-# one) never writes a literal `name = "workerd_capnp"`.
+# The slice of upstream's BUILD.bazel that widen_visibility() edits: four
+# named targets plus a wd_capnp_library() call with no literal name.
 FAKE_SERVER_BUILD = textwrap.dedent(
     """\
     cc_library(
@@ -60,9 +58,7 @@ class ApplyOverlayTests(unittest.TestCase):
             overlay = root / "overlay"
 
             (source / "src" / "workerd" / "server").mkdir(parents=True)
-            # buildozer walks up from -root_dir looking for a workspace
-            # marker (like real Bazel does) to resolve package-relative
-            # labels; the real fetched source has one, so this needs one too.
+            # buildozer needs a workspace marker to resolve labels.
             (source / "MODULE.bazel").write_text('module(name = "workerd")\n', encoding="utf-8")
             (source / "src" / "workerd" / "server" / "BUILD.bazel").write_text(
                 FAKE_SERVER_BUILD, encoding="utf-8"

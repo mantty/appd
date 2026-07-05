@@ -35,15 +35,13 @@ APPD_BAZEL_TARGET = "//appd/embed:appd-workerd"
 APPD_LINK_INPUTS_ASPECT = "//appd/embed:link_inputs.bzl%link_inputs_aspect"
 APPD_LINK_INPUTS_OUTPUT_GROUP = "appd_link_inputs"
 LINK_SUFFIXES = (".a", ".lib", ".lo", ".o", ".obj", ".rlib")
-# Archive formats whose members need extracting before a Mach-O object inside
-# them can be retagged; .rlib is Rust's own static-library archive and uses
-# the same ar(1) container as .a/.lo.
+# ar(1) archives whose members are retagged individually; .rlib is the same
+# container format as .a/.lo.
 RETAG_ARCHIVE_SUFFIXES = (".a", ".lo", ".rlib")
 LC_BUILD_VERSION = 0x32
 MACHO_MAGIC_64 = 0xFEEDFACF
-# iOS Simulator on Apple Silicon runs on the real macOS kernel with the same
-# ABI as native macOS -- a macOS arm64 object only needs its LC_BUILD_VERSION
-# platform field rewritten to read as a genuine iOS Simulator build.
+# The arm64 iOS Simulator shares the macOS ABI; a macOS object becomes a
+# simulator object by rewriting LC_BUILD_VERSION's platform field.
 MACHO_PLATFORMS = {
     "macos": 1,
     "ios-simulator": 7,
@@ -51,21 +49,16 @@ MACHO_PLATFORMS = {
 RETAG_PLATFORM_BY_TARGET = {
     "aarch64-apple-ios-sim": "ios-simulator",
 }
-# :server, :v8-platform-impl, :cpp-capnp-schema and :workerd-capnp-schema are
-# private by default (no visibility set upstream); :workerd_capnp is
-# public-ish but scoped to a handful of upstream packages. appd/embed is the
-# first cross-package consumer of any of them, so all need widening.
+# Upstream declares no visibility on these; appd/embed depends on them
+# cross-package.
 VISIBILITY_WIDENING_TARGETS = (
     "//src/workerd/server:server",
     "//src/workerd/server:v8-platform-impl",
     "//src/workerd/server:cpp-capnp-schema",
     "//src/workerd/server:workerd-capnp-schema",
 )
-# buildtools' v7/v8 tags declare `module github.com/bazelbuild/buildtools`
-# without the /v7 or /v8 suffix Go's module system requires for a major
-# version that high, so `go install ...@v8.5.1` is rejected outright. Pin a
-# commit pseudo-version instead -- reproducible the same way a tag would be,
-# just not a pretty one.
+# buildtools' v7/v8 tags lack the module-path major-version suffix Go
+# requires, so `go install` rejects them; a commit pseudo-version works.
 BUILDOZER_VERSION = "v0.0.0-20260622120422-77b9b380c0a4"
 BUILDOZER_MODULE = f"github.com/bazelbuild/buildtools/buildozer@{BUILDOZER_VERSION}"
 TARGET_ALIASES = {
@@ -78,10 +71,8 @@ TARGET_ALIASES = {
 DEFAULT_BAZEL_ARGS_BY_TARGET = {
     "x86_64-unknown-linux-gnu": ["--config=release_linux"],
     "aarch64-apple-darwin": ["--config=release_macos"],
-    # Same compile as aarch64-apple-darwin -- iOS Simulator on Apple Silicon
-    # shares macOS's ABI, so retagging happens as a packaging step, not a
-    # different compile target. DrumBrake is only worth its compile cost on
-    # this target, so it's added here rather than to release_macos itself.
+    # The simulator shares the macOS ABI; the same compile is retagged at
+    # packaging. DrumBrake provides interpreted wasm under jitless.
     "aarch64-apple-ios-sim": ["--config=release_macos", "--@v8//:v8_enable_drumbrake=true"],
     "x86_64-pc-windows-msvc": ["--config=release_windows"],
 }
@@ -90,9 +81,6 @@ DEFAULT_R2_ACCOUNT_ID = "dacf3ead71e534fdef9555c28d81774c"
 DEFAULT_R2_BUCKET = "appd-workerd-bazel-cache"
 DEFAULT_R2_PREFIX = "shared-cache"
 DEFAULT_BAZEL_REMOTE_MAX_SIZE_GIB = 8
-# Pinned to match the same install command CI uses (weekly workflow), so
-# local dev and CI run the identical bazel-remote build, not just the same
-# version number.
 BAZEL_REMOTE_VERSION = "v2.6.1"
 BAZEL_REMOTE_MODULE = f"github.com/buchgr/bazel-remote/v2@{BAZEL_REMOTE_VERSION}"
 
@@ -232,11 +220,9 @@ def widen_visibility(source_dir: Path, buildozer_bin: str | None = None) -> None
 
 
 def workerd_capnp_label(buildozer_bin: str, source_dir: Path) -> str:
-    # wd_capnp_library(src = "workerd.capnp", ...) generates a "workerd_capnp"
-    # target without ever writing that name literally -- it's derived inside
-    # the macro from `src`. buildozer parses BUILD files at the syntax level,
-    # so it can't look a macro-generated name up directly; address the call
-    # by the line it starts on instead, discovered via its `src` attribute.
+    # wd_capnp_library() derives the "workerd_capnp" target name from its src
+    # attribute, so no literal name exists for buildozer to match; address
+    # the call by its start line, found via the src attribute.
     result = subprocess.run(
         [
             buildozer_bin,
@@ -442,9 +428,8 @@ def reusable_link_tokens(tokens: list[str]) -> list[str]:
         if token in {
             "-no-canonical-prefixes",
             "-Wl,-oso_prefix,__BAZEL_EXECUTION_ROOT__/",
-            # The link-inputs aspect links a throwaway dynamic library (so it
-            # never needs a `main`); these only make sense for that shared
-            # object, never for the real static executable the SDK is for.
+            # Flags from the aspect's throwaway dynamic-library link; invalid
+            # for the SDK's static link inputs.
             "-shared",
             "/DLL",
         }:
@@ -485,9 +470,8 @@ def link_input_candidates(token: str) -> Iterable[str]:
 
 
 def is_introspection_artifact(path_text: str) -> bool:
-    # The link-inputs aspect links its own throwaway dynamic library to
-    # harvest CcInfo as real linker tokens; that library's own object/LTO
-    # output is never a real appd-workerd dependency and must be excluded.
+    # The aspect's own throwaway dylib and LTO artifacts are not appd-workerd
+    # dependencies.
     return "appd-link-inputs" in Path(path_text).name
 
 
@@ -701,12 +685,8 @@ def bazel_cache_args(config: BuildCacheConfig, remote_cache_url: str | None = No
     return args + [
         f"--remote_cache={remote_cache_url}",
         f"--remote_upload_local_results={upload}",
-        # package_sdk() reads link-input files (.a/.lo/...) directly off
-        # disk. --remote_download_outputs defaults to "toplevel", which
-        # only materializes the requested target's own outputs locally --
-        # intermediate outputs satisfied by a cache hit are left remote,
-        # and packaging fails with a FileNotFoundError. "all" is required
-        # whenever a remote cache is in play, not just for measurement.
+        # package_sdk() reads link inputs off disk; the default "toplevel"
+        # leaves cache-hit intermediates remote and packaging fails.
         "--remote_download_outputs=all",
     ]
 

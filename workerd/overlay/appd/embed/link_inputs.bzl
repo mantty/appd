@@ -1,12 +1,8 @@
 """Aspect that harvests the static link inputs for an appd-workerd cc_library.
 
-Links a throwaway dynamic library from the target's own CcInfo rather than
-an executable, since an executable needs a `main` symbol nothing here
-provides. Dynamic libraries don't need an entry point, and Bazel's own
-cc_common.link resolves alwayslink/whole-archive flags exactly the way a
-real cc_binary link would, so the resulting `.params` file is link-order-
-and flag-correct without this aspect having to hand-roll per-platform
-linker syntax.
+Links a throwaway dynamic library from the target's CcInfo: it needs no
+`main`, and cc_common.link emits a `.params` file with toolchain-correct
+link order and alwayslink/whole-archive flags.
 """
 
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
@@ -43,14 +39,9 @@ def _link_inputs_aspect_impl(target, ctx):
         if file != None
     ]
 
-    # cc_common.link() only forces the actions needed for ITS OWN outputs
-    # (the dylib/params above) to run. If that link action itself comes back
-    # as a cache hit -- disk or remote -- Bazel has no reason to also
-    # materialize the real static libraries it links against, since nothing
-    # else in this output group asked for them. Request every file any
-    # LinkerInput in the closure could contribute, so the harvested .params
-    # is always backed by real files on disk regardless of the link action's
-    # own cache state.
+    # A cache-hit link action materializes only its own outputs, not the
+    # libraries it links against; request every LinkerInput file so the
+    # harvested .params is always backed by files on disk.
     for linker_input in linking_context.linker_inputs.to_list():
         for library_to_link in linker_input.libraries:
             archives = [
@@ -59,10 +50,8 @@ def _link_inputs_aspect_impl(target, ctx):
                 if file != None
             ]
             if archives:
-                # An archive is what real link commands reference here in
-                # practice; skip the (often huge, already-archived) loose
-                # object lists too so this doesn't force-download every
-                # object file of every dependency for no reason.
+                # The link references archives; their loose object lists
+                # would materialize the same code twice.
                 outputs.extend(archives)
             else:
                 outputs.extend(library_to_link.objects or [])

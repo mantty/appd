@@ -5,7 +5,7 @@ Gaps between authoring for appd and authoring for deployed Cloudflare Workers. G
 ## Config and bindings
 
 - [ ] `vars` -> plain text bindings on `env`
-- [ ] Cache API service in the generated config (`caches.default`; astro's image endpoint already expects it)
+- [ ] Cache API service in the generated config (`caches.default`)
 - [ ] KV namespaces (local persistence)
 - [ ] R2 buckets (local persistence)
 - [ ] D1 databases (local persistence)
@@ -23,7 +23,7 @@ Gaps between authoring for appd and authoring for deployed Cloudflare Workers. G
 
 ## Assets
 
-- [ ] Honor `.assetsignore` (exclude matches; never serve the file itself -- currently served)
+- [ ] Honor `.assetsignore` (currently served instead of applied)
 - [ ] `_headers` / `_redirects`
 - [ ] `run_worker_first`
 

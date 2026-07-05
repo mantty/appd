@@ -1,16 +1,13 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
-# Plain native cc_library (not workerd's own wd_cc_library) -- this package
-# lives outside workerd's own source tree, so it can't load workerd's
-# build-internal macros the way upstream packages do.
+# This package sits outside workerd's tree and cannot load its internal
+# wd_cc_library macro.
 cc_library(
     name = "appd-workerd",
     srcs = ["appd_workerd.cpp"],
     hdrs = ["appd_workerd.h"],
-    # server.h quote-includes "channel-token.h" assuming a same-directory
-    # sibling, which only resolves for in-package consumers; add the real
-    # package dir as a quote-search path since we're the first cross-package
-    # consumer of :server's headers.
+    # server.h quote-includes same-package siblings; add its directory to
+    # the quote search path.
     copts = ["-iquote", "src/workerd/server"],
     strip_include_prefix = "/appd/embed",
     visibility = ["//visibility:public"],
