@@ -7,8 +7,11 @@ on:
         description: Platform to build
         type: choice
         options:
+          - all
           - macos
-        default: macos
+          - ios-simulator-arm64
+          - ios-simulator-x64
+        default: all
   schedule:
     - cron: "17 3 * * 0"
 
@@ -31,16 +34,23 @@ env:
 jobs:
   build-sdk:
     name: build ${{ matrix.target }}
+    if: github.event_name == 'schedule' || inputs.platform == 'all' || inputs.platform == matrix.platform
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      # Only macOS arm64 is built for now. Linux, Windows, macOS Intel, and
-      # mobile (Android/iOS) targets are intentionally not in this matrix
-      # yet. Add an entry here and a matching
+      # Linux, Windows, macOS Intel, iOS device, and Android are not in this
+      # matrix yet. Add an entry here and a matching
       # `workflow_dispatch.inputs.platform.options` value once each is ready.
       matrix:
         include:
           - target: aarch64-apple-darwin
+            platform: macos
+            runner: macos-15
+          - target: aarch64-apple-ios-sim
+            platform: ios-simulator-arm64
+            runner: macos-15
+          - target: x86_64-apple-ios
+            platform: ios-simulator-x64
             runner: macos-15
     runs-on: ${{ matrix.runner }}
     steps:
@@ -110,6 +120,9 @@ jobs:
 
   release:
     name: create release
+    # Partial platform builds don't publish; a release always carries the
+    # full platform set.
+    if: github.event_name == 'schedule' || inputs.platform == 'all'
     needs: build-sdk
     runs-on: ubuntu-24.04
     timeout-minutes: 15
