@@ -48,6 +48,7 @@ MACHO_PLATFORMS = {
 }
 RETAG_PLATFORM_BY_TARGET = {
     "aarch64-apple-ios-sim": "ios-simulator",
+    "x86_64-apple-ios": "ios-simulator",
 }
 # Upstream declares no visibility on these; appd/embed depends on them
 # cross-package.
@@ -67,15 +68,22 @@ TARGET_ALIASES = {
     "macos-x64": "x86_64-apple-darwin",
     "windows-x64": "x86_64-pc-windows-msvc",
     "ios-simulator-arm64": "aarch64-apple-ios-sim",
+    "ios-simulator-x64": "x86_64-apple-ios",
 }
+# DrumBrake (V8's wasm interpreter) is compiled into every build; it only
+# activates under --wasm-jitless, which jitless platforms pass at runtime.
+BAZEL_COMMON_ARGS = ["--@v8//:v8_enable_drumbrake=true"]
 DEFAULT_BAZEL_ARGS_BY_TARGET = {
     "x86_64-unknown-linux-gnu": ["--config=release_linux"],
     "aarch64-apple-darwin": ["--config=release_macos"],
     # The simulator shares the macOS ABI; the same compile is retagged at
-    # packaging. DrumBrake provides interpreted wasm under jitless.
-    "aarch64-apple-ios-sim": ["--config=release_macos", "--@v8//:v8_enable_drumbrake=true"],
+    # packaging.
+    "aarch64-apple-ios-sim": ["--config=release_macos"],
     "x86_64-pc-windows-msvc": ["--config=release_windows"],
 }
+# x86_64 macOS-ABI targets compile natively on x86 hosts and cross-compile
+# from Apple Silicon.
+X86_MACOS_ABI_TARGETS = ("x86_64-apple-darwin", "x86_64-apple-ios")
 CACHE_MODES = ("off", "local", "r2-read", "r2-read-write")
 DEFAULT_R2_ACCOUNT_ID = "dacf3ead71e534fdef9555c28d81774c"
 DEFAULT_R2_BUCKET = "appd-workerd-bazel-cache"
@@ -524,10 +532,10 @@ def sha256_file(path: Path) -> str:
 
 def normalize_target(target: str) -> str:
     normalized = TARGET_ALIASES.get(target, target)
-    if normalized in DEFAULT_BAZEL_ARGS_BY_TARGET or normalized == "x86_64-apple-darwin":
+    if normalized in DEFAULT_BAZEL_ARGS_BY_TARGET or normalized in X86_MACOS_ABI_TARGETS:
         return normalized
 
-    supported = ", ".join(sorted(set(DEFAULT_BAZEL_ARGS_BY_TARGET) | {"x86_64-apple-darwin"}))
+    supported = ", ".join(sorted(set(DEFAULT_BAZEL_ARGS_BY_TARGET) | set(X86_MACOS_ABI_TARGETS)))
     aliases = ", ".join(sorted(TARGET_ALIASES))
     raise ValueError(
         f"no default Bazel configuration is defined for {target}; "
@@ -542,14 +550,14 @@ def default_bazel_args(
     host_machine: str | None = None,
 ) -> list[str]:
     target = normalize_target(target)
-    if target == "x86_64-apple-darwin":
+    if target in X86_MACOS_ABI_TARGETS:
         system = host_system or platform.system()
         machine = (host_machine or platform.machine()).lower()
         if system == "Darwin" and machine in {"arm64", "aarch64"}:
-            return ["--config=release_macos_cross_x86_64"]
-        return ["--config=release_macos"]
+            return BAZEL_COMMON_ARGS + ["--config=release_macos_cross_x86_64"]
+        return BAZEL_COMMON_ARGS + ["--config=release_macos"]
 
-    return list(DEFAULT_BAZEL_ARGS_BY_TARGET[target])
+    return BAZEL_COMMON_ARGS + DEFAULT_BAZEL_ARGS_BY_TARGET[target]
 
 
 def cache_config_from_env(

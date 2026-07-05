@@ -21,22 +21,27 @@ def load_module():
 class PackageSdkTests(unittest.TestCase):
     def test_default_bazel_args_are_known_for_supported_cargo_triples_and_aliases(self):
         workerd = load_module()
+        drumbrake = "--@v8//:v8_enable_drumbrake=true"
 
         self.assertEqual(
             workerd.default_bazel_args("x86_64-unknown-linux-gnu"),
-            ["--config=release_linux"],
+            [drumbrake, "--config=release_linux"],
         )
         self.assertEqual(
             workerd.default_bazel_args("linux-x64"),
-            ["--config=release_linux"],
+            [drumbrake, "--config=release_linux"],
         )
         self.assertEqual(
             workerd.default_bazel_args("aarch64-apple-darwin"),
-            ["--config=release_macos"],
+            [drumbrake, "--config=release_macos"],
         )
         self.assertEqual(
             workerd.default_bazel_args("macos-arm64"),
-            ["--config=release_macos"],
+            [drumbrake, "--config=release_macos"],
+        )
+        self.assertEqual(
+            workerd.default_bazel_args("ios-simulator-arm64"),
+            [drumbrake, "--config=release_macos"],
         )
         self.assertEqual(
             workerd.default_bazel_args(
@@ -44,7 +49,7 @@ class PackageSdkTests(unittest.TestCase):
                 host_system="Darwin",
                 host_machine="arm64",
             ),
-            ["--config=release_macos_cross_x86_64"],
+            [drumbrake, "--config=release_macos_cross_x86_64"],
         )
         self.assertEqual(
             workerd.default_bazel_args(
@@ -52,7 +57,7 @@ class PackageSdkTests(unittest.TestCase):
                 host_system="Darwin",
                 host_machine="x86_64",
             ),
-            ["--config=release_macos"],
+            [drumbrake, "--config=release_macos"],
         )
         self.assertEqual(
             workerd.default_bazel_args(
@@ -60,17 +65,34 @@ class PackageSdkTests(unittest.TestCase):
                 host_system="Darwin",
                 host_machine="arm64",
             ),
-            ["--config=release_macos_cross_x86_64"],
+            [drumbrake, "--config=release_macos_cross_x86_64"],
+        )
+        self.assertEqual(
+            workerd.default_bazel_args(
+                "ios-simulator-x64",
+                host_system="Darwin",
+                host_machine="arm64",
+            ),
+            [drumbrake, "--config=release_macos_cross_x86_64"],
+        )
+        self.assertEqual(
+            workerd.default_bazel_args(
+                "ios-simulator-x64",
+                host_system="Darwin",
+                host_machine="x86_64",
+            ),
+            [drumbrake, "--config=release_macos"],
         )
         self.assertEqual(
             workerd.default_bazel_args("x86_64-pc-windows-msvc"),
-            ["--config=release_windows"],
+            [drumbrake, "--config=release_windows"],
         )
         self.assertEqual(
             workerd.default_bazel_args("windows-x64"),
-            ["--config=release_windows"],
+            [drumbrake, "--config=release_windows"],
         )
         self.assertEqual(workerd.normalize_target("macos-arm64"), "aarch64-apple-darwin")
+        self.assertEqual(workerd.normalize_target("ios-simulator-x64"), "x86_64-apple-ios")
 
         with self.assertRaisesRegex(ValueError, "no default Bazel configuration"):
             workerd.default_bazel_args("android-arm64")
@@ -135,6 +157,7 @@ class PackageSdkTests(unittest.TestCase):
                     f"--aspects={workerd.APPD_LINK_INPUTS_ASPECT}",
                     f"--output_groups={workerd.APPD_LINK_INPUTS_OUTPUT_GROUP}",
                     workerd.APPD_BAZEL_TARGET,
+                    "--@v8//:v8_enable_drumbrake=true",
                     "--config=release_macos",
                     f"--disk_cache={cache / 'bazel-disk'}",
                     f"--repository_cache={cache / 'bazel-repository'}",
