@@ -28,6 +28,8 @@ pub enum Target {
     IosArm64,
     /// Apple Silicon iOS simulator.
     IosSimulatorArm64,
+    /// Intel iOS simulator.
+    IosSimulatorX64,
     /// Android arm64-v8a devices.
     AndroidArm64,
     /// Apple Silicon macOS.
@@ -45,6 +47,7 @@ impl Target {
     pub const ALL: &'static [Self] = &[
         Self::IosArm64,
         Self::IosSimulatorArm64,
+        Self::IosSimulatorX64,
         Self::AndroidArm64,
         Self::MacosArm64,
         Self::MacosX64,
@@ -56,6 +59,7 @@ impl Target {
         match self {
             Self::IosArm64 => "ios-arm64",
             Self::IosSimulatorArm64 => "ios-simulator-arm64",
+            Self::IosSimulatorX64 => "ios-simulator-x64",
             Self::AndroidArm64 => "android-arm64",
             Self::MacosArm64 => "macos-arm64",
             Self::MacosX64 => "macos-x64",

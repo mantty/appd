@@ -40,13 +40,16 @@ fn default_target(platform: BuildPlatform) -> Result<Target> {
     match platform {
         BuildPlatform::Macos if cfg!(target_arch = "aarch64") => Ok(Target::MacosArm64),
         BuildPlatform::Macos if cfg!(target_arch = "x86_64") => Ok(Target::MacosX64),
-        BuildPlatform::IosSimulator => Ok(Target::IosSimulatorArm64),
+        BuildPlatform::IosSimulator if cfg!(target_arch = "aarch64") => {
+            Ok(Target::IosSimulatorArm64)
+        }
+        BuildPlatform::IosSimulator if cfg!(target_arch = "x86_64") => Ok(Target::IosSimulatorX64),
         BuildPlatform::Ios => Ok(Target::IosArm64),
         BuildPlatform::Android => Ok(Target::AndroidArm64),
         BuildPlatform::Windows => Ok(Target::WindowsX64),
         BuildPlatform::Linux => Ok(Target::LinuxX64),
-        BuildPlatform::Macos => {
-            bail!("macOS target packs are unavailable for this host architecture")
+        BuildPlatform::Macos | BuildPlatform::IosSimulator => {
+            bail!("{platform:?} target packs are unavailable for this host architecture")
         }
     }
 }
@@ -151,6 +154,7 @@ fn rust_runtime_target(target: Target) -> Result<&'static str> {
     match target {
         Target::MacosArm64 => Ok("aarch64-apple-darwin"),
         Target::IosSimulatorArm64 => Ok("aarch64-apple-ios-sim"),
+        Target::IosSimulatorX64 => Ok("x86_64-apple-ios"),
         _ => bail!("source target-pack builds are not implemented for {target}"),
     }
 }

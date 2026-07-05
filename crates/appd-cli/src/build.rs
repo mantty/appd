@@ -302,9 +302,12 @@ fn ensure_pack_matches_platform(
     let matches = match platform {
         BuildPlatform::Ios => matches!(
             manifest.target,
-            Target::IosArm64 | Target::IosSimulatorArm64
+            Target::IosArm64 | Target::IosSimulatorArm64 | Target::IosSimulatorX64
         ),
-        BuildPlatform::IosSimulator => manifest.target == Target::IosSimulatorArm64,
+        BuildPlatform::IosSimulator => matches!(
+            manifest.target,
+            Target::IosSimulatorArm64 | Target::IosSimulatorX64
+        ),
         BuildPlatform::Android => manifest.target == Target::AndroidArm64,
         BuildPlatform::Macos => matches!(manifest.target, Target::MacosArm64 | Target::MacosX64),
         BuildPlatform::Windows => manifest.target == Target::WindowsX64,
