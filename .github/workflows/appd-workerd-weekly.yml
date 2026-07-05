@@ -8,7 +8,7 @@ on:
         type: choice
         options:
           - all
-          - macos
+          - macos-arm64
           - ios-simulator-arm64
           - ios-simulator-x64
         default: all
@@ -34,25 +34,15 @@ env:
 jobs:
   build-sdk:
     name: build ${{ matrix.target }}
-    if: github.event_name == 'schedule' || inputs.platform == 'all' || inputs.platform == matrix.platform
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      # Linux, Windows, macOS Intel, iOS device, and Android are not in this
-      # matrix yet. Add an entry here and a matching
-      # `workflow_dispatch.inputs.platform.options` value once each is ready.
+      # Targets are build-sdk.py aliases, identical to the platform dropdown
+      # options. Linux, Windows, macOS Intel, iOS device, and Android are not
+      # built yet; add the alias here and to the dropdown once ready.
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            platform: macos
-            runner: macos-15
-          - target: aarch64-apple-ios-sim
-            platform: ios-simulator-arm64
-            runner: macos-15
-          - target: x86_64-apple-ios
-            platform: ios-simulator-x64
-            runner: macos-15
-    runs-on: ${{ matrix.runner }}
+        target: ${{ fromJSON((github.event_name == 'schedule' || inputs.platform == 'all') && '["macos-arm64", "ios-simulator-arm64", "ios-simulator-x64"]' || format('["{0}"]', inputs.platform)) }}
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
@@ -156,9 +146,11 @@ jobs:
           ")"
           upstream_tag="$(echo "${upstream_json}" | jq -r .tag)"
           upstream_commit="$(echo "${upstream_json}" | jq -r .commit)"
-          echo "tag=appd.workerd-${upstream_tag}.${{ github.run_number }}" >> "${GITHUB_OUTPUT}"
-          echo "upstream_tag=${upstream_tag}" >> "${GITHUB_OUTPUT}"
-          echo "upstream_commit=${upstream_commit}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "tag=appd.workerd-${upstream_tag}.${{ github.run_number }}"
+            echo "upstream_tag=${upstream_tag}"
+            echo "upstream_commit=${upstream_commit}"
+          } >> "${GITHUB_OUTPUT}"
 
       # Idempotent: a re-run of a partially failed workflow reuses the same
       # run_number, and so the same tag -- delete any prior attempt's release
