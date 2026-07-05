@@ -9,6 +9,7 @@ import platform
 import shutil
 import shlex
 import socket
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -34,6 +35,22 @@ APPD_BAZEL_TARGET = "//appd/embed:appd-workerd"
 APPD_LINK_INPUTS_ASPECT = "//appd/embed:link_inputs.bzl%link_inputs_aspect"
 APPD_LINK_INPUTS_OUTPUT_GROUP = "appd_link_inputs"
 LINK_SUFFIXES = (".a", ".lib", ".lo", ".o", ".obj", ".rlib")
+# Archive formats whose members need extracting before a Mach-O object inside
+# them can be retagged; .rlib is Rust's own static-library archive and uses
+# the same ar(1) container as .a/.lo.
+RETAG_ARCHIVE_SUFFIXES = (".a", ".lo", ".rlib")
+LC_BUILD_VERSION = 0x32
+MACHO_MAGIC_64 = 0xFEEDFACF
+# iOS Simulator on Apple Silicon runs on the real macOS kernel with the same
+# ABI as native macOS -- a macOS arm64 object only needs its LC_BUILD_VERSION
+# platform field rewritten to read as a genuine iOS Simulator build.
+MACHO_PLATFORMS = {
+    "macos": 1,
+    "ios-simulator": 7,
+}
+RETAG_PLATFORM_BY_TARGET = {
+    "aarch64-apple-ios-sim": "ios-simulator",
+}
 # :server, :v8-platform-impl, :cpp-capnp-schema and :workerd-capnp-schema are
 # private by default (no visibility set upstream); :workerd_capnp is
 # public-ish but scoped to a handful of upstream packages. appd/embed is the
@@ -56,10 +73,16 @@ TARGET_ALIASES = {
     "macos-arm64": "aarch64-apple-darwin",
     "macos-x64": "x86_64-apple-darwin",
     "windows-x64": "x86_64-pc-windows-msvc",
+    "ios-simulator-arm64": "aarch64-apple-ios-sim",
 }
 DEFAULT_BAZEL_ARGS_BY_TARGET = {
     "x86_64-unknown-linux-gnu": ["--config=release_linux"],
     "aarch64-apple-darwin": ["--config=release_macos"],
+    # Same compile as aarch64-apple-darwin -- iOS Simulator on Apple Silicon
+    # shares macOS's ABI, so retagging happens as a packaging step, not a
+    # different compile target. DrumBrake is only worth its compile cost on
+    # this target, so it's added here rather than to release_macos itself.
+    "aarch64-apple-ios-sim": ["--config=release_macos", "--@v8//:v8_enable_drumbrake=true"],
     "x86_64-pc-windows-msvc": ["--config=release_windows"],
 }
 CACHE_MODES = ("off", "local", "r2-read", "r2-read-write")
@@ -269,6 +292,61 @@ def ensure_buildozer_bin(buildozer_bin: str | None) -> str:
     return str(bin_path)
 
 
+def retag_link_input(path: Path, to_platform: str, from_platform: str = "macos") -> None:
+    from_id = MACHO_PLATFORMS[from_platform]
+    to_id = MACHO_PLATFORMS[to_platform]
+    if path.suffix in RETAG_ARCHIVE_SUFFIXES:
+        retag_archive(path, from_id, to_id)
+    else:
+        # Bazel's output files are read-only; copy_link_input() preserves
+        # that mode, but rewriting the file in place needs the write bit.
+        path.chmod(0o644)
+        retag_object(path, from_id, to_id)
+
+
+def retag_archive(path: Path, from_id: int, to_id: int) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        extracted = subprocess.run(["ar", "x", str(path)], cwd=tmp_dir, capture_output=True, text=True)
+        if extracted.returncode != 0:
+            return
+
+        objects = sorted(name for name in os.listdir(tmp_dir) if name.endswith(".o"))
+        for name in objects:
+            obj_path = Path(tmp_dir) / name
+            obj_path.chmod(0o644)
+            retag_object(obj_path, from_id, to_id)
+
+        if objects:
+            path.unlink()
+            subprocess.run(["ar", "rcs", str(path)] + objects, cwd=tmp_dir, check=True)
+
+
+def retag_object(path: Path, from_id: int, to_id: int) -> bool:
+    """Retag a single Mach-O64 object's LC_BUILD_VERSION platform in place."""
+    with path.open("r+b") as file:
+        magic = struct.unpack("<I", file.read(4))[0]
+        if magic != MACHO_MAGIC_64:
+            return False
+
+        file.seek(16)
+        ncmds = struct.unpack("<I", file.read(4))[0]
+        file.read(12)  # sizeofcmds + flags + reserved
+
+        for _ in range(ncmds):
+            pos = file.tell()
+            cmd, cmdsize = struct.unpack("<II", file.read(8))
+            if cmd == LC_BUILD_VERSION:
+                platform = struct.unpack("<I", file.read(4))[0]
+                if platform == from_id:
+                    file.seek(pos + 8)
+                    file.write(struct.pack("<I", to_id))
+                    return True
+                return False
+            file.seek(pos + cmdsize)
+
+    return False
+
+
 def package_sdk(
     *,
     params_path: Path,
@@ -304,6 +382,9 @@ def package_sdk(
             packaged_path = copied.get(source)
             if packaged_path is None:
                 packaged_path = copy_link_input(source, lib_dir, len(copied))
+                retag_platform = RETAG_PLATFORM_BY_TARGET.get(target)
+                if retag_platform is not None:
+                    retag_link_input(output_dir / packaged_path, retag_platform)
                 copied[source] = packaged_path
                 link_inputs.append(
                     {

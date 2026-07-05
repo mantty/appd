@@ -38,7 +38,7 @@ fn generates_workerd_config_for_astro_worker_assets_and_mtls() -> TestResult {
 
     assert!(config.contains("requireClientCerts = true"));
     assert!(config.contains("trustedCertificates = [embed \"ca.cert.pem\"]"));
-    assert!(config.contains("v8Flags = [\"--jitless\"]"));
+    assert!(config.contains("v8Flags = [\"--jitless\", \"--wasm-jitless\"]"));
     assert!(config.contains("(name = \"entry.mjs\", esModule = embed \"worker/entry.mjs\")"));
     assert!(
         config

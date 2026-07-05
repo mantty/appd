@@ -62,7 +62,9 @@ fn render_config(
 
 fn render_root_config(out: &mut String, options: &ConfigOptions) {
     let v8_flags = if options.jitless {
-        r#"["--jitless"]"#
+        // V8 only auto-implies --wasm-jitless from --jitless on tvOS; macOS
+        // and iOS need it passed explicitly for WASM to run under jitless.
+        r#"["--jitless", "--wasm-jitless"]"#
     } else {
         "[]"
     };
