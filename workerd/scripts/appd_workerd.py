@@ -39,6 +39,12 @@ LINK_SUFFIXES = (".a", ".lib", ".lo", ".o", ".obj", ".rlib")
 # container format as .a/.lo.
 RETAG_ARCHIVE_SUFFIXES = (".a", ".lo", ".rlib")
 LC_BUILD_VERSION = 0x32
+# Objects with pre-10.14 deployment targets (bazel's rustc emits x86_64
+# objects at 10.12) carry a legacy load command instead of LC_BUILD_VERSION;
+# LC_VERSION_MIN_IPHONEOS on x86_64 denotes the simulator.
+LC_VERSION_MIN_MACOSX = 0x24
+LC_VERSION_MIN_IPHONEOS = 0x25
+LC_SYMTAB = 0x2
 MACHO_MAGIC_64 = 0xFEEDFACF
 # The arm64 iOS Simulator shares the macOS ABI; a macOS object becomes a
 # simulator object by rewriting LC_BUILD_VERSION's platform field.
@@ -316,7 +322,10 @@ def retag_archive(path: Path, from_id: int, to_id: int) -> None:
 
 
 def retag_object(path: Path, from_id: int, to_id: int) -> bool:
-    """Retag a single Mach-O64 object's LC_BUILD_VERSION platform in place."""
+    """Retag a single Mach-O64 object's platform load command in place."""
+    macos_to_sim = (
+        from_id == MACHO_PLATFORMS["macos"] and to_id == MACHO_PLATFORMS["ios-simulator"]
+    )
     with path.open("r+b") as file:
         magic = struct.unpack("<I", file.read(4))[0]
         if magic != MACHO_MAGIC_64:
@@ -326,19 +335,58 @@ def retag_object(path: Path, from_id: int, to_id: int) -> bool:
         ncmds = struct.unpack("<I", file.read(4))[0]
         file.read(12)  # sizeofcmds + flags + reserved
 
+        build_version_pos = None
+        legacy_pos = None
+        strtab = None
         for _ in range(ncmds):
             pos = file.tell()
             cmd, cmdsize = struct.unpack("<II", file.read(8))
             if cmd == LC_BUILD_VERSION:
                 platform = struct.unpack("<I", file.read(4))[0]
-                if platform == from_id:
-                    file.seek(pos + 8)
-                    file.write(struct.pack("<I", to_id))
-                    return True
-                return False
+                if platform != from_id:
+                    return False
+                build_version_pos = pos
+            elif cmd == LC_VERSION_MIN_MACOSX and macos_to_sim:
+                legacy_pos = pos
+            elif cmd == LC_SYMTAB:
+                file.seek(pos + 16)
+                strtab = struct.unpack("<II", file.read(8))
             file.seek(pos + cmdsize)
 
-    return False
+        changed = False
+        if build_version_pos is not None:
+            file.seek(build_version_pos + 8)
+            file.write(struct.pack("<I", to_id))
+            changed = True
+        elif legacy_pos is not None:
+            file.seek(legacy_pos)
+            file.write(struct.pack("<I", LC_VERSION_MIN_IPHONEOS))
+            changed = True
+        if macos_to_sim and strtab is not None:
+            changed = strip_inode64_suffixes(file, *strtab) or changed
+
+    return changed
+
+
+def strip_inode64_suffixes(file, stroff: int, strsize: int) -> bool:
+    """Truncate $INODE64-decorated names in a Mach-O symbol string table.
+
+    x86_64 macOS libc decorates the dirent/stat families with $INODE64; iOS
+    exports only the plain names, with identical 64-bit-inode semantics.
+    """
+    file.seek(stroff)
+    table = bytearray(file.read(strsize))
+    suffix = b"$INODE64\x00"
+    changed = False
+    index = table.find(suffix)
+    while index != -1:
+        table[index] = 0
+        changed = True
+        index = table.find(suffix, index + 1)
+    if changed:
+        file.seek(stroff)
+        file.write(table)
+    return changed
 
 
 def package_sdk(

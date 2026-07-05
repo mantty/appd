@@ -76,6 +76,85 @@ class RetagTests(unittest.TestCase):
                 workerd.MACHO_PLATFORMS["ios-simulator"],
             )
 
+    @staticmethod
+    def fake_legacy_macho_object(workerd) -> bytes:
+        header = struct.pack(
+            "<IiiiiiII",
+            workerd.MACHO_MAGIC_64,  # magic
+            0x01000007,  # cputype: CPU_TYPE_X86_64
+            0,  # cpusubtype
+            1,  # filetype: MH_OBJECT
+            1,  # ncmds
+            16,  # sizeofcmds
+            0,  # flags
+            0,  # reserved
+        )
+        load_command = struct.pack(
+            "<IIII",
+            workerd.LC_VERSION_MIN_MACOSX,  # cmd
+            16,  # cmdsize
+            0x000A0C00,  # version 10.12
+            0,  # sdk
+        )
+        return header + load_command
+
+    def test_retag_object_converts_legacy_macos_command_to_iphoneos(self):
+        workerd = load_module()
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy.o"
+            path.write_bytes(self.fake_legacy_macho_object(workerd))
+
+            changed = workerd.retag_object(
+                path, workerd.MACHO_PLATFORMS["macos"], workerd.MACHO_PLATFORMS["ios-simulator"]
+            )
+
+            self.assertTrue(changed)
+            (cmd,) = struct.unpack_from("<I", path.read_bytes(), 32)
+            self.assertEqual(cmd, workerd.LC_VERSION_MIN_IPHONEOS)
+
+    @staticmethod
+    def fake_macho_object_with_symtab(workerd, strtab: bytes) -> bytes:
+        header = struct.pack(
+            "<IiiiiiII",
+            workerd.MACHO_MAGIC_64,  # magic
+            0x01000007,  # cputype: CPU_TYPE_X86_64
+            0,  # cpusubtype
+            1,  # filetype: MH_OBJECT
+            2,  # ncmds
+            48,  # sizeofcmds
+            0,  # flags
+            0,  # reserved
+        )
+        build_version = struct.pack(
+            "<IIIIII",
+            workerd.LC_BUILD_VERSION,
+            24,
+            workerd.MACHO_PLATFORMS["macos"],
+            0,
+            0,
+            0,
+        )
+        stroff = 32 + 48
+        symtab = struct.pack("<IIIIII", workerd.LC_SYMTAB, 24, 0, 0, stroff, len(strtab))
+        return header + build_version + symtab + strtab
+
+    def test_retag_object_strips_inode64_suffixes_for_simulator(self):
+        workerd = load_module()
+        strtab = b"\x00_opendir$INODE64\x00_keep$INODE64_mid\x00"
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "symbols.o"
+            path.write_bytes(self.fake_macho_object_with_symtab(workerd, strtab))
+
+            changed = workerd.retag_object(
+                path, workerd.MACHO_PLATFORMS["macos"], workerd.MACHO_PLATFORMS["ios-simulator"]
+            )
+
+            self.assertTrue(changed)
+            table = path.read_bytes()[-len(strtab) :]
+            self.assertIn(b"_opendir\x00", table)
+            self.assertNotIn(b"_opendir$INODE64\x00", table)
+            self.assertIn(b"_keep$INODE64_mid\x00", table)
+
     def test_retag_object_leaves_non_matching_platform_untouched(self):
         workerd = load_module()
         with TemporaryDirectory() as temp_dir:
