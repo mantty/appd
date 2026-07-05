@@ -1,6 +1,6 @@
 # Jitless WebAssembly
 
-iOS forbids JIT compilation, so iOS-family builds run V8 with `--jitless`. WebAssembly still works there: V8 ships a wasm interpreter (DrumBrake, built for exactly this scenario -- its own source comment cites tvOS, where JIT is unavailable), and appd enables it for those targets. No patches, no shims, no custom workerd code.
+iOS forbids JIT compilation, so iOS-family builds run V8 with `--jitless`. WebAssembly still works there through DrumBrake, V8's own wasm interpreter, built for exactly this scenario -- its source comment cites tvOS, where JIT is unavailable.
 
 ## How it's wired
 
@@ -13,7 +13,7 @@ The iOS Simulator doesn't technically enforce the no-JIT constraint (it runs on 
 ## Constraints worth knowing
 
 - **`WebAssembly.compile()`/`new WebAssembly.Module(bytes)` from arbitrary bytes fails at request time** with `CompileError: Wasm code generation disallowed by embedder`, on every platform, JIT or not. This is workerd's own embedder policy, identical to production Workers. Ship wasm as a module import, never as runtime-compiled bytes.
-- **Never install a `WebAssembly` stub via `v8::Extension`.** V8 runs extensions before it installs WebAssembly itself (`InstallExtensions` precedes `InstallSpecialObjects` in `bootstrapper.cc`), and the real installation is an add-only property write -- a stub always wins the race and permanently replaces the real API in every context, on every platform, including ones with full JIT. appd previously carried exactly such a stub and it silently broke all WebAssembly everywhere; it was removed once DrumBrake made the real API available under jitless.
+- **Never install a `WebAssembly` stub via `v8::Extension`.** V8 runs extensions before it installs WebAssembly itself (`InstallExtensions` precedes `InstallSpecialObjects` in `bootstrapper.cc`), and the real installation is an add-only property write -- a stub always wins the race and silently replaces the real API in every context, on every platform, including ones with full JIT.
 - `wasm_jitless` is marked experimental by V8 (`DEFINE_EXPERIMENTAL_FEATURE`).
 
 ## Verified (2026-07-05)
@@ -26,4 +26,4 @@ The iOS Simulator doesn't technically enforce the no-JIT constraint (it runs on 
 
 - No workerd compatibility flag or Autogate key controls the jitless/WebAssembly behavior.
 - Disabling WebAssembly at the V8 build level doesn't help: `setupContext()` asserts on the global's *presence*, so a wasm-less build fails the same way plain jitless does.
-- A guard patch to upstream `worker.c++` works but patches upstream source; the stub-extension approach breaks real wasm (above). DrumBrake supersedes both.
+- A guard patch to upstream `worker.c++` works but patches upstream source. DrumBrake supersedes it.
