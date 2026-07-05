@@ -14,8 +14,6 @@
 #include <kj/async-io.h>
 #include <kj/filesystem.h>
 
-#include <v8-extension.h>
-
 #include <condition_variable>
 #include <limits>
 #include <mutex>
@@ -97,55 +95,6 @@ private:
   uintptr_t listenerFd_;
   bool owns_ = true;
 };
-
-const char kWasmStubSource[] =
-    "if (typeof globalThis.WebAssembly === 'undefined') {"
-    "  globalThis.WebAssembly = {"
-    "    CompileError: class CompileError extends Error {"
-    "      constructor(m) { super(m); this.name = 'CompileError'; }"
-    "    },"
-    "    LinkError: class LinkError extends Error {"
-    "      constructor(m) { super(m); this.name = 'LinkError'; }"
-    "    },"
-    "    RuntimeError: class RuntimeError extends Error {"
-    "      constructor(m) { super(m); this.name = 'RuntimeError'; }"
-    "    },"
-    "    compile() {"
-    "      return Promise.reject(new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder'));"
-    "    },"
-    "    instantiate() {"
-    "      return Promise.reject(new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder'));"
-    "    },"
-    "    validate() { return false; },"
-    "    Module: class Module { constructor() {"
-    "      throw new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder');"
-    "    }},"
-    "    Instance: class Instance { constructor() {"
-    "      throw new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder');"
-    "    }},"
-    "    Memory: class Memory { constructor() {"
-    "      throw new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder');"
-    "    }},"
-    "    Table: class Table { constructor() {"
-    "      throw new WebAssembly.CompileError("
-    "        'Wasm code generation disallowed by embedder');"
-    "    }},"
-    "  };"
-    "}";
-
-void registerWasmStubExtension() {
-  static std::once_flag once;
-  std::call_once(once, [] {
-    auto ext = std::make_unique<v8::Extension>("appd/wasm-stub", kWasmStubSource);
-    ext->set_auto_enable(true);
-    v8::RegisterExtension(std::move(ext));
-  });
-}
 
 class EmbedEntropySource final: public kj::EntropySource {
 public:
@@ -331,7 +280,6 @@ int doServe(const char* configPathStr, const char* workingDirStr, uintptr_t list
     listenerGuard.release();
     server->overrideSocket(kj::str("http"), kj::mv(listener));
 
-    registerWasmStubExtension();
     auto platform = jsg::defaultPlatform(0);
     WorkerdPlatform v8Platform(*platform);
     jsg::V8System v8System(v8Platform,
