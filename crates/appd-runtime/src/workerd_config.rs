@@ -161,9 +161,13 @@ fn render_app_worker(
     );
 
     for module in modules {
+        // workerd compiles wasm modules at worker load time, the only point
+        // its embedder policy (matching production Workers) permits wasm code
+        // generation; imports then receive a ready WebAssembly.Module.
+        let field = if is_wasm_module(module) { "wasm" } else { "esModule" };
         let _ = writeln!(
             out,
-            "    (name = \"{}\", esModule = embed \"{worker_dir}/{}\"),",
+            "    (name = \"{}\", {field} = embed \"{worker_dir}/{}\"),",
             escape_capnp_text(module),
             module
         );
@@ -183,6 +187,12 @@ fn render_app_worker(
     }
 
     out.push_str(");\n");
+}
+
+fn is_wasm_module(module: &str) -> bool {
+    Path::new(module)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
 }
 
 fn scan_modules(
@@ -209,9 +219,9 @@ fn scan_modules(
                 .path()
                 .strip_prefix(&abs_dir)
                 .map_err(|_| RuntimeError::InvalidUtf8Path(entry.path().to_owned()))?;
-            let is_module = rel_path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("mjs"));
+            let is_module = rel_path.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("mjs") || extension.eq_ignore_ascii_case("wasm")
+            });
             let rel_path = slash_path(rel_path)?;
             if !is_module || rel_path == worker_main_module {
                 continue;
