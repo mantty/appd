@@ -4,7 +4,7 @@ iOS forbids JIT compilation, so iOS-family builds run V8 with `--jitless`. Jitle
 
 ## How it's wired
 
-1. **Build time**: `--@v8//:v8_enable_drumbrake=true` on the Bazel invocation for iOS-family targets (`DEFAULT_BAZEL_ARGS_BY_TARGET` in `workerd/scripts/appd_workerd.py`). This compiles the interpreter in and makes `--wasm-jitless` a settable flag; without it the flag is compiled read-only false.
+1. **Build time**: `--@v8//:v8_enable_drumbrake=true` on every Bazel invocation (`BAZEL_COMMON_ARGS` in `workerd/scripts/appd_workerd.py`). This compiles the interpreter in and makes `--wasm-jitless` a settable flag; without it the flag is compiled read-only false. The interpreter is dormant unless the flag is passed, costs nothing measurable in the final binary, and keeps macOS and iOS Simulator builds identical Bazel configurations, so simulator SDKs repackage the shared compile.
 2. **Runtime**: `v8Flags = ["--jitless", "--wasm-jitless"]`, emitted by `crates/appd-runtime/src/workerd_config.rs` whenever `jitless` is requested. Both flags are required: V8 only auto-implies `wasm_jitless` on tvOS, and under `--jitless` alone the `WebAssembly` global is absent, which fails an assert in workerd's `Worker::setupContext()` and kills the server.
 3. **Wasm delivery**: `.wasm` files in the worker directory are embedded into `config.capnp` as `wasm = embed` modules (`scan_modules()` in `workerd_config.rs`), compiled once at worker load; imports receive a `WebAssembly.Module`. Bundlers externalize `.wasm` imports into sibling files whose relative paths resolve against the generated module names.
 
