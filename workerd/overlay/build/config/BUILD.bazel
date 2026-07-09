@@ -1,0 +1,31 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
+
+# Similar to --run_under flag to be able to run cross-compiled target binaries.
+string_flag(
+    name = "target_run_under",
+    build_setting_default = "",
+    visibility = ["//visibility:public"],
+)
+
+# False for target platforms that can't execute a cfg = "target" cross-built
+# tool at all (e.g. a real iOS device binary on the macOS build host), as
+# opposed to ones needing target_run_under to run one.
+bool_flag(
+    name = "tool_is_executable",
+    build_setting_default = True,
+    visibility = ["//visibility:public"],
+)
+
+# Dummy config settings for when workerd is built standalone
+# These always return false since we don't want prebuilt behavior in standalone workerd
+config_setting(
+    name = "no_build",
+    values = {"define": "never_match=true"},  # This will never match
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "prebuilt_binaries_arm64",
+    values = {"define": "never_match=true"},  # This will never match
+    visibility = ["//visibility:public"],
+)
