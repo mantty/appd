@@ -155,6 +155,7 @@ fn rust_runtime_target(target: Target) -> Result<&'static str> {
         Target::MacosArm64 => Ok("aarch64-apple-darwin"),
         Target::IosSimulatorArm64 => Ok("aarch64-apple-ios-sim"),
         Target::IosSimulatorX64 => Ok("x86_64-apple-ios"),
+        Target::IosArm64 => Ok("aarch64-apple-ios"),
         _ => bail!("source target-pack builds are not implemented for {target}"),
     }
 }

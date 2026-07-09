@@ -24,6 +24,8 @@ pub struct ConfigOptions {
     pub wrangler_config: WranglerConfig,
     /// Whether to force V8 `--jitless`.
     pub jitless: bool,
+    /// Whether this build's V8 has a working wasm execution backend.
+    pub wasm_available: bool,
 }
 
 /// Generate and write `config.capnp`, returning the generated content.
@@ -161,8 +163,11 @@ fn render_app_worker(
     );
 
     for module in modules {
-        // workerd only permits wasm code generation while a worker loads, so
-        // .wasm files ship as modules compiled at load.
+        // .wasm files ship as modules compiled at load; V8 builds without a wasm execution
+        // backend crash outright on that, so skip embedding them entirely on this platform.
+        if is_wasm_module(module) && !options.wasm_available {
+            continue;
+        }
         let field = if is_wasm_module(module) { "wasm" } else { "esModule" };
         let _ = writeln!(
             out,

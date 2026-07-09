@@ -14,6 +14,18 @@
 #include <kj/async-io.h>
 #include <kj/filesystem.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+// The only appd target whose V8 has no working wasm execution backend: DrumBrake needs
+// pointer compression, which OOMs on real device VM limits, so device builds skip both. See
+// docs/plans/ios-device.md.
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS && !TARGET_OS_SIMULATOR
+#define APPD_WASM_STUB_NEEDED 1
+#include <v8-extension.h>
+#endif
+
 #include <condition_variable>
 #include <limits>
 #include <mutex>
@@ -95,6 +107,57 @@ private:
   uintptr_t listenerFd_;
   bool owns_ = true;
 };
+
+#if APPD_WASM_STUB_NEEDED
+// Stub WebAssembly global for builds with no wasm execution backend. Every entry point throws
+// or rejects with a real, catchable WebAssembly.CompileError.
+const char kWasmStubSource[] =
+    "globalThis.WebAssembly = {"
+    "  CompileError: class CompileError extends Error {"
+    "    constructor(m) { super(m); this.name = 'CompileError'; }"
+    "  },"
+    "  LinkError: class LinkError extends Error {"
+    "    constructor(m) { super(m); this.name = 'LinkError'; }"
+    "  },"
+    "  RuntimeError: class RuntimeError extends Error {"
+    "    constructor(m) { super(m); this.name = 'RuntimeError'; }"
+    "  },"
+    "  compile() {"
+    "    return Promise.reject(new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform'));"
+    "  },"
+    "  instantiate() {"
+    "    return Promise.reject(new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform'));"
+    "  },"
+    "  validate() { return false; },"
+    "  Module: class Module { constructor() {"
+    "    throw new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform');"
+    "  }},"
+    "  Instance: class Instance { constructor() {"
+    "    throw new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform');"
+    "  }},"
+    "  Memory: class Memory { constructor() {"
+    "    throw new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform');"
+    "  }},"
+    "  Table: class Table { constructor() {"
+    "    throw new WebAssembly.CompileError("
+    "      'WebAssembly is not supported on this platform');"
+    "  }},"
+    "};";
+
+void registerWasmStubExtension() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    auto ext = std::make_unique<v8::Extension>("appd/wasm-stub", kWasmStubSource);
+    ext->set_auto_enable(true);
+    v8::RegisterExtension(std::move(ext));
+  });
+}
+#endif  // APPD_WASM_STUB_NEEDED
 
 class EmbedEntropySource final: public kj::EntropySource {
 public:
@@ -279,6 +342,10 @@ int doServe(const char* configPathStr, const char* workingDirStr, uintptr_t list
         kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
     listenerGuard.release();
     server->overrideSocket(kj::str("http"), kj::mv(listener));
+
+#if APPD_WASM_STUB_NEEDED
+    registerWasmStubExtension();
+#endif
 
     auto platform = jsg::defaultPlatform(0);
     WorkerdPlatform v8Platform(*platform);

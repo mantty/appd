@@ -34,6 +34,7 @@ fn generates_workerd_config_for_astro_worker_assets_and_mtls() -> TestResult {
         worker_main_module: "entry.mjs".to_owned(),
         wrangler_config: load_config(&root.join("wrangler.jsonc"))?,
         jitless: true,
+        wasm_available: true,
     })?;
 
     assert!(config.contains("requireClientCerts = true"));
@@ -87,6 +88,7 @@ fn embeds_wasm_files_as_wasm_modules() -> TestResult {
         worker_main_module: "entry.mjs".to_owned(),
         wrangler_config: load_config(&root.join("wrangler.jsonc"))?,
         jitless: false,
+        wasm_available: true,
     })?;
 
     assert!(config.contains("(name = \"entry.mjs\", esModule = embed \"worker/entry.mjs\")"));
@@ -94,6 +96,39 @@ fn embeds_wasm_files_as_wasm_modules() -> TestResult {
     assert!(
         config.contains("(name = \"chunks/lib.WASM\", wasm = embed \"worker/chunks/lib.WASM\")")
     );
+
+    Ok(())
+}
+
+#[test]
+fn omits_wasm_modules_when_wasm_is_unavailable() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let root = temp_dir.path();
+
+    fs::create_dir_all(root.join("worker"))?;
+    fs::write(
+        root.join("worker/entry.mjs"),
+        "import mod from \"./add.wasm\"; export default {};",
+    )?;
+    fs::write(root.join("worker/add.wasm"), b"\0asm\x01\0\0\0")?;
+    fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{
+  "main": "worker/entry.mjs"
+}"#,
+    )?;
+
+    let config = generate(&ConfigOptions {
+        work_dir: root.to_path_buf(),
+        worker_dir: "worker".into(),
+        worker_main_module: "entry.mjs".to_owned(),
+        wrangler_config: load_config(&root.join("wrangler.jsonc"))?,
+        jitless: true,
+        wasm_available: false,
+    })?;
+
+    assert!(config.contains("(name = \"entry.mjs\", esModule = embed \"worker/entry.mjs\")"));
+    assert!(!config.contains("add.wasm"));
 
     Ok(())
 }
@@ -118,6 +153,7 @@ fn omits_jitless_flag_when_target_allows_jit() -> TestResult {
         worker_main_module: "entry.mjs".to_owned(),
         wrangler_config: load_config(&root.join("wrangler.jsonc"))?,
         jitless: false,
+        wasm_available: true,
     })?;
 
     assert!(config.contains("v8Flags = []"));
@@ -154,6 +190,7 @@ fn reads_asset_routing_options_from_wrangler_config() -> TestResult {
         worker_main_module: "entry.mjs".to_owned(),
         wrangler_config: load_config(&root.join("wrangler.jsonc"))?,
         jitless: false,
+        wasm_available: true,
     })?;
 
     assert!(config.contains("(name = \"STATIC\", service = \"assets\")"));

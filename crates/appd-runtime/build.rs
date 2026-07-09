@@ -1,6 +1,7 @@
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -38,7 +39,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     link_workerd_sdk(&workerd_dir, &manifest_path)?;
     link_platform_libraries(&target_os)?;
+    // aarch64-apple-ios-sim carries the suffix, but x86_64-apple-ios is ALSO
+    // the simulator (there was never a physical x86_64 iOS device) -- check
+    // the actual ABI cfg rather than pattern-matching the triple.
+    let is_simulator = env::var("CARGO_CFG_TARGET_ABI").as_deref() == Ok("sim");
+    if target_os == "ios" {
+        // rustc's own per-target default (14.0 for the simulator, 10.0 for
+        // device) doesn't match the MinimumOSVersion this crate's app bundles
+        // declare; App Store validation cross-checks the two.
+        link_ios_deployment_target(is_simulator)?;
+        if !is_simulator {
+            link_ios_device_compiler_rt()?;
+        }
+    }
 
+    Ok(())
+}
+
+const IOS_MINIMUM_OS_VERSION: &str = "17.0";
+
+fn link_ios_deployment_target(is_simulator: bool) -> Result<(), io::Error> {
+    let sdk = if is_simulator { "iphonesimulator" } else { "iphoneos" };
+    let output = Command::new("xcrun")
+        .args(["--sdk", sdk, "--show-sdk-version"])
+        .output()
+        .map_err(|err| error(format!("xcrun --sdk {sdk} --show-sdk-version failed: {err}")))?;
+    if !output.status.success() {
+        return Err(error(format!(
+            "xcrun --sdk {sdk} --show-sdk-version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let sdk_version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+
+    let platform = if is_simulator { "ios-simulator" } else { "ios" };
+    println!(
+        "cargo:rustc-link-arg=-Wl,-platform_version,{platform},{IOS_MINIMUM_OS_VERSION},{sdk_version}"
+    );
     Ok(())
 }
 
@@ -137,6 +174,30 @@ fn link_platform_libraries(target_os: &str) -> Result<(), io::Error> {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 
+    Ok(())
+}
+
+fn link_ios_device_compiler_rt() -> Result<(), io::Error> {
+    // clang auto-links compiler-rt when it drives the final link; rustc
+    // doesn't, but workerd's C++ (compiled for real iOS device, unlike the
+    // simulator) still emits calls into its stack-probe support.
+    let output = Command::new("xcrun")
+        .args([
+            "clang",
+            "--target=arm64-apple-ios",
+            "-print-file-name=libclang_rt.ios.a",
+        ])
+        .output()
+        .map_err(|err| error(format!("xcrun clang -print-file-name failed: {err}")))?;
+    if !output.status.success() {
+        return Err(error(format!(
+            "xcrun clang -print-file-name failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    println!("cargo:rustc-link-arg={path}");
     Ok(())
 }
 

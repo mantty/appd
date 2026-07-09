@@ -6,7 +6,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "appd:macos": "astro build && ../../target/release/appd build macos --project . --config dist/server/wrangler.json",
-    "appd:ios-simulator": "astro build && ../../target/release/appd build ios-simulator --project . --config dist/server/wrangler.json"
+    "appd:ios-simulator": "astro build && ../../target/release/appd build ios-simulator --project . --config dist/server/wrangler.json",
+    "appd:ios": "astro build && ../../target/release/appd build ios --project . --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^13.1.8",

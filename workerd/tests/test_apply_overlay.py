@@ -1,9 +1,11 @@
 import importlib.util
+import os
 import sys
 import textwrap
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 
 def load_module():
@@ -83,6 +85,44 @@ class ApplyOverlayTests(unittest.TestCase):
                 name = label.rsplit(":", 1)[-1]
                 self.assertIn(f'name = "{name}"', built)
             self.assertEqual(built.count('visibility = ["//visibility:public"]'), 5)
+
+    def test_v8_ios_device_dir_env_var_replaces_the_placeholder(self):
+        workerd = load_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            overlay = root / "overlay"
+
+            (source / "src" / "workerd" / "server").mkdir(parents=True)
+            (source / "MODULE.bazel").write_text('module(name = "workerd")\n', encoding="utf-8")
+            (source / "src" / "workerd" / "server" / "BUILD.bazel").write_text(
+                FAKE_SERVER_BUILD, encoding="utf-8"
+            )
+            (overlay / "appd" / "embed").mkdir(parents=True)
+            (overlay / "appd" / "embed" / "appd_workerd.h").write_text(
+                "#pragma once\n", encoding="utf-8"
+            )
+            module_dir = overlay / "build" / "workerd-v8"
+            module_dir.mkdir(parents=True)
+            (module_dir / "MODULE.bazel").write_text(
+                f'path = "{workerd.V8_IOS_DEVICE_DIR_PLACEHOLDER}",\n', encoding="utf-8"
+            )
+
+            module_path = source / workerd.V8_IOS_DEVICE_MODULE
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(workerd.V8_IOS_DEVICE_DIR_ENV, None)
+                workerd.apply_overlay(source, overlay)
+                self.assertEqual(
+                    module_path.read_text(encoding="utf-8"),
+                    f'path = "{workerd.V8_IOS_DEVICE_DIR_PLACEHOLDER}",\n',
+                )
+
+                os.environ[workerd.V8_IOS_DEVICE_DIR_ENV] = "/tmp/some-v8-checkout"
+                workerd.apply_overlay(source, overlay)
+                self.assertEqual(
+                    module_path.read_text(encoding="utf-8"),
+                    'path = "/tmp/some-v8-checkout",\n',
+                )
 
 
 if __name__ == "__main__":

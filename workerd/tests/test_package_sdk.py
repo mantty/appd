@@ -91,8 +91,27 @@ class PackageSdkTests(unittest.TestCase):
             workerd.default_bazel_args("windows-x64"),
             [drumbrake, "--config=release_windows"],
         )
+        self.assertEqual(
+            workerd.default_bazel_args("aarch64-apple-ios"),
+            [
+                drumbrake,
+                "--config=release",
+                "--platforms=@apple_support//platforms:ios_arm64",
+                "--//build/config:tool_is_executable=false",
+            ],
+        )
+        self.assertEqual(
+            workerd.default_bazel_args("ios-arm64"),
+            [
+                drumbrake,
+                "--config=release",
+                "--platforms=@apple_support//platforms:ios_arm64",
+                "--//build/config:tool_is_executable=false",
+            ],
+        )
         self.assertEqual(workerd.normalize_target("macos-arm64"), "aarch64-apple-darwin")
         self.assertEqual(workerd.normalize_target("ios-simulator-x64"), "x86_64-apple-ios")
+        self.assertEqual(workerd.normalize_target("ios-arm64"), "aarch64-apple-ios")
 
         with self.assertRaisesRegex(ValueError, "no default Bazel configuration"):
             workerd.default_bazel_args("android-arm64")
@@ -138,6 +157,7 @@ class PackageSdkTests(unittest.TestCase):
 
             with (
                 mock.patch.object(workerd, "apply_overlay"),
+                mock.patch.object(workerd, "apply_patches"),
                 mock.patch.object(workerd.subprocess, "run") as run,
             ):
                 workerd.build_sdk(
@@ -370,6 +390,42 @@ class PackageSdkTests(unittest.TestCase):
                 target="aarch64-apple-darwin",
                 upstream_tag="v1.20260501.1",
                 upstream_commit="37ff673e9df2b628533da9a221d97ca54436d9a",
+                header_path=include,
+            )
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["link_inputs"]), 1)
+            self.assertTrue((output / manifest["link_inputs"][0]["path"]).is_file())
+
+    def test_packages_execroot_relative_link_inputs_from_external_repos(self):
+        workerd = load_module()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "out"
+            include = root / "appd_workerd.h"
+            params = root / "bazel-bin" / "appd" / "embed" / "anchor.params"
+            execroot = root / "output_base" / "execroot" / "_main"
+            lib = execroot / "external" / "some_repo" / "libv8_monolith.a"
+
+            (root / "MODULE.bazel").write_text('module(name = "workerd")\n', encoding="utf-8")
+            params.parent.mkdir(parents=True)
+            lib.parent.mkdir(parents=True)
+            include.write_text("#pragma once\n", encoding="utf-8")
+            lib.write_bytes(b"v8 archive")
+            # bazel-out is a fixed-name convenience symlink into the execroot;
+            # a local_repository-based external dep only resolves through it.
+            (root / "bazel-out").symlink_to(execroot / "bazel-out", target_is_directory=True)
+            params.write_text(
+                "external/some_repo/libv8_monolith.a\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = workerd.package_sdk(
+                params_path=params,
+                output_dir=output,
+                target="aarch64-apple-ios",
+                upstream_tag="v1.20260501.1",
+                upstream_commit="37ff673e9df2b628533da9a221d97ca54436d9b",
                 header_path=include,
             )
 

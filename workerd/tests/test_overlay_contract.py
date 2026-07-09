@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -6,6 +7,24 @@ ROOT = Path(__file__).resolve().parents[1]
 OVERLAY_SOURCE = ROOT / "overlay" / "appd" / "embed" / "appd_workerd.cpp"
 OVERLAY_BUILD = ROOT / "overlay" / "appd" / "embed" / "BUILD.bazel"
 OVERLAY_ASPECT = ROOT / "overlay" / "appd" / "embed" / "link_inputs.bzl"
+WORKERD_V8_BUILD = ROOT / "overlay" / "build" / "workerd-v8" / "BUILD"
+WORKERD_V8_MODULE = ROOT / "overlay" / "build" / "workerd-v8" / "MODULE.bazel"
+
+
+def select_branch(text: str, attr: str, key: str) -> str:
+    """Return the list literal `attr`'s select() maps `key` to.
+
+    Pins down which value a select() associates with a given key, since
+    assertIn alone can't distinguish a correct mapping from one with its
+    branches swapped.
+    """
+    select_match = re.search(rf"{re.escape(attr)}\s*=\s*select\(\{{(.*?)\}}\)", text, re.DOTALL)
+    if select_match is None:
+        raise AssertionError(f"no {attr} = select({{...}}) found")
+    branch_match = re.search(rf"{re.escape(key)}\s*:\s*(\[[^\]]*\])", select_match.group(1))
+    if branch_match is None:
+        raise AssertionError(f"no {key!r} branch found in {attr} select()")
+    return branch_match.group(1)
 
 
 def read_overlay_source():
@@ -61,6 +80,45 @@ class OverlayContractTests(unittest.TestCase):
 
         self.assertIn("link_inputs_aspect = aspect(", aspect)
         self.assertIn("appd_link_inputs", aspect)
+
+    def test_workerd_v8_build_routes_ios_device_to_the_prebuilt_import(self):
+        build = WORKERD_V8_BUILD.read_text(encoding="utf-8")
+
+        self.assertIn('name = "v8"', build)
+        self.assertIn('visibility = ["//visibility:public"]', build)
+        self.assertIn("@apple_support//constraints:device", build)
+
+        # Checked per select() branch: both values appearing somewhere in the
+        # file doesn't confirm they're mapped to the right key (e.g. wouldn't
+        # catch the device/default branches being swapped).
+        self.assertIn("@v8_ios_device_prebuilt//:v8", select_branch(build, "deps", '":is_ios_device"'))
+        self.assertIn(":v8_passthrough", select_branch(build, "deps", '"//conditions:default"'))
+        self.assertIn(
+            "V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA",
+            select_branch(build, "defines", '":is_ios_device"'),
+        )
+        self.assertNotIn(
+            "V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA",
+            select_branch(build, "defines", '"//conditions:default"'),
+        )
+
+        # Every other platform keeps depending on the existing passthrough.
+        self.assertIn("@workerd//:icudata-embed", build)
+        self.assertIn("@workerd//:v8_icu", build)
+
+    def test_workerd_v8_module_declares_the_prebuilt_ios_repository(self):
+        module = WORKERD_V8_MODULE.read_text(encoding="utf-8")
+
+        self.assertIn('name = "v8_ios_device_prebuilt"', module)
+        self.assertIn('static_library = "out/ios-arm64-device/obj/libv8_monolith.a"', module)
+        self.assertIn('"//third_party/icu/source/common:headers"', module)
+        self.assertIn('name = "v8_rust_deps"', module)
+        self.assertIn('"out/ios-arm64-device/obj/third_party/rust/**/*.rlib"', module)
+        self.assertIn(
+            '"out/ios-arm64-device/prebuilt_rustc_sysroot/lib/rustlib/aarch64-apple-ios/lib/*.rlib"',
+            module,
+        )
+        self.assertIn("copy_file(", module)
 
 
 if __name__ == "__main__":

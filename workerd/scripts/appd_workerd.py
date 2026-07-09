@@ -31,6 +31,7 @@ DEFAULT_TARGET_ROOT = APPD_ROOT / "target" / "workerd"
 DEFAULT_CACHE_ROOT = DEFAULT_TARGET_ROOT / "cache"
 DEFAULT_UPSTREAM_CONFIG = WORKERD_ROOT / "upstream.toml"
 DEFAULT_OVERLAY_ROOT = WORKERD_ROOT / "overlay"
+DEFAULT_PATCHES_ROOT = WORKERD_ROOT / "patches"
 APPD_BAZEL_TARGET = "//appd/embed:appd-workerd"
 APPD_LINK_INPUTS_ASPECT = "//appd/embed:link_inputs.bzl%link_inputs_aspect"
 APPD_LINK_INPUTS_OUTPUT_GROUP = "appd_link_inputs"
@@ -75,6 +76,7 @@ TARGET_ALIASES = {
     "windows-x64": "x86_64-pc-windows-msvc",
     "ios-simulator-arm64": "aarch64-apple-ios-sim",
     "ios-simulator-x64": "x86_64-apple-ios",
+    "ios-arm64": "aarch64-apple-ios",
 }
 # DrumBrake (V8's wasm interpreter) is compiled into every build; it only
 # activates under --wasm-jitless, which jitless platforms pass at runtime.
@@ -85,6 +87,14 @@ DEFAULT_BAZEL_ARGS_BY_TARGET = {
     # The simulator shares the macOS ABI; the same compile is retagged at
     # packaging.
     "aarch64-apple-ios-sim": ["--config=release_macos"],
+    # Real device: a genuine cross-compile, not a retagged macOS build. The
+    # compile-cache tool is cross-built and can't run on the build host (see
+    # build/config:tool_is_executable).
+    "aarch64-apple-ios": [
+        "--config=release",
+        "--platforms=@apple_support//platforms:ios_arm64",
+        "--//build/config:tool_is_executable=false",
+    ],
     "x86_64-pc-windows-msvc": ["--config=release_windows"],
 }
 # x86_64 macOS-ABI targets compile natively on x86 hosts and cross-compile
@@ -199,12 +209,33 @@ def safe_extract(archive: tarfile.TarFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
+V8_IOS_DEVICE_DIR_ENV = "appd_v8_ios_device_dir"
+V8_IOS_DEVICE_DIR_PLACEHOLDER = "APPD_V8_IOS_DEVICE_DIR_PLACEHOLDER"
+V8_IOS_DEVICE_MODULE = Path("build/workerd-v8/MODULE.bazel")
+
+
 def apply_overlay(
     source_dir: Path,
     overlay_root: Path = DEFAULT_OVERLAY_ROOT,
 ) -> None:
     copy_overlay_files(source_dir, overlay_root)
     widen_visibility(source_dir)
+    set_v8_ios_device_dir(source_dir)
+
+
+def set_v8_ios_device_dir(source_dir: Path) -> None:
+    module_path = source_dir / V8_IOS_DEVICE_MODULE
+    if not module_path.is_file():
+        return
+
+    v8_dir = os.environ.get(V8_IOS_DEVICE_DIR_ENV)
+    if v8_dir is None:
+        return
+
+    content = module_path.read_text(encoding="utf-8")
+    module_path.write_text(
+        content.replace(V8_IOS_DEVICE_DIR_PLACEHOLDER, v8_dir), encoding="utf-8"
+    )
 
 
 def copy_overlay_files(source_dir: Path, overlay_root: Path) -> None:
@@ -290,6 +321,39 @@ def ensure_buildozer_bin(buildozer_bin: str | None) -> str:
         if install.returncode != 0:
             raise RuntimeError(f"failed to install buildozer: {install.stderr.strip()}")
     return str(bin_path)
+
+
+def apply_patches(
+    source_dir: Path,
+    patches_root: Path = DEFAULT_PATCHES_ROOT,
+) -> None:
+    if not patches_root.is_dir():
+        return
+    for patch_path in sorted(patches_root.glob("*.patch")):
+        apply_patch(source_dir, patch_path)
+
+
+def apply_patch(source_dir: Path, patch_path: Path) -> None:
+    already_applied = subprocess.run(
+        ["git", "apply", "--check", "--reverse", "-p1", str(patch_path)],
+        cwd=source_dir,
+        capture_output=True,
+        text=True,
+    )
+    if already_applied.returncode == 0:
+        return
+
+    result = subprocess.run(
+        ["git", "apply", "-p1", str(patch_path)],
+        cwd=source_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to apply patch {patch_path.name}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
 
 def retag_link_input(path: Path, to_platform: str, from_platform: str = "macos") -> None:
@@ -551,12 +615,27 @@ def link_input_resolution_candidates(path: Path, base_dir: Path) -> Iterable[Pat
     if workspace_root is not None:
         yield workspace_root / path
 
+        execroot = bazel_execroot(workspace_root)
+        if execroot is not None:
+            yield execroot / path
+
 
 def find_bazel_workspace_root(start: Path) -> Path | None:
     for path in (start, *start.parents):
         if (path / "MODULE.bazel").is_file() or (path / "WORKSPACE").exists():
             return path
     return None
+
+
+def bazel_execroot(workspace_root: Path) -> Path | None:
+    # bazel-out is a fixed-name convenience symlink to <execroot>/bazel-out;
+    # link params can reference external repos (e.g. local_repository-based
+    # ones), which resolve only under the execroot, not bazel-bin or the
+    # workspace itself.
+    bazel_out = workspace_root / "bazel-out"
+    if not bazel_out.is_symlink():
+        return None
+    return bazel_out.readlink().parent
 
 
 def copy_link_input(source: Path, lib_dir: Path, index: int) -> str:
@@ -879,6 +958,7 @@ def build_sdk(
     normalized_target = normalize_target(target)
     source_dir = source_dir or fetch_upstream(config_path=config_path)
     apply_overlay(source_dir)
+    apply_patches(source_dir)
 
     with bazel_cache(cache_config) as cache_args:
         command = [

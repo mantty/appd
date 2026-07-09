@@ -1,7 +1,7 @@
 //! iOS `UIKit` + `WKWebView` runtime shell.
 
 use std::cell::OnceCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -227,8 +227,19 @@ fn create_webview(
 }
 
 #[cfg(feature = "workerd-ffi")]
-fn start_runtime(work_dir: &Path, certificates: &SharedCertificates) {
-    match crate::host::start_workerd_bridge(work_dir) {
+fn start_runtime(packaged_dir: &Path, certificates: &SharedCertificates) {
+    // Real devices seal the app bundle read-only, so the packaged config and
+    // assets `packaged_dir` points at can't hold generated certificates or
+    // even be written to at all -- mirror them into the app's own writable
+    // container first. (The Simulator and macOS don't enforce this, which is
+    // why the bundle path worked for both until now.)
+    let work_dir = ios_writable_work_dir();
+    if let Err(error) = sync_packaged_content(packaged_dir, &work_dir) {
+        eprintln!("appd failed to stage packaged content: {error}");
+        return;
+    }
+
+    match crate::host::start_workerd_bridge(&work_dir) {
         Ok(runtime) => {
             if let Ok(mut guard) = certificates.write() {
                 *guard = Some(runtime.certificates.clone());
@@ -245,6 +256,39 @@ fn start_runtime(work_dir: &Path, certificates: &SharedCertificates) {
 #[cfg(not(feature = "workerd-ffi"))]
 fn start_runtime(_: &Path, _: &SharedCertificates) {
     eprintln!("appd runtime was built without the workerd-ffi feature");
+}
+
+#[cfg(feature = "workerd-ffi")]
+fn ios_writable_work_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    PathBuf::from(home).join("Library/Caches/app")
+}
+
+/// Copy packaged config and assets into the writable work directory.
+///
+/// Runs on every launch so app updates are picked up; files that only exist
+/// in `dest` (generated certificates) are left untouched.
+#[cfg(feature = "workerd-ffi")]
+fn sync_packaged_content(source: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in walkdir::WalkDir::new(source) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(std::io::Error::other)?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+
+        let target = dest.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "workerd-ffi")]

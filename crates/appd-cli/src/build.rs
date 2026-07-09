@@ -130,7 +130,7 @@ fn build_linux(
     let exe = output_dir.join(app_name);
     copy_file(&runtime, &exe)?;
     make_executable(&exe)?;
-    prepare_workerd_app(&app_dir, wrangler_config, false)?;
+    prepare_workerd_app(&app_dir, wrangler_config, false, true)?;
 
     Ok(BuildSummary {
         platform,
@@ -153,7 +153,7 @@ fn build_windows(
 
     let runtime = artifact_path(pack_root, manifest, &ArtifactKind::RuntimeExecutable)?;
     copy_file(&runtime, output_dir.join(format!("{app_name}.exe")))?;
-    prepare_workerd_app(&app_dir, wrangler_config, false)?;
+    prepare_workerd_app(&app_dir, wrangler_config, false, true)?;
 
     Ok(BuildSummary {
         platform,
@@ -182,7 +182,7 @@ fn build_macos(
     let exe = macos_dir.join(app_name);
     copy_file(&runtime, &exe)?;
     make_executable(&exe)?;
-    prepare_workerd_app(&app_dir, wrangler_config, false)?;
+    prepare_workerd_app(&app_dir, wrangler_config, false, true)?;
     write_macos_plist(&contents.join("Info.plist"), &bundle_id(app_name), app_name)?;
     ad_hoc_codesign(&bundle_dir)?;
 
@@ -209,10 +209,11 @@ fn build_ios(
     let exe = bundle_dir.join(app_name);
     copy_file(&runtime, &exe)?;
     make_executable(&exe)?;
-    prepare_workerd_app(&app_dir, wrangler_config, true)?;
+    let wasm_available = platform != BuildPlatform::Ios;
+    prepare_workerd_app(&app_dir, wrangler_config, true, wasm_available)?;
     write_ios_plist(
         &bundle_dir.join("Info.plist"),
-        &bundle_id(app_name),
+        &ios_bundle_id(app_name),
         app_name,
     )?;
     ad_hoc_codesign(&bundle_dir)?;
@@ -260,7 +261,7 @@ fn build_android(
         copy_dir_contents(&resource_dir, &stage_dir)?;
     }
 
-    prepare_workerd_app(&app_dir, wrangler_config, true)?;
+    prepare_workerd_app(&app_dir, wrangler_config, true, true)?;
 
     Ok(BuildSummary {
         platform,
@@ -272,6 +273,7 @@ fn prepare_workerd_app(
     app_dir: &Path,
     wrangler_config: &WranglerConfig,
     jitless: bool,
+    wasm_available: bool,
 ) -> Result<()> {
     let worker_source_dir = wrangler_config
         .main
@@ -291,6 +293,7 @@ fn prepare_workerd_app(
         worker_main_module: slash_path(worker_main_module)?,
         wrangler_config: wrangler_config.clone(),
         jitless,
+        wasm_available,
     })?;
     Ok(())
 }
@@ -580,6 +583,13 @@ fn ad_hoc_codesign(path: &Path) -> Result<()> {
 
 fn bundle_id(app_name: &str) -> String {
     format!("com.appd.{}", app_name.replace('-', "_"))
+}
+
+// Apple's App ID portal registration rejects underscores (only alphanumerics
+// and hyphens are accepted), unlike the shared bundle_id() above -- hyphens
+// in app_name must survive as-is here rather than becoming underscores.
+fn ios_bundle_id(app_name: &str) -> String {
+    format!("com.appd.{app_name}")
 }
 
 fn android_package_name(app_name: &str) -> String {
