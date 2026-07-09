@@ -1,0 +1,74 @@
+"shim to make a cc_library appear as a top-level repository"
+
+module(name = "workerd-v8")
+
+bazel_dep(name = "workerd")
+local_path_override(
+    module_name = "workerd",
+    path = "../..",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.11")
+
+# For the config_setting below, distinguishing real iOS devices from the
+# simulator.
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "apple_support", version = "2.5.4")
+
+# For the copy_file() calls below.
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+
+# V8 for aarch64-apple-ios, built via its own GN/Ninja flow (V8's bazel port
+# has no is_ios support). appd_workerd.py's apply_overlay() rewrites the path
+# below to the appd_v8_ios_device_dir env var before Bazel reads this file;
+# packaging the GN build output into the SDK cache is a later phase's job.
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+
+new_local_repository(
+    name = "v8_ios_device_prebuilt",
+    path = "APPD_V8_IOS_DEVICE_DIR_PLACEHOLDER",
+    build_file_content = """\
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@rules_cc//cc:cc_import.bzl", "cc_import")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_import(
+    name = "v8",
+    hdrs = glob(["include/**/*.h"]),
+    static_library = "out/ios-arm64-device/obj/libv8_monolith.a",
+    includes = ["include"],
+    # third_party/icu/source/common is its own package (has its own
+    # BUILD.bazel); workerd's node:i18n shim includes ICU's public headers
+    # directly, not just V8's own, so depend on its real headers target
+    # instead of globbing across the package boundary.
+    deps = [
+        "//third_party/icu/source/common:headers",
+        ":v8_rust_deps",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# V8's Temporal/Intl implementation (temporal_capi, ICU4X) is Rust, built as
+# separate rlibs GN never bundles into libv8_monolith.a -- every consumer of
+# v8_monolith links them directly (see gn's v8_hello_world executable),
+# including the Rust std sysroot itself (core, alloc, panic_unwind, ...). cc's
+# precompiled-library rules require a .a/.lib extension, so copy each rlib
+# under one that has it.
+_RUST_RLIBS = glob([
+    "out/ios-arm64-device/obj/third_party/rust/**/*.rlib",
+    "out/ios-arm64-device/prebuilt_rustc_sysroot/lib/rustlib/aarch64-apple-ios/lib/*.rlib",
+])
+_RUST_RLIB_NAMES = [rlib.split("/")[-1] for rlib in _RUST_RLIBS]
+
+[copy_file(
+    name = "copy_" + name,
+    src = rlib,
+    out = name + ".a",
+) for rlib, name in zip(_RUST_RLIBS, _RUST_RLIB_NAMES)]
+
+cc_library(
+    name = "v8_rust_deps",
+    srcs = [name + ".a" for name in _RUST_RLIB_NAMES],
+)
+""",
+)
