@@ -54,7 +54,6 @@ fn discovers_and_parses_json_before_jsonc_and_toml() -> TestResult {
 
     assert_eq!(config_path, root.join("wrangler.json"));
     assert_eq!(config.main, root.join("json-entry.mjs"));
-    assert_eq!(config.compatibility_date, "2026-06-01");
     Ok(())
 }
 
@@ -147,6 +146,15 @@ fn rejects_invalid_wrangler_config_values_and_formats() -> TestResult {
         load_config_error(&jsonc_path)?,
         RuntimeError::InvalidAssetConfig(_)
     ));
+
+    fs::write(
+        &jsonc_path,
+        r#"{ "main": "worker.mjs", "assets": { "directory": "public", "binding": "" } }"#,
+    )?;
+    assert!(matches!(
+        load_config_error(&jsonc_path)?,
+        RuntimeError::InvalidAssetConfig(_)
+    ));
     Ok(())
 }
 
@@ -176,8 +184,6 @@ fn parses_jsonc_wrangler_config_subset_and_resolves_paths() -> TestResult {
     let config = load_config(&config_path)?;
 
     assert_eq!(config.main, root.join("build/server/entry.mjs"));
-    assert_eq!(config.compatibility_date, "2026-06-01");
-    assert_eq!(config.compatibility_flags, ["nodejs_compat"]);
     let assets = config
         .assets
         .as_ref()
@@ -222,5 +228,12 @@ not_found_handling = "404-page"
     assert_eq!(assets.directory, root.join("public"));
     assert_eq!(assets.html_handling, HtmlHandling::Force);
     assert_eq!(assets.not_found_handling, NotFoundHandling::Page404);
+    Ok(())
+}
+
+#[test]
+fn parses_exact_asset_paths() -> TestResult {
+    assert_eq!(HtmlHandling::parse("none")?, HtmlHandling::None);
+    assert_eq!(HtmlHandling::None.as_str(), "none");
     Ok(())
 }

@@ -12,7 +12,7 @@ fn valid_manifest() -> TargetPackManifest {
     TargetPackManifest {
         schema_version: TargetPackVersion::CURRENT,
         appd_version: "0.1.0".to_owned(),
-        target: Target::IosSimulatorArm64,
+        target: Target::IosArm64,
         artifacts: vec![
             Artifact {
                 kind: ArtifactKind::RuntimeExecutable,
@@ -22,8 +22,8 @@ fn valid_manifest() -> TargetPackManifest {
                 ),
             },
             Artifact {
-                kind: ArtifactKind::ResourceDirectory,
-                path: "resources".to_owned(),
+                kind: ArtifactKind::RuntimeJavaScriptDirectory,
+                path: "runtime-js".to_owned(),
                 sha256: None,
             },
         ],
@@ -43,9 +43,9 @@ fn assert_unsafe_artifact_path(path: &str) {
 
 #[test]
 fn parses_known_targets_and_rejects_unknown_targets() {
-    let parsed = Target::from_str("ios-simulator-arm64").map_err(|error| error.to_string());
-    assert_eq!(parsed, Ok(Target::IosSimulatorArm64));
-    assert_eq!(Target::AndroidArm64.to_string(), "android-arm64");
+    let parsed = Target::from_str("ios-arm64").map_err(|error| error.to_string());
+    assert_eq!(parsed, Ok(Target::IosArm64));
+    assert_eq!(Target::MacosArm64.to_string(), "macos-arm64");
     assert!(matches!(
         Target::from_str("ios-armv7"),
         Err(TargetPackError::UnknownTarget(target)) if target == "ios-armv7"
@@ -75,13 +75,13 @@ fn serializes_every_target_with_its_display_name() -> TestResult {
 #[test]
 fn rejects_unsupported_schema_versions() {
     let mut manifest = valid_manifest();
-    manifest.schema_version = TargetPackVersion(2);
+    manifest.schema_version = TargetPackVersion(4);
 
     assert!(matches!(
         manifest.validate(),
         Err(TargetPackError::UnsupportedSchemaVersion {
-            expected: 1,
-            found: 2,
+            expected: 3,
+            found: 4,
         })
     ));
 }
@@ -161,7 +161,7 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
 
     write_manifest(&manifest_path, &manifest)?;
     let json = fs::read_to_string(&manifest_path)?;
-    assert!(json.contains("\"target\": \"ios-simulator-arm64\""));
+    assert!(json.contains("\"target\": \"ios-arm64\""));
 
     let loaded = load_manifest(&manifest_path)?;
     assert_eq!(loaded, manifest);
@@ -176,17 +176,17 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     fs::write(
         &manifest_path,
         r#"{
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "appdVersion": "0.1.0",
-  "target": "android-arm64",
-  "artifacts": [{"kind": "runtimeSharedLibrary", "path": "../libappd.so"}],
+  "target": "ios-arm64",
+  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime"}],
   "requiredTools": []
 }"#,
     )?;
 
     assert!(matches!(
         load_manifest(&manifest_path),
-        Err(TargetPackError::UnsafeArtifactPath(path)) if path == "../libappd.so"
+        Err(TargetPackError::UnsafeArtifactPath(path)) if path == "../appd-runtime"
     ));
 
     Ok(())

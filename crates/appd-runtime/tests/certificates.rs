@@ -1,8 +1,9 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use appd_runtime::certs::{CertificateBundle, CertificatePaths};
 use openssl::nid::Nid;
-use openssl::pkcs12::Pkcs12;
 use openssl::stack::Stack;
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::{X509, X509StoreContext, X509StoreContextRef};
@@ -12,49 +13,43 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 #[test]
 fn generates_certificate_bundle_with_platform_required_materials() -> TestResult {
     let bundle = CertificateBundle::generate()?;
-
-    assert!(
-        bundle
-            .ca_cert_pem
-            .starts_with("-----BEGIN CERTIFICATE-----")
-    );
-    assert!(
-        bundle
-            .server_cert_pem
-            .starts_with("-----BEGIN CERTIFICATE-----")
-    );
-    assert!(
-        bundle
-            .server_key_pem
-            .starts_with("-----BEGIN PRIVATE KEY-----")
-    );
-    assert!(
-        bundle
-            .client_cert_pem
-            .starts_with("-----BEGIN CERTIFICATE-----")
-    );
-    assert!(
-        bundle
-            .client_key_pem
-            .starts_with("-----BEGIN PRIVATE KEY-----")
-    );
-    assert_eq!(bundle.p12_password, "appd-internal");
+    assert_pem_material(&bundle);
 
     let ca_cert = X509::from_pem(bundle.ca_cert_pem.as_bytes())?;
     let server_cert = X509::from_pem(bundle.server_cert_pem.as_bytes())?;
     let client_cert = X509::from_pem(bundle.client_cert_pem.as_bytes())?;
-    assert_eq!(common_name(&ca_cert)?, "appd local ca");
-    assert_eq!(common_name(&server_cert)?, "localhost");
-    assert_eq!(common_name(&client_cert)?, "appd client");
+    assert_certificate_chain(&ca_cert, &server_cert, &client_cert)?;
+    assert_server_names(&server_cert)?;
+    assert_certificate_usages(&ca_cert, &server_cert, &client_cert)?;
+    Ok(())
+}
 
-    let ca_key = ca_cert.public_key()?;
-    assert!(ca_cert.verify(&ca_key)?);
-    assert!(server_cert.verify(&ca_key)?);
-    assert!(client_cert.verify(&ca_key)?);
-    assert!(certificate_verifies_against_ca(&server_cert, &ca_cert)?);
-    assert!(certificate_verifies_against_ca(&client_cert, &ca_cert)?);
+fn assert_pem_material(bundle: &CertificateBundle) {
+    let certificate = "-----BEGIN CERTIFICATE-----";
+    let key = "-----BEGIN PRIVATE KEY-----";
+    assert!(bundle.ca_cert_pem.starts_with(certificate));
+    assert!(bundle.server_cert_pem.starts_with(certificate));
+    assert!(bundle.server_key_pem.starts_with(key));
+    assert!(bundle.client_cert_pem.starts_with(certificate));
+    assert!(bundle.client_key_pem.starts_with(key));
+    assert!(!bundle.client_key_der.is_empty());
+}
 
-    let san = server_cert
+fn assert_certificate_chain(ca: &X509, server: &X509, client: &X509) -> TestResult {
+    assert_eq!(common_name(ca)?, "appd local ca");
+    assert_eq!(common_name(server)?, "localhost");
+    assert_eq!(common_name(client)?, "appd client");
+    let key = ca.public_key()?;
+    assert!(ca.verify(&key)?);
+    assert!(server.verify(&key)?);
+    assert!(client.verify(&key)?);
+    assert!(certificate_verifies_against_ca(server, ca)?);
+    assert!(certificate_verifies_against_ca(client, ca)?);
+    Ok(())
+}
+
+fn assert_server_names(server: &X509) -> TestResult {
+    let san = server
         .subject_alt_names()
         .ok_or("server certificate must include SANs")?;
     assert!(san.iter().any(|name| name.dnsname() == Some("localhost")));
@@ -63,23 +58,22 @@ fn generates_certificate_bundle_with_platform_required_materials() -> TestResult
             .any(|name| name.ipaddress() == Some(&[127, 0, 0, 1]))
     );
 
-    let ca_text = cert_text(&ca_cert)?;
+    Ok(())
+}
+
+fn assert_certificate_usages(ca: &X509, server: &X509, client: &X509) -> TestResult {
+    let ca_text = cert_text(ca)?;
     assert!(ca_text.contains("CA:TRUE"));
     assert!(ca_text.contains("Certificate Sign"));
     assert!(ca_text.contains("CRL Sign"));
 
-    let server_text = cert_text(&server_cert)?;
+    let server_text = cert_text(server)?;
     assert!(server_text.contains("TLS Web Server Authentication"));
     assert!(!server_text.contains("TLS Web Client Authentication"));
 
-    let client_text = cert_text(&client_cert)?;
+    let client_text = cert_text(client)?;
     assert!(client_text.contains("TLS Web Client Authentication"));
     assert!(!client_text.contains("TLS Web Server Authentication"));
-
-    let parsed = Pkcs12::from_der(&bundle.client_p12_der)?.parse2(&bundle.p12_password)?;
-    assert!(parsed.cert.is_some());
-    assert!(parsed.pkey.is_some());
-    assert!(!bundle.ca_cert_der.is_empty());
 
     Ok(())
 }
@@ -117,8 +111,7 @@ fn writes_and_loads_cached_certificate_bundle() -> TestResult {
 
     let loaded = CertificateBundle::load_cached(temp_dir.path())?;
     assert_eq!(loaded.ca_cert_der, bundle.ca_cert_der);
-    assert_eq!(loaded.client_p12_der, bundle.client_p12_der);
-    assert_eq!(loaded.p12_password, bundle.p12_password);
+    assert_eq!(loaded.client_key_der, bundle.client_key_der);
 
     for name in [
         "ca.cert.pem",
@@ -127,27 +120,26 @@ fn writes_and_loads_cached_certificate_bundle() -> TestResult {
         "server.key.pem",
         "client.cert.pem",
         "client.key.pem",
-        "client.p12",
+        "client.key.der",
     ] {
         assert!(
             fs::metadata(temp_dir.path().join(name))?.is_file(),
             "{name}"
         );
     }
-
-    Ok(())
-}
-
-#[test]
-fn computes_chromium_spki_pin_from_server_certificate() -> TestResult {
-    let bundle = CertificateBundle::generate()?;
-    let pin = bundle.server_spki_sha256_base64()?;
-
-    assert!(!pin.is_empty());
-    assert!(
-        pin.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-    );
+    assert!(fs::metadata(temp_dir.path().join(CertificatePaths::CACHE_MARKER))?.is_file());
+    #[cfg(unix)]
+    for name in [
+        CertificatePaths::SERVER_KEY_PEM,
+        CertificatePaths::CLIENT_KEY_PEM,
+        CertificatePaths::CLIENT_KEY_DER,
+    ] {
+        let mode = fs::metadata(temp_dir.path().join(name))?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{name}");
+    }
 
     Ok(())
 }

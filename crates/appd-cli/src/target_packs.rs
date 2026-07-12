@@ -11,6 +11,7 @@ use appd_target_pack::{
 use crate::BuildPlatform;
 
 const TARGET_PACK_DIR_ENV: &str = "appd_target_pack_dir";
+const RUNTIME_BINARY: &str = "appd-runtime";
 
 pub(crate) fn resolve_manifest(
     platform: BuildPlatform,
@@ -33,24 +34,14 @@ pub(crate) fn resolve_manifest(
 
     let workspace = source_workspace_root()
         .context("no bundled target pack found and source workspace is unavailable")?;
-    build_source_target_pack(&workspace, platform, target)
+    build_source_target_pack(&workspace, target)
 }
 
 fn default_target(platform: BuildPlatform) -> Result<Target> {
     match platform {
-        BuildPlatform::Macos if cfg!(target_arch = "aarch64") => Ok(Target::MacosArm64),
-        BuildPlatform::Macos if cfg!(target_arch = "x86_64") => Ok(Target::MacosX64),
-        BuildPlatform::IosSimulator if cfg!(target_arch = "aarch64") => {
-            Ok(Target::IosSimulatorArm64)
-        }
-        BuildPlatform::IosSimulator if cfg!(target_arch = "x86_64") => Ok(Target::IosSimulatorX64),
         BuildPlatform::Ios => Ok(Target::IosArm64),
-        BuildPlatform::Android => Ok(Target::AndroidArm64),
-        BuildPlatform::Windows => Ok(Target::WindowsX64),
-        BuildPlatform::Linux => Ok(Target::LinuxX64),
-        BuildPlatform::Macos | BuildPlatform::IosSimulator => {
-            bail!("{platform:?} target packs are unavailable for this host architecture")
-        }
+        BuildPlatform::Macos if cfg!(target_arch = "aarch64") => Ok(Target::MacosArm64),
+        BuildPlatform::Macos => bail!("macOS builds currently require an Apple Silicon host"),
     }
 }
 
@@ -89,12 +80,10 @@ fn source_workspace_root() -> Option<PathBuf> {
     }
 }
 
-fn build_source_target_pack(
-    workspace: &Path,
-    platform: BuildPlatform,
-    target: Target,
-) -> Result<PathBuf> {
-    let rust_target = rust_runtime_target(target)?;
+fn build_source_target_pack(workspace: &Path, target: Target) -> Result<PathBuf> {
+    let rust_target = rust_runtime_target(target);
+    build_bare_sdk(workspace, target)?;
+    build_runtime_tools(workspace)?;
     eprintln!("Building appd runtime target pack for {target}...");
     let status = Command::new("cargo")
         .args([
@@ -105,7 +94,7 @@ fn build_source_target_pack(
             "appd-runtime",
             "--release",
             "--features",
-            "workerd-ffi",
+            "bare-runtime",
             "--target",
             rust_target,
         ])
@@ -116,7 +105,7 @@ fn build_source_target_pack(
         bail!("appd-runtime build failed with status {status}");
     }
 
-    let runtime_binary = runtime_binary_name(platform);
+    let runtime_binary = RUNTIME_BINARY;
     let binary = workspace
         .join("target")
         .join(rust_target)
@@ -133,37 +122,146 @@ fn build_source_target_pack(
     let bin_dir = pack_dir.join("bin");
     fs::create_dir_all(&bin_dir)?;
     copy_file(&binary, bin_dir.join(runtime_binary))?;
+    let tools_dir = pack_dir.join("tools");
+    deploy_runtime(workspace, &tools_dir.join("runtime"))?;
+    install_bare_tls(workspace, &tools_dir.join("runtime"), target)?;
+    deploy_packer(workspace, &tools_dir.join("packer"))?;
 
     let manifest = TargetPackManifest {
         schema_version: TargetPackVersion::CURRENT,
         appd_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
-        artifacts: vec![Artifact {
-            kind: ArtifactKind::RuntimeExecutable,
-            path: format!("bin/{runtime_binary}"),
-            sha256: None,
-        }],
-        required_tools: Vec::new(),
+        artifacts: vec![
+            Artifact {
+                kind: ArtifactKind::RuntimeExecutable,
+                path: format!("bin/{runtime_binary}"),
+                sha256: None,
+            },
+            Artifact {
+                kind: ArtifactKind::RuntimeJavaScriptDirectory,
+                path: "tools/runtime/runtime-js".to_owned(),
+                sha256: None,
+            },
+            Artifact {
+                kind: ArtifactKind::BarePackExecutable,
+                path: "tools/packer/node_modules/bare-pack/bin.js".to_owned(),
+                sha256: None,
+            },
+            Artifact {
+                kind: ArtifactKind::EsbuildExecutable,
+                path: "tools/packer/node_modules/esbuild/bin/esbuild".to_owned(),
+                sha256: None,
+            },
+        ],
+        required_tools: vec!["node".to_owned()],
     };
     write_manifest(pack_dir.join("target-pack.json"), &manifest)?;
 
     Ok(pack_dir.join("target-pack.json"))
 }
 
-fn rust_runtime_target(target: Target) -> Result<&'static str> {
-    match target {
-        Target::MacosArm64 => Ok("aarch64-apple-darwin"),
-        Target::IosSimulatorArm64 => Ok("aarch64-apple-ios-sim"),
-        Target::IosSimulatorX64 => Ok("x86_64-apple-ios"),
-        Target::IosArm64 => Ok("aarch64-apple-ios"),
-        _ => bail!("source target-pack builds are not implemented for {target}"),
+fn build_bare_sdk(workspace: &Path, target: Target) -> Result<()> {
+    let sdk_target = match target {
+        Target::MacosArm64 => "macos-arm64",
+        Target::IosArm64 => "ios-arm64",
+    };
+    let output = workspace.join("target/bare/sdk").join(sdk_target);
+    if env::var_os("APPD_BARE_SDK_DIR").is_some() && output.join("sdk-manifest.json").is_file() {
+        return Ok(());
+    }
+    let status = Command::new("python3")
+        .arg("bare/scripts/build-sdk.py")
+        .args(["--target", sdk_target, "--output"])
+        .arg(&output)
+        .current_dir(workspace)
+        .status()
+        .context("failed to build the Bare SDK")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("Bare SDK build failed with status {status}")
     }
 }
 
-fn runtime_binary_name(platform: BuildPlatform) -> &'static str {
-    match platform {
-        BuildPlatform::Windows => "appd-runtime.exe",
-        _ => "appd-runtime",
+fn build_runtime_tools(workspace: &Path) -> Result<()> {
+    let script = "build:runtime";
+    let status = Command::new("pnpm")
+        .args(["run", script])
+        .current_dir(workspace)
+        .status()
+        .with_context(|| format!("failed to run pnpm {script}"))?;
+    if !status.success() {
+        bail!("pnpm {script} failed with status {status}");
+    }
+    Ok(())
+}
+
+fn install_bare_tls(workspace: &Path, runtime: &Path, target: Target) -> Result<()> {
+    let sdk_target = match target {
+        Target::MacosArm64 => "macos-arm64",
+        Target::IosArm64 => "ios-arm64",
+    };
+    let host = match target {
+        Target::MacosArm64 => "darwin-arm64",
+        Target::IosArm64 => "ios-arm64",
+    };
+    let source = workspace
+        .join("target/bare/sdk")
+        .join(sdk_target)
+        .join("bare-tls.bare");
+    let destination = runtime
+        .join("node_modules/bare-tls/prebuilds")
+        .join(host)
+        .join("bare-tls.bare");
+    copy_file(&source, destination)
+}
+
+fn deploy_runtime(workspace: &Path, output: &Path) -> Result<()> {
+    let status = Command::new("pnpm")
+        .args([
+            "--config.node-linker=isolated",
+            "--filter",
+            "appd",
+            "deploy",
+            "--prod",
+        ])
+        .arg(output)
+        .current_dir(workspace)
+        .status()
+        .context("failed to deploy Bare runtime modules")?;
+    if !status.success() {
+        bail!("Bare runtime module deployment failed with status {status}")
+    }
+    copy_directory(
+        &workspace.join("target/runtime-js"),
+        &output.join("runtime-js"),
+    )
+}
+
+fn deploy_packer(workspace: &Path, output: &Path) -> Result<()> {
+    let status = Command::new("pnpm")
+        .args([
+            "--config.node-linker=isolated",
+            "--filter",
+            "@appd/bare-pack-tool",
+            "deploy",
+            "--prod",
+        ])
+        .arg(output)
+        .current_dir(workspace)
+        .status()
+        .context("failed to deploy Bare bundle packer")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("Bare bundle packer deployment failed with status {status}")
+    }
+}
+
+fn rust_runtime_target(target: Target) -> &'static str {
+    match target {
+        Target::MacosArm64 => "aarch64-apple-darwin",
+        Target::IosArm64 => "aarch64-apple-ios",
     }
 }
 
@@ -181,5 +279,22 @@ fn copy_file(from: &Path, to: impl AsRef<Path>) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::copy(from, to).with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+fn copy_directory(from: &Path, to: &Path) -> Result<()> {
+    for entry in walkdir::WalkDir::new(from) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let relative = entry.path().strip_prefix(from)?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let destination = to.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(destination)?;
+        } else if entry.file_type().is_file() {
+            copy_file(entry.path(), destination)?;
+        }
+    }
     Ok(())
 }

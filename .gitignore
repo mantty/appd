@@ -1,4 +1,4 @@
 /target/
+/node_modules/
+*.pyc
 __pycache__/
-hack/dist/
-hack/node_modules/

@@ -1,29 +1,55 @@
-//! Runtime JavaScript assets embedded into packaged apps.
+//! Static asset manifest generation.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::RuntimeResult;
+use walkdir::WalkDir;
 
-/// Workerd module that exposes static assets through a Cloudflare-compatible
-/// `ASSETS` service binding.
-pub const ASSETS_WORKER_JS: &str = include_str!("../assets/assets-worker.mjs");
+use crate::host::{ASSET_DIRECTORY, ASSET_MANIFEST_FILE};
+use crate::wrangler_config::WranglerAssets;
+use crate::{RuntimeError, RuntimeResult};
 
-/// Filename used for the embedded assets service worker module.
-pub(crate) const ASSETS_WORKER_FILE_NAME: &str = "assets-worker.mjs";
-
-/// Directory name used for packaged static assets.
-pub const PACKAGED_ASSETS_DIR_NAME: &str = "assets";
-
-/// Write runtime JavaScript support modules into a workerd app directory.
+/// Write the static asset routing manifest for a packaged app.
 ///
 /// # Errors
 ///
-/// Returns an error when the directory cannot be created or the asset worker
-/// cannot be written.
-pub fn write_runtime_assets(app_dir: impl AsRef<Path>) -> RuntimeResult<()> {
-    let app_dir = app_dir.as_ref();
-    fs::create_dir_all(app_dir)?;
-    fs::write(app_dir.join(ASSETS_WORKER_FILE_NAME), ASSETS_WORKER_JS)?;
+/// Returns an error when asset traversal, path conversion, or writing fails.
+pub fn write_manifest(work_dir: &Path, assets: &WranglerAssets) -> RuntimeResult<()> {
+    let root = work_dir.join(ASSET_DIRECTORY);
+    let mut files = BTreeMap::new();
+    for entry in WalkDir::new(&root) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(&root)
+            .map_err(|_| RuntimeError::InvalidUtf8Path(entry.path().to_owned()))?;
+        let key = slash_path(relative)?;
+        let content_type = mime_guess::from_path(entry.path())
+            .first_or_octet_stream()
+            .essence_str()
+            .to_owned();
+        files.insert(key, content_type);
+    }
+    let manifest = serde_json::json!({
+        "binding": assets.binding,
+        "files": files,
+        "htmlHandling": assets.html_handling.as_str(),
+        "notFoundHandling": assets.not_found_handling.as_str(),
+    });
+    fs::write(
+        work_dir.join(ASSET_MANIFEST_FILE),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
     Ok(())
+}
+
+fn slash_path(path: &Path) -> RuntimeResult<String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| RuntimeError::InvalidUtf8Path(path.to_owned()))?;
+    Ok(path.replace(std::path::MAIN_SEPARATOR, "/"))
 }

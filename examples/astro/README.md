@@ -10,12 +10,11 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-Package it with appd when you have a target pack:
+Package it from the appd workspace:
 
 ```sh
-appd build --platforms=macos
+cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.json
 ```
 
-Current spike status: release target packs are not available yet, so the
-installed CLI cannot package this example without workspace-local runtime
-artifacts.
+The example intentionally uses no WebAssembly. It covers server rendering,
+static assets, API routes, navigation, and WebSockets through the Bare runtime.

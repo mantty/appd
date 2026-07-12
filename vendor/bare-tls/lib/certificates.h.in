@@ -1,0 +1,7 @@
+#include <stddef.h>
+
+static const unsigned char bare_tls__certs[] = {
+@certificates_array@
+};
+
+static const size_t bare_tls__certs_len = sizeof(bare_tls__certs);

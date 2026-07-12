@@ -1,0 +1,10 @@
+{
+  "name": "@appd/bare-pack-tool",
+  "private": true,
+  "version": "0.1.0",
+  "files": [],
+  "dependencies": {
+    "bare-pack": "2.2.0",
+    "esbuild": "0.28.1"
+  }
+}

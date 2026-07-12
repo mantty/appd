@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use appd_runtime::host::{config_path, work_dir_in_apple_resources, work_dir_next_to_exe};
+use appd_runtime::host::{bundle_path, work_dir_in_apple_resources, work_dir_next_to_exe};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -20,8 +20,8 @@ fn resolves_apple_work_dir_inside_bundle_resources() {
 }
 
 #[test]
-fn resolves_config_path_inside_work_dir() {
-    let path = config_path(Path::new("/opt/demo/app"));
+fn resolves_bundle_path_inside_work_dir() {
+    let path = bundle_path(Path::new("/opt/demo/app"));
 
-    assert_eq!(path, Path::new("/opt/demo/app/config.capnp"));
+    assert_eq!(path, Path::new("/opt/demo/app/worker.bundle"));
 }

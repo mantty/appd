@@ -1,45 +1,41 @@
 //! Certificate generation and cache handling for the local mTLS bridge.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use base64::Engine;
-use p12_keystore::{
-    Certificate as Pkcs12Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain,
-};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
-    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
+    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
+    SerialNumber,
 };
-use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
-use x509_parser::pem::parse_x509_pem;
+use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
-use crate::{RuntimeError, RuntimeResult};
+use crate::RuntimeResult;
 
-const P12_PASSWORD: &str = "appd-internal";
 const VALIDITY_DAYS: i64 = 90;
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Runtime certificate and key material needed by `workerd` and platform `WebViews`.
+/// Runtime certificate and key material needed by Bare and platform `WebViews`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateBundle {
-    /// CA certificate PEM, embedded into workerd as a trusted client CA.
+    /// CA certificate PEM trusted by Bare for client authentication.
     pub ca_cert_pem: String,
-    /// Server certificate PEM, embedded into workerd's TLS keypair.
+    /// Server certificate PEM used by Bare's TLS server.
     pub server_cert_pem: String,
-    /// Server private key PEM, embedded into workerd's TLS keypair.
+    /// Server private key PEM used by Bare's TLS server.
     pub server_key_pem: String,
     /// Client certificate PEM.
     pub client_cert_pem: String,
     /// Client private key PEM.
     pub client_key_pem: String,
+    /// Client private key PKCS#8 DER for in-memory platform credentials.
+    pub client_key_der: Vec<u8>,
     /// CA certificate DER for platform trust APIs.
     pub ca_cert_der: Vec<u8>,
-    /// Client identity PKCS#12 DER for platform client certificate APIs.
-    pub client_p12_der: Vec<u8>,
-    /// Password for [`Self::client_p12_der`].
-    pub p12_password: String,
 }
 
 impl CertificateBundle {
@@ -63,17 +59,14 @@ impl CertificateBundle {
         let server_cert = build_server_certificate(&server_key, &ca_issuer)?;
         let client_cert = build_client_certificate(&client_key, &ca_issuer)?;
 
-        let client_p12_der = build_client_pkcs12(&client_cert, &client_key, &ca_cert)?;
-
         Ok(Self {
             ca_cert_pem: ca_cert.pem(),
             server_cert_pem: server_cert.pem(),
             server_key_pem: server_key.serialize_pem(),
             client_cert_pem: client_cert.pem(),
             client_key_pem: client_key.serialize_pem(),
+            client_key_der: client_key.serialized_der().to_vec(),
             ca_cert_der: ca_cert.der().to_vec(),
-            client_p12_der,
-            p12_password: P12_PASSWORD.to_owned(),
         })
     }
 
@@ -84,15 +77,21 @@ impl CertificateBundle {
     /// Returns an error when any expected certificate file cannot be read.
     pub fn load_cached(work_dir: impl AsRef<Path>) -> RuntimeResult<Self> {
         let work_dir = work_dir.as_ref();
+        if !CertificatePaths::all_exist(work_dir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "certificate cache is incomplete",
+            )
+            .into());
+        }
         Ok(Self {
             ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
             server_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_CERT_PEM))?,
             server_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_KEY_PEM))?,
             client_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_CERT_PEM))?,
             client_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_KEY_PEM))?,
+            client_key_der: fs::read(work_dir.join(CertificatePaths::CLIENT_KEY_DER))?,
             ca_cert_der: fs::read(work_dir.join(CertificatePaths::CA_CERT_DER))?,
-            client_p12_der: fs::read(work_dir.join(CertificatePaths::CLIENT_P12))?,
-            p12_password: P12_PASSWORD.to_owned(),
         })
     }
 
@@ -104,9 +103,13 @@ impl CertificateBundle {
         ]
         .into_iter()
         .all(|pem| certificate_is_valid_now(pem, now))
+            && certificate_der_matches_pem(&self.ca_cert_pem, &self.ca_cert_der)
+            && certificate_matches_key(&self.server_cert_pem, &self.server_key_pem)
+            && certificate_matches_key(&self.client_cert_pem, &self.client_key_pem)
+            && key_matches_der(&self.client_key_pem, &self.client_key_der)
     }
 
-    /// Write all certificate files expected by `workerd` and platform `WebViews`.
+    /// Write all certificate files expected by Bare and platform `WebViews`.
     ///
     /// # Errors
     ///
@@ -115,6 +118,8 @@ impl CertificateBundle {
     pub fn write_all(&self, work_dir: impl AsRef<Path>) -> RuntimeResult<()> {
         let work_dir = work_dir.as_ref();
         fs::create_dir_all(work_dir)?;
+        set_directory_permissions(work_dir)?;
+        remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
         for (name, content) in [
             (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),
             (
@@ -133,28 +138,16 @@ impl CertificateBundle {
                 CertificatePaths::CLIENT_KEY_PEM,
                 self.client_key_pem.as_bytes(),
             ),
+            (
+                CertificatePaths::CLIENT_KEY_DER,
+                self.client_key_der.as_slice(),
+            ),
             (CertificatePaths::CA_CERT_DER, self.ca_cert_der.as_slice()),
-            (CertificatePaths::CLIENT_P12, self.client_p12_der.as_slice()),
         ] {
-            fs::write(work_dir.join(name), content)?;
+            write_atomic(work_dir, name, content, is_private_key(name))?;
         }
+        write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)?;
         Ok(())
-    }
-
-    /// Return Chromium's `--ignore-certificate-errors-spki-list` value for the
-    /// generated server certificate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the server certificate cannot be parsed or hashed.
-    pub fn server_spki_sha256_base64(&self) -> RuntimeResult<String> {
-        let (_, pem) = parse_x509_pem(self.server_cert_pem.as_bytes())
-            .map_err(|error| RuntimeError::CertificateParsing(format!("{error:?}")))?;
-        let cert = pem
-            .parse_x509()
-            .map_err(|error| RuntimeError::CertificateParsing(format!("{error:?}")))?;
-        let digest = Sha256::digest(cert.public_key().raw);
-        Ok(base64::engine::general_purpose::STANDARD.encode(digest))
     }
 }
 
@@ -174,8 +167,10 @@ impl CertificatePaths {
     pub const CLIENT_CERT_PEM: &'static str = "client.cert.pem";
     /// Client private key PEM filename.
     pub const CLIENT_KEY_PEM: &'static str = "client.key.pem";
-    /// Client identity PKCS#12 filename.
-    pub const CLIENT_P12: &'static str = "client.p12";
+    /// Client private key PKCS#8 DER filename.
+    pub const CLIENT_KEY_DER: &'static str = "client.key.der";
+    /// Marker written after every certificate file has been committed.
+    pub const CACHE_MARKER: &'static str = ".complete";
 
     const ALL: &'static [&'static str] = &[
         Self::CA_CERT_PEM,
@@ -184,14 +179,20 @@ impl CertificatePaths {
         Self::SERVER_KEY_PEM,
         Self::CLIENT_CERT_PEM,
         Self::CLIENT_KEY_PEM,
-        Self::CLIENT_P12,
+        Self::CLIENT_KEY_DER,
     ];
 
     /// Return true when all expected certificate files exist.
     #[must_use]
     pub fn all_exist(work_dir: impl AsRef<Path>) -> bool {
         let work_dir = work_dir.as_ref();
-        Self::ALL.iter().all(|name| work_dir.join(name).is_file())
+        work_dir.join(Self::CACHE_MARKER).is_file()
+            && Self::ALL.iter().all(|name| {
+                work_dir
+                    .join(name)
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            })
     }
 }
 
@@ -251,17 +252,79 @@ fn certificate_is_valid_now(pem: &str, now: OffsetDateTime) -> bool {
     validity.not_before.timestamp() <= now && now < validity.not_after.timestamp()
 }
 
-fn build_client_pkcs12(
-    cert: &Certificate,
-    key: &KeyPair,
-    ca_cert: &Certificate,
-) -> RuntimeResult<Vec<u8>> {
-    let client_cert = Pkcs12Certificate::from_der(cert.der().as_ref())?;
-    let ca_cert = Pkcs12Certificate::from_der(ca_cert.der().as_ref())?;
-    let private_key = PrivateKey::from_der(key.serialized_der())?;
-    let key_chain = PrivateKeyChain::new("appd-client", private_key, [client_cert, ca_cert]);
+fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> bool {
+    let Ok((_, pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
+        return false;
+    };
+    let Ok(certificate) = pem.parse_x509() else {
+        return false;
+    };
+    let Ok(key) = KeyPair::from_pem(key_pem) else {
+        return false;
+    };
+    certificate.public_key().raw == key.subject_public_key_info()
+}
 
-    let mut key_store = KeyStore::new();
-    key_store.add_entry("appd-client", KeyStoreEntry::PrivateKeyChain(key_chain));
-    Ok(key_store.writer(P12_PASSWORD).write()?)
+fn certificate_der_matches_pem(certificate_pem: &str, certificate_der: &[u8]) -> bool {
+    let Ok((_, pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
+        return false;
+    };
+    pem.contents == certificate_der && parse_x509_certificate(certificate_der).is_ok()
+}
+
+fn key_matches_der(key_pem: &str, key_der: &[u8]) -> bool {
+    KeyPair::from_pem(key_pem).is_ok_and(|key| key.serialized_der() == key_der)
+}
+
+fn is_private_key(name: &str) -> bool {
+    matches!(
+        name,
+        CertificatePaths::SERVER_KEY_PEM
+            | CertificatePaths::CLIENT_KEY_PEM
+            | CertificatePaths::CLIENT_KEY_DER
+    )
+}
+
+fn remove_if_exists(path: impl AsRef<Path>) -> RuntimeResult<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_atomic(directory: &Path, name: &str, content: &[u8], private: bool) -> RuntimeResult<()> {
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), counter));
+    let result = write_temporary(&temporary, content, private)
+        .and_then(|()| fs::rename(&temporary, directory.join(name)).map_err(Into::into));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn write_temporary(path: &Path, content: &[u8], private: bool) -> RuntimeResult<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if private { 0o600 } else { 0o644 });
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn set_directory_permissions(directory: &Path) -> RuntimeResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }

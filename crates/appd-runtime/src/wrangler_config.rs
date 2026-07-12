@@ -9,8 +9,6 @@ use serde::Deserialize;
 use crate::{RuntimeError, RuntimeResult};
 
 const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"];
-const DEFAULT_COMPATIBILITY_DATE: &str = "2024-09-23";
-
 /// Resolved subset of a Wrangler config that `appd` currently consumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WranglerConfig {
@@ -18,10 +16,6 @@ pub struct WranglerConfig {
     pub path: PathBuf,
     /// Worker entrypoint, resolved relative to the config file directory.
     pub main: PathBuf,
-    /// Worker compatibility date.
-    pub compatibility_date: String,
-    /// Worker compatibility flags.
-    pub compatibility_flags: Vec<String>,
     /// Static asset configuration, when the Worker declares assets.
     pub assets: Option<WranglerAssets>,
 }
@@ -42,6 +36,8 @@ pub struct WranglerAssets {
 /// Cloudflare static asset `html_handling` mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HtmlHandling {
+    /// Match asset paths exactly.
+    None,
     /// Use Cloudflare's automatic trailing-slash behavior.
     Auto,
     /// Prefer directory-index paths.
@@ -58,6 +54,7 @@ impl HtmlHandling {
     /// Returns an error for values appd does not support.
     pub fn parse(value: &str) -> RuntimeResult<Self> {
         match value {
+            "none" => Ok(Self::None),
             "auto-trailing-slash" => Ok(Self::Auto),
             "force-trailing-slash" => Ok(Self::Force),
             "drop-trailing-slash" => Ok(Self::Drop),
@@ -71,6 +68,7 @@ impl HtmlHandling {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Auto => "auto-trailing-slash",
             Self::Force => "force-trailing-slash",
             Self::Drop => "drop-trailing-slash",
@@ -168,10 +166,6 @@ pub fn load_config(config_path: &Path) -> RuntimeResult<WranglerConfig> {
     Ok(WranglerConfig {
         path: config_path.clone(),
         main: resolve_path(&config_dir, Path::new(&main)),
-        compatibility_date: raw
-            .compatibility_date
-            .unwrap_or_else(|| DEFAULT_COMPATIBILITY_DATE.to_owned()),
-        compatibility_flags: raw.compatibility_flags.unwrap_or_default(),
         assets: raw
             .assets
             .map(|assets| resolve_assets(&config_path, &config_dir, assets))
@@ -182,8 +176,6 @@ pub fn load_config(config_path: &Path) -> RuntimeResult<WranglerConfig> {
 #[derive(Debug, Deserialize)]
 struct RawWranglerConfig {
     main: Option<String>,
-    compatibility_date: Option<String>,
-    compatibility_flags: Option<Vec<String>>,
     assets: Option<RawWranglerAssets>,
 }
 
@@ -206,10 +198,16 @@ fn resolve_assets(
             path: config_path.to_path_buf(),
             field: "assets.directory",
         })?;
+    let binding = assets.binding.unwrap_or_else(|| "ASSETS".to_owned());
+    if binding.is_empty() {
+        return Err(RuntimeError::InvalidAssetConfig(
+            "assets.binding must not be empty".to_owned(),
+        ));
+    }
 
     Ok(WranglerAssets {
         directory: resolve_path(config_dir, Path::new(&directory)),
-        binding: assets.binding.unwrap_or_else(|| "ASSETS".to_owned()),
+        binding,
         html_handling: assets
             .html_handling
             .as_deref()

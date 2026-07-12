@@ -14,7 +14,6 @@ fn ensure_certificates_generates_and_then_reuses_cached_files() -> TestResult {
 
     let second = ensure_certificates(temp_dir.path())?;
     assert_eq!(first.ca_cert_der, second.ca_cert_der);
-    assert_eq!(first.client_p12_der, second.client_p12_der);
 
     Ok(())
 }
@@ -58,9 +57,60 @@ fn ensure_certificates_regenerates_expired_cache() -> TestResult {
 }
 
 #[test]
-fn frontend_url_uses_windows_fast_ipv4_loopback() {
-    assert_eq!(frontend_url(8787, true), "https://127.0.0.1:8787/");
-    assert_eq!(frontend_url(8787, false), "https://localhost:8787/");
+fn ensure_certificates_regenerates_corrupt_der_cache() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let first = ensure_certificates(temp_dir.path())?;
+    std::fs::write(
+        temp_dir.path().join(CertificatePaths::CA_CERT_DER),
+        [0_u8, 1_u8],
+    )?;
+
+    let second = ensure_certificates(temp_dir.path())?;
+
+    assert_ne!(second.ca_cert_der, [0_u8, 1_u8]);
+    assert_ne!(second.ca_cert_der, first.ca_cert_der);
+    assert!(CertificatePaths::all_exist(temp_dir.path()));
+    Ok(())
+}
+
+#[test]
+fn ensure_certificates_regenerates_corrupt_client_key_der_cache() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let first = ensure_certificates(temp_dir.path())?;
+    std::fs::write(
+        temp_dir.path().join(CertificatePaths::CLIENT_KEY_DER),
+        [0_u8, 1_u8],
+    )?;
+
+    let second = ensure_certificates(temp_dir.path())?;
+
+    assert_ne!(second.client_key_der, [0_u8, 1_u8]);
+    assert_ne!(second.client_key_der, first.client_key_der);
+    assert!(CertificatePaths::all_exist(temp_dir.path()));
+    Ok(())
+}
+
+#[test]
+fn ensure_certificates_regenerates_mismatched_ca_der_cache() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let first = ensure_certificates(temp_dir.path())?;
+    let foreign = appd_runtime::certs::CertificateBundle::generate()?;
+    std::fs::write(
+        temp_dir.path().join(CertificatePaths::CA_CERT_DER),
+        &foreign.ca_cert_der,
+    )?;
+
+    let second = ensure_certificates(temp_dir.path())?;
+
+    assert_ne!(second.ca_cert_der, foreign.ca_cert_der);
+    assert_ne!(second.ca_cert_der, first.ca_cert_der);
+    assert!(CertificatePaths::all_exist(temp_dir.path()));
+    Ok(())
+}
+
+#[test]
+fn frontend_url_uses_localhost() {
+    assert_eq!(frontend_url(8787), "https://localhost:8787/");
 }
 
 fn expired_certificate_pem() -> TestResult<String> {

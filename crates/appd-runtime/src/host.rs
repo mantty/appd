@@ -1,48 +1,57 @@
 //! Shared runtime startup used by platform shells.
 
 use std::path::{Path, PathBuf};
-#[cfg(feature = "workerd-ffi")]
-use std::thread;
 
-#[cfg(feature = "workerd-ffi")]
+#[cfg(feature = "bare-runtime")]
+use appd_bare::{Assets, BareRuntime, Certificates, RuntimeConfig};
+
+#[cfg(feature = "bare-runtime")]
 use crate::certs::CertificateBundle;
-#[cfg(feature = "workerd-ffi")]
-use crate::{LocalBackend, ensure_certificates};
+#[cfg(feature = "bare-runtime")]
+use crate::certs::CertificatePaths;
+#[cfg(feature = "bare-runtime")]
+use crate::ensure_certificates;
 use crate::{RuntimeError, RuntimeResult};
 
-/// Runtime state that must be retained for the app lifetime.
-#[cfg(feature = "workerd-ffi")]
-#[derive(Debug)]
+/// Name of the packaged Bare application bundle.
+pub const WORKER_BUNDLE_FILE: &str = "worker.bundle";
+/// Name of the static asset routing manifest.
+pub const ASSET_MANIFEST_FILE: &str = "asset-manifest.json";
+/// Name of the packaged static asset directory.
+pub const ASSET_DIRECTORY: &str = "assets";
+
+/// Runtime state retained for the app lifetime.
+#[cfg(feature = "bare-runtime")]
 pub struct StartedRuntime {
     /// Local HTTPS port exposed to the platform `WebView`.
     pub port: u16,
     /// Certificate material used by platform authentication hooks.
     pub certificates: CertificateBundle,
-    workerd_thread: thread::JoinHandle<RuntimeResult<()>>,
+    runtime: BareRuntime,
 }
 
-/// Packaged runtime material prepared before `workerd` starts.
-#[cfg(feature = "workerd-ffi")]
-#[derive(Debug)]
-pub struct PreparedRuntime {
-    /// Packaged app work directory.
-    pub work_dir: PathBuf,
-    /// Generated or cached certificate material.
-    pub certificates: CertificateBundle,
-}
-
-#[cfg(feature = "workerd-ffi")]
+#[cfg(feature = "bare-runtime")]
 impl StartedRuntime {
-    /// Consume the runtime and keep its background threads alive forever.
-    ///
-    /// Platform event loops normally never return. This helper exists for
-    /// command-line hosts that need to block explicitly.
+    /// Suspend JavaScript execution.
     ///
     /// # Errors
     ///
-    /// Returns an error if the workerd background thread exits with an error.
-    pub fn join(self) -> RuntimeResult<()> {
-        join_runtime_thread(self.workerd_thread)
+    /// Returns an error when Bare rejects the transition.
+    pub fn suspend(&self) -> RuntimeResult<()> {
+        self.runtime.suspend(-1)?;
+        eprintln!("appd Bare runtime suspended");
+        Ok(())
+    }
+
+    /// Resume JavaScript execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Bare rejects the transition.
+    pub fn resume(&self) -> RuntimeResult<()> {
+        self.runtime.resume()?;
+        eprintln!("appd Bare runtime resumed");
+        Ok(())
     }
 }
 
@@ -64,6 +73,7 @@ pub fn work_dir_in_apple_resources(resource_path: &Path) -> PathBuf {
     resource_path.join("app")
 }
 
+#[cfg(feature = "native-shell")]
 pub(crate) fn work_dir_next_to_current_exe_or_default() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -71,68 +81,66 @@ pub(crate) fn work_dir_next_to_current_exe_or_default() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("app"))
 }
 
-/// Return the generated `workerd` config path for a work directory.
+/// Return the packaged Bare worker bundle path.
 #[must_use]
-pub fn config_path(work_dir: &Path) -> PathBuf {
-    work_dir.join("config.capnp")
+pub fn bundle_path(work_dir: &Path) -> PathBuf {
+    work_dir.join(WORKER_BUNDLE_FILE)
 }
 
-/// Start `workerd` and the loopback socket bridge for a packaged app.
+/// Start Bare and its loopback mTLS server for a packaged app.
+///
+/// `packaged_dir` contains immutable bundled code and assets. `state_dir` is
+/// writable per-app storage for generated certificate material.
 ///
 /// # Errors
 ///
-/// Returns an error when certificates cannot be generated or loaded, workerd
-/// cannot be started, or the loopback listener cannot be bound.
-#[cfg(feature = "workerd-ffi")]
-pub fn start_workerd_bridge(work_dir: impl AsRef<Path>) -> RuntimeResult<StartedRuntime> {
-    let prepared = prepare_workerd_bridge(work_dir)?;
-    start_prepared_workerd_bridge(prepared)
-}
-
-/// Generate or load certificate material before `workerd` is started.
-///
-/// # Errors
-///
-/// Returns an error when certificates cannot be generated, loaded, or cached.
-#[cfg(feature = "workerd-ffi")]
-pub fn prepare_workerd_bridge(work_dir: impl AsRef<Path>) -> RuntimeResult<PreparedRuntime> {
-    let work_dir = work_dir.as_ref();
-    let certificates = ensure_certificates(work_dir)?;
-    Ok(PreparedRuntime {
-        work_dir: work_dir.to_owned(),
-        certificates,
-    })
-}
-
-/// Start `workerd` and the loopback socket bridge from prepared runtime material.
-///
-/// # Errors
-///
-/// Returns an error when workerd cannot be started or the loopback listener
-/// cannot be bound.
-#[cfg(feature = "workerd-ffi")]
-pub fn start_prepared_workerd_bridge(prepared: PreparedRuntime) -> RuntimeResult<StartedRuntime> {
-    use crate::workerd_ffi::WorkerdFfi;
-
-    let backend = LocalBackend::bind_loopback()?;
-    let port = backend.local_port();
-    let listener = backend.into_listener();
-    let workerd_thread = WorkerdFfi::start(
-        config_path(&prepared.work_dir),
-        &prepared.work_dir,
-        listener,
-    )?;
-
+/// Returns an error when certificates, bundle loading, or Bare startup fails.
+#[cfg(feature = "bare-runtime")]
+pub fn start_bare_runtime(
+    packaged_dir: impl AsRef<Path>,
+    state_dir: impl AsRef<Path>,
+) -> RuntimeResult<StartedRuntime> {
+    let packaged_dir = packaged_dir.as_ref();
+    let state_dir = state_dir.as_ref();
+    let certificates = ensure_certificates(state_dir)?;
+    let bundle = std::fs::read(bundle_path(packaged_dir))?;
+    let config = runtime_config(packaged_dir, state_dir);
+    std::env::set_current_dir(addon_directory(packaged_dir)?)?;
+    let runtime = BareRuntime::start(&bundle, &config)?;
+    eprintln!(
+        "appd Bare runtime listening on https://localhost:{}",
+        runtime.port()
+    );
     Ok(StartedRuntime {
-        port,
-        certificates: prepared.certificates,
-        workerd_thread,
+        port: runtime.port(),
+        certificates,
+        runtime,
     })
 }
 
-#[cfg(feature = "workerd-ffi")]
-fn join_runtime_thread(thread: thread::JoinHandle<RuntimeResult<()>>) -> RuntimeResult<()> {
-    thread
-        .join()
-        .map_err(|_| RuntimeError::RuntimeThreadPanicked)?
+#[cfg(feature = "bare-runtime")]
+fn addon_directory(packaged_dir: &Path) -> RuntimeResult<PathBuf> {
+    packaged_dir
+        .ancestors()
+        .map(|directory| directory.join("Frameworks"))
+        .find(|directory| directory.is_dir())
+        .ok_or_else(|| RuntimeError::MissingAddonsDirectory(packaged_dir.to_owned()))
+}
+
+#[cfg(feature = "bare-runtime")]
+fn runtime_config(packaged_dir: &Path, state_dir: &Path) -> RuntimeConfig {
+    let manifest = packaged_dir.join(ASSET_MANIFEST_FILE);
+    let assets = manifest.is_file().then(|| Assets {
+        manifest,
+        root: packaged_dir.join(ASSET_DIRECTORY),
+    });
+    RuntimeConfig {
+        assets,
+        certificates: Certificates {
+            ca: state_dir.join(CertificatePaths::CA_CERT_PEM),
+            certificate: state_dir.join(CertificatePaths::SERVER_CERT_PEM),
+            private_key: state_dir.join(CertificatePaths::SERVER_KEY_PEM),
+        },
+        port: 0,
+    }
 }

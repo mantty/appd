@@ -1,13 +1,13 @@
 //! iOS `UIKit` + `WKWebView` runtime shell.
 
 use std::cell::OnceCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 
-#[cfg(feature = "workerd-ffi")]
+#[cfg(feature = "bare-runtime")]
 use dispatch2::run_on_main;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
@@ -16,7 +16,7 @@ use objc2_foundation::{
     MainThreadMarker, NSDictionary, NSError, NSObject, NSObjectProtocol, NSString,
     NSURLAuthenticationChallenge,
 };
-#[cfg(feature = "workerd-ffi")]
+#[cfg(feature = "bare-runtime")]
 use objc2_foundation::{NSURL, NSURLRequest};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UIScreen,
@@ -24,8 +24,9 @@ use objc2_ui_kit::{
 };
 
 use super::apple::{
-    AuthenticationCompletionHandler, SharedCertificates, bundle_work_dir,
-    handle_authentication_challenge as handle_apple_authentication_challenge,
+    AuthenticationCompletionHandler, SharedCertificates, bundle_state_dir, bundle_work_dir,
+    clear_startup_error, handle_authentication_challenge as handle_apple_authentication_challenge,
+    record_startup_error,
 };
 
 #[link(name = "WebKit", kind = "framework")]
@@ -33,8 +34,17 @@ unsafe extern "C" {}
 
 static CERTIFICATES: OnceLock<SharedCertificates> = OnceLock::new();
 static WEBVIEW: AtomicPtr<AnyObject> = AtomicPtr::new(ptr::null_mut());
+#[cfg(feature = "bare-runtime")]
+static RUNTIME: OnceLock<Mutex<RuntimeState>> = OnceLock::new();
 const UI_VIEW_AUTORESIZING_FLEXIBLE_WIDTH: usize = 1 << 1;
 const UI_VIEW_AUTORESIZING_FLEXIBLE_HEIGHT: usize = 1 << 4;
+
+#[cfg(feature = "bare-runtime")]
+#[derive(Default)]
+struct RuntimeState {
+    runtime: Option<crate::host::StartedRuntime>,
+    suspended: bool,
+}
 
 #[derive(Debug)]
 struct RuntimeDelegateIvars {
@@ -82,6 +92,16 @@ define_class!(
             self.finish_launching();
             true
         }
+
+        #[unsafe(method(applicationDidEnterBackground:))]
+        fn application_did_enter_background(&self, _: &UIApplication) {
+            suspend_runtime();
+        }
+
+        #[unsafe(method(applicationWillEnterForeground:))]
+        fn application_will_enter_foreground(&self, _: &UIApplication) {
+            resume_runtime();
+        }
     }
 );
 
@@ -123,12 +143,16 @@ impl RuntimeDelegate {
         }
 
         let certificates = shared_certificates();
-        let work_dir = bundle_work_dir();
-        let _ = thread::Builder::new()
-            .name("appd-workerd-init".to_owned())
+        let packaged_dir = bundle_work_dir();
+        let state_dir = bundle_state_dir();
+        let result = thread::Builder::new()
+            .name("appd-bare-init".to_owned())
             .spawn(move || {
-                start_runtime(&work_dir, &certificates);
+                start_runtime(&packaged_dir, &state_dir, &certificates);
             });
+        if let Err(error) = result {
+            eprintln!("appd failed to start the runtime thread: {error}");
+        }
     }
 }
 
@@ -226,79 +250,46 @@ fn create_webview(
     webview
 }
 
-#[cfg(feature = "workerd-ffi")]
-fn start_runtime(packaged_dir: &Path, certificates: &SharedCertificates) {
-    // Real devices seal the app bundle read-only, so the packaged config and
-    // assets `packaged_dir` points at can't hold generated certificates or
-    // even be written to at all -- mirror them into the app's own writable
-    // container first. (The Simulator and macOS don't enforce this, which is
-    // why the bundle path worked for both until now.)
-    let work_dir = ios_writable_work_dir();
-    if let Err(error) = sync_packaged_content(packaged_dir, &work_dir) {
-        eprintln!("appd failed to stage packaged content: {error}");
-        return;
-    }
-
-    match crate::host::start_workerd_bridge(&work_dir) {
+#[cfg(feature = "bare-runtime")]
+fn start_runtime(packaged_dir: &Path, state_dir: &Path, certificates: &SharedCertificates) {
+    match crate::host::start_bare_runtime(packaged_dir, state_dir) {
         Ok(runtime) => {
+            clear_startup_error(state_dir);
+            let port = runtime.port;
             if let Ok(mut guard) = certificates.write() {
                 *guard = Some(runtime.certificates.clone());
             }
-            navigate_to_localhost(runtime.port);
-            let _ = runtime.join();
+            let state = RUNTIME.get_or_init(|| Mutex::new(RuntimeState::default()));
+            if let Ok(mut guard) = state.lock() {
+                if guard.suspended
+                    && let Err(error) = runtime.suspend()
+                {
+                    eprintln!("appd runtime lifecycle transition failed: {error}");
+                }
+                guard.runtime = Some(runtime);
+            }
+            navigate_to_localhost(port);
         }
         Err(error) => {
+            record_startup_error(state_dir, &error);
             eprintln!("appd runtime startup failed: {error:#}");
         }
     }
 }
 
-#[cfg(not(feature = "workerd-ffi"))]
-fn start_runtime(_: &Path, _: &SharedCertificates) {
-    eprintln!("appd runtime was built without the workerd-ffi feature");
+#[cfg(not(feature = "bare-runtime"))]
+fn start_runtime(_: &Path, _: &Path, _: &SharedCertificates) {
+    eprintln!("appd runtime was built without the bare-runtime feature");
 }
 
-#[cfg(feature = "workerd-ffi")]
-fn ios_writable_work_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
-    PathBuf::from(home).join("Library/Caches/app")
-}
-
-/// Copy packaged config and assets into the writable work directory.
-///
-/// Runs on every launch so app updates are picked up; files that only exist
-/// in `dest` (generated certificates) are left untouched.
-#[cfg(feature = "workerd-ffi")]
-fn sync_packaged_content(source: &Path, dest: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dest)?;
-    for entry in walkdir::WalkDir::new(source) {
-        let entry = entry.map_err(std::io::Error::other)?;
-        let relative = entry
-            .path()
-            .strip_prefix(source)
-            .map_err(std::io::Error::other)?;
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-
-        let target = dest.join(relative);
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&target)?;
-        } else if entry.file_type().is_file() {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "workerd-ffi")]
+#[cfg(feature = "bare-runtime")]
 fn navigate_to_localhost(port: u16) {
     run_on_main(move |_| {
         let webview = WEBVIEW.load(Ordering::Acquire);
         if webview.is_null() {
             return;
         }
-        let url_string = NSString::from_str(&crate::frontend_url(port, false));
+        let url_string = NSString::from_str(&crate::frontend_url(port));
         let Some(url) = NSURL::URLWithString(&url_string) else {
             eprintln!("appd failed to construct frontend URL");
             return;
@@ -308,6 +299,45 @@ fn navigate_to_localhost(port: u16) {
             let _: *mut AnyObject = msg_send![&*webview, loadRequest: &*request];
         }
     });
+}
+
+#[cfg(feature = "bare-runtime")]
+fn suspend_runtime() {
+    set_suspended(true);
+}
+
+#[cfg(not(feature = "bare-runtime"))]
+fn suspend_runtime() {}
+
+#[cfg(feature = "bare-runtime")]
+fn resume_runtime() {
+    set_suspended(false);
+}
+
+#[cfg(not(feature = "bare-runtime"))]
+fn resume_runtime() {}
+
+#[cfg(feature = "bare-runtime")]
+fn set_suspended(suspended: bool) {
+    let state = RUNTIME.get_or_init(|| Mutex::new(RuntimeState::default()));
+    let Ok(mut guard) = state.lock() else {
+        return;
+    };
+    if guard.suspended == suspended {
+        return;
+    }
+    guard.suspended = suspended;
+    let Some(runtime) = guard.runtime.as_ref() else {
+        return;
+    };
+    let result = if suspended {
+        runtime.suspend()
+    } else {
+        runtime.resume()
+    };
+    if let Err(error) = result {
+        eprintln!("appd runtime lifecycle transition failed: {error}");
+    }
 }
 
 fn shared_certificates() -> SharedCertificates {

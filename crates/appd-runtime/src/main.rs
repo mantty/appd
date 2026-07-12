@@ -2,10 +2,10 @@
 
 //! `appd` native runtime executable.
 
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "native-shell"))]
 fn main() {
     appd_runtime::platform::run();
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(feature = "native-shell")))]
 fn main() {}

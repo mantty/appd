@@ -15,7 +15,7 @@ use appd_target_pack::{Target, load_manifest};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "appd", version, about = "appd cross-platform app tooling")]
+#[command(name = "appd", version, about = "appd native app tooling")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -64,33 +64,21 @@ enum PackCommand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildPlatform {
     Ios,
-    IosSimulator,
-    Android,
     Macos,
-    Windows,
-    Linux,
 }
 
 impl BuildPlatform {
     fn display_name(self) -> &'static str {
         match self {
             Self::Ios => "iOS",
-            Self::IosSimulator => "iOS Simulator",
-            Self::Android => "Android",
             Self::Macos => "macOS",
-            Self::Windows => "Windows",
-            Self::Linux => "Linux",
         }
     }
 
     fn build_dir_name(self) -> &'static str {
         match self {
             Self::Ios => "ios",
-            Self::IosSimulator => "ios-simulator",
-            Self::Android => "android",
             Self::Macos => "macos",
-            Self::Windows => "windows",
-            Self::Linux => "linux",
         }
     }
 }
@@ -101,16 +89,8 @@ impl FromStr for BuildPlatform {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "ios" => Ok(Self::Ios),
-            "ios-simulator" => Ok(Self::IosSimulator),
-            "android" => Ok(Self::Android),
             "macos" => Ok(Self::Macos),
-            "windows" => Ok(Self::Windows),
-            "linux" => Ok(Self::Linux),
-            _ => {
-                bail!(
-                    "unknown platform '{value}'; expected ios, ios-simulator, android, macos, windows, or linux"
-                )
-            }
+            _ => bail!("unknown platform '{value}'; expected ios or macos"),
         }
     }
 }

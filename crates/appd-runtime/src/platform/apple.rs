@@ -1,6 +1,6 @@
 //! Shared Apple certificate and bundle helpers.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::{Arc, RwLock};
@@ -9,16 +9,17 @@ use block2::DynBlock;
 use objc2::ClassType;
 use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2_core_foundation::{CFArray, CFData, CFDictionary, CFRetained, CFString};
+use objc2_core_foundation::{CFArray, CFData, CFDictionary, CFRetained, CFType};
 use objc2_foundation::{
     NSArray, NSObject, NSURLAuthenticationChallenge, NSURLAuthenticationMethodClientCertificate,
     NSURLAuthenticationMethodServerTrust, NSURLCredential, NSURLCredentialPersistence,
     NSURLProtectionSpace, NSURLSessionAuthChallengeDisposition,
 };
 use objc2_security::{
-    SecCertificate, SecIdentity, SecPKCS12Import, SecTrust, kSecImportExportPassphrase,
-    kSecImportItemIdentity,
+    SecCertificate, SecIdentity, SecKey, SecTrust, kSecAttrKeyClass, kSecAttrKeyClassPrivate,
+    kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom,
 };
+use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
 use crate::certs::CertificateBundle;
 use crate::host::{work_dir_in_apple_resources, work_dir_next_to_current_exe_or_default};
@@ -26,6 +27,16 @@ use crate::host::{work_dir_in_apple_resources, work_dir_next_to_current_exe_or_d
 pub(super) type SharedCertificates = Arc<RwLock<Option<CertificateBundle>>>;
 pub(super) type AuthenticationCompletionHandler =
     DynBlock<dyn Fn(NSURLSessionAuthChallengeDisposition, *mut NSURLCredential)>;
+
+const STARTUP_ERROR_FILE: &str = "startup-error.log";
+
+pub(super) fn clear_startup_error(state_dir: &Path) {
+    let _ = std::fs::remove_file(state_dir.join(STARTUP_ERROR_FILE));
+}
+
+pub(super) fn record_startup_error(state_dir: &Path, error: &crate::RuntimeError) {
+    let _ = std::fs::write(state_dir.join(STARTUP_ERROR_FILE), format!("{error:#}"));
+}
 
 pub(super) fn handle_authentication_challenge(
     challenge: &NSURLAuthenticationChallenge,
@@ -93,7 +104,7 @@ fn handle_client_certificate(
     completion_handler: &AuthenticationCompletionHandler,
     certs: &CertificateBundle,
 ) {
-    let Some(identity) = import_pkcs12_identity(certs) else {
+    let Some(identity) = create_memory_identity(certs) else {
         reject_challenge(completion_handler);
         return;
     };
@@ -130,6 +141,17 @@ pub(super) fn bundle_work_dir() -> PathBuf {
     work_dir_next_to_current_exe_or_default()
 }
 
+pub(super) fn bundle_state_dir() -> PathBuf {
+    let bundle = objc2_foundation::NSBundle::mainBundle();
+    let identifier = bundle
+        .bundleIdentifier()
+        .map_or_else(|| "com.appd.runtime".to_owned(), |value| value.to_string());
+    std::env::var_os("HOME").map_or_else(
+        || std::env::temp_dir().join("appd").join(&identifier),
+        |home| PathBuf::from(home).join("Library/Caches").join(&identifier),
+    )
+}
+
 fn protection_space_server_trust(
     protection_space: &NSURLProtectionSpace,
 ) -> Option<NonNull<SecTrust>> {
@@ -144,27 +166,41 @@ fn credential_for_trust(trust: &SecTrust) -> Retained<NSURLCredential> {
     unsafe { msg_send![NSURLCredential::class(), credentialForTrust: trust] }
 }
 
-fn import_pkcs12_identity(certs: &CertificateBundle) -> Option<Retained<SecIdentity>> {
-    let p12_data = CFData::from_bytes(&certs.client_p12_der);
-    let password = CFString::from_str(&certs.p12_password);
-    let options =
-        CFDictionary::from_slices(&[unsafe { kSecImportExportPassphrase }], &[&*password]);
-    let mut items: *const CFArray<CFDictionary<CFString, SecIdentity>> = ptr::null();
-    let status = unsafe {
-        SecPKCS12Import(
-            &p12_data,
-            options.as_opaque(),
-            NonNull::from(&mut items).cast::<*const CFArray>(),
-        )
+fn create_memory_identity(certs: &CertificateBundle) -> Option<CFRetained<SecIdentity>> {
+    let certificate = unsafe {
+        SecCertificate::with_data(
+            None,
+            &CFData::from_bytes(&certificate_der(&certs.client_cert_pem)?),
+        )?
     };
-    if status != 0 || items.is_null() {
-        return None;
-    }
-    let items = unsafe { CFRetained::from_raw(NonNull::new_unchecked(items.cast_mut())) };
-    let first = items.get(0)?;
-    first
-        .get(unsafe { kSecImportItemIdentity })
-        .map(Retained::from)
+    let key_data = CFData::from_bytes(&x963_private_key(&certs.client_key_der)?);
+    let attributes = CFDictionary::<CFType, CFType>::from_slices(
+        &[
+            unsafe { kSecAttrKeyType }.as_ref(),
+            unsafe { kSecAttrKeyClass }.as_ref(),
+        ],
+        &[
+            unsafe { kSecAttrKeyTypeECSECPrimeRandom }.as_ref(),
+            unsafe { kSecAttrKeyClassPrivate }.as_ref(),
+        ],
+    );
+    let key = unsafe { SecKey::with_data(&key_data, attributes.as_opaque(), ptr::null_mut()) }?;
+    unsafe { SecIdentity::new(None, &certificate, &key) }
+}
+
+fn certificate_der(pem: &str) -> Option<Vec<u8>> {
+    x509_parser::pem::parse_x509_pem(pem.as_bytes())
+        .ok()
+        .map(|(_, certificate)| certificate.contents)
+}
+
+fn x963_private_key(pkcs8_der: &[u8]) -> Option<Vec<u8>> {
+    let secret = SecretKey::from_pkcs8_der(pkcs8_der).ok()?;
+    let public = secret.public_key().to_sec1_bytes();
+    let mut key = Vec::with_capacity(public.len() + secret.to_bytes().len());
+    key.extend_from_slice(&public);
+    key.extend_from_slice(&secret.to_bytes());
+    Some(key)
 }
 
 fn credential_for_identity(identity: &SecIdentity) -> Retained<NSURLCredential> {
@@ -177,5 +213,18 @@ fn credential_for_identity(identity: &SecIdentity) -> Retained<NSURLCredential> 
             certificates: ptr::null::<NSArray<NSObject>>(),
             persistence: NSURLCredentialPersistence::None
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_memory_identity;
+    use crate::certs::CertificateBundle;
+
+    #[test]
+    fn creates_client_identity_without_keychain_import() -> crate::RuntimeResult<()> {
+        let certificates = CertificateBundle::generate()?;
+        assert!(create_memory_identity(&certificates).is_some());
+        Ok(())
     }
 }

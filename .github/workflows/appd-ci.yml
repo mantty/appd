@@ -1,0 +1,71 @@
+name: appd CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appd-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          components: clippy, rustfmt
+          targets: aarch64-apple-ios
+
+      - name: Setup Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check TypeScript
+        run: |
+          pnpm lint:ts
+          pnpm test:ts
+          pnpm test:bare
+          pnpm build:runtime
+          pnpm --config.node-linker=isolated --filter appd deploy --prod "${RUNNER_TEMP}/appd-runtime"
+          pnpm --config.node-linker=isolated --filter @appd/bare-pack-tool deploy --prod "${RUNNER_TEMP}/appd-packer"
+          test -f target/runtime-js/bootstrap.js
+          test -d "${RUNNER_TEMP}/appd-runtime/node_modules/bare-https"
+          test -f "${RUNNER_TEMP}/appd-packer/node_modules/bare-pack/bin.js"
+          test -f "${RUNNER_TEMP}/appd-packer/node_modules/esbuild/bin/esbuild"
+
+      - name: Check Rust
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p appd-runtime --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --target aarch64-apple-ios --features bare-test-stubs -- -D warnings
+          cargo test --workspace
+
+      - name: Check Bare build scripts
+        run: python3 -m unittest discover -s bare/tests

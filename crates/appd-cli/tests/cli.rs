@@ -17,21 +17,21 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
     write_manifest_json(
         dir,
         r#"{
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "appdVersion": "0.1.0",
-  "target": "android-arm64",
+  "target": "macos-arm64",
   "artifacts": [
     {
-      "kind": "runtimeSharedLibrary",
-      "path": "lib/libappd.so",
+      "kind": "runtimeExecutable",
+      "path": "bin/appd-runtime",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     {
-      "kind": "androidManifest",
-      "path": "AndroidManifest.xml"
+      "kind": "runtimeJavaScriptDirectory",
+      "path": "runtime-js"
     }
   ],
-  "requiredTools": ["android-sdk"]
+  "requiredTools": ["node"]
 }"#,
     )
 }
@@ -40,11 +40,10 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
 fn lists_supported_targets() -> TestResult {
     let mut cmd = Command::cargo_bin("appd")?;
 
-    cmd.arg("targets").assert().success().stdout(
-        contains("ios-simulator-arm64")
-            .and(contains("android-arm64"))
-            .and(contains("windows-x64")),
-    );
+    cmd.arg("targets")
+        .assert()
+        .success()
+        .stdout(contains("ios-arm64").and(contains("macos-arm64")));
 
     Ok(())
 }
@@ -59,9 +58,9 @@ fn inspects_target_pack_manifest() -> TestResult {
         .arg(&manifest_path)
         .assert()
         .success()
-        .stdout(contains("target: android-arm64"))
+        .stdout(contains("target: macos-arm64"))
         .stdout(contains("artifacts: 2"))
-        .stdout(contains("required tools: android-sdk"));
+        .stdout(contains("required tools: node"));
 
     Ok(())
 }
@@ -72,9 +71,9 @@ fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "appdVersion": "0.1.0",
-  "target": "linux-x64",
+  "target": "ios-arm64",
   "artifacts": [
     {
       "kind": "runtimeExecutable",
@@ -90,7 +89,7 @@ fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
         .arg(&manifest_path)
         .assert()
         .success()
-        .stdout(contains("target: linux-x64"))
+        .stdout(contains("target: ios-arm64"))
         .stdout(contains("required tools: none"));
 
     Ok(())
@@ -102,10 +101,10 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "appdVersion": "0.1.0",
-  "target": "android-arm64",
-  "artifacts": [{"kind": "runtimeSharedLibrary", "path": "../libappd.so"}],
+  "target": "ios-arm64",
+  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime"}],
   "requiredTools": []
 }"#,
     )?;
@@ -116,7 +115,7 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
         .assert()
         .failure()
         .stderr(contains("invalid target pack").and(contains(
-            "artifact path must stay inside the target pack: ../libappd.so",
+            "artifact path must stay inside the target pack: ../appd-runtime",
         )));
 
     Ok(())

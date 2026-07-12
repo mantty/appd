@@ -18,7 +18,7 @@ pub struct TargetPackVersion(pub u32);
 
 impl TargetPackVersion {
     /// Current manifest schema version.
-    pub const CURRENT: Self = Self(1);
+    pub const CURRENT: Self = Self(3);
 }
 
 /// Supported `appd` runtime target triples.
@@ -26,45 +26,18 @@ impl TargetPackVersion {
 pub enum Target {
     /// Physical iOS devices.
     IosArm64,
-    /// Apple Silicon iOS simulator.
-    IosSimulatorArm64,
-    /// Intel iOS simulator.
-    IosSimulatorX64,
-    /// Android arm64-v8a devices.
-    AndroidArm64,
     /// Apple Silicon macOS.
     MacosArm64,
-    /// Intel macOS.
-    MacosX64,
-    /// Windows `x86_64` MSVC.
-    WindowsX64,
-    /// Linux `x86_64` GNU.
-    LinuxX64,
 }
 
 impl Target {
     /// All supported targets in stable display order.
-    pub const ALL: &'static [Self] = &[
-        Self::IosArm64,
-        Self::IosSimulatorArm64,
-        Self::IosSimulatorX64,
-        Self::AndroidArm64,
-        Self::MacosArm64,
-        Self::MacosX64,
-        Self::WindowsX64,
-        Self::LinuxX64,
-    ];
+    pub const ALL: &'static [Self] = &[Self::IosArm64, Self::MacosArm64];
 
     fn manifest_name(self) -> &'static str {
         match self {
             Self::IosArm64 => "ios-arm64",
-            Self::IosSimulatorArm64 => "ios-simulator-arm64",
-            Self::IosSimulatorX64 => "ios-simulator-x64",
-            Self::AndroidArm64 => "android-arm64",
             Self::MacosArm64 => "macos-arm64",
-            Self::MacosX64 => "macos-x64",
-            Self::WindowsX64 => "windows-x64",
-            Self::LinuxX64 => "linux-x64",
         }
     }
 }
@@ -116,18 +89,12 @@ impl FromStr for Target {
 pub enum ArtifactKind {
     /// Executable runtime binary.
     RuntimeExecutable,
-    /// Shared runtime library.
-    RuntimeSharedLibrary,
-    /// Static runtime library for a final app link step.
-    RuntimeStaticLibrary,
-    /// Android DEX shim classes.
-    AndroidDex,
-    /// Android manifest template.
-    AndroidManifest,
-    /// Runtime resource directory.
-    ResourceDirectory,
-    /// C-compatible headers for plugin/runtime integration.
-    HeaderArchive,
+    /// Compiled appd JavaScript runtime modules used by the host packer.
+    RuntimeJavaScriptDirectory,
+    /// Standalone host-side Bare bundle packer.
+    BarePackExecutable,
+    /// Host-side JavaScript compiler used to produce `CommonJS` worklets.
+    EsbuildExecutable,
 }
 
 /// A single file or directory provided by a target pack.
