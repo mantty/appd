@@ -27,8 +27,15 @@ pub(crate) fn validate_target(
     platform: BuildPlatform,
 ) -> Result<()> {
     let matches = match platform {
-        BuildPlatform::Macos => manifest.target == Target::MacosArm64,
+        BuildPlatform::Android => manifest.target == Target::AndroidArm64,
+        BuildPlatform::Macos => {
+            matches!(manifest.target, Target::MacosArm64 | Target::MacosX64)
+        }
         BuildPlatform::Ios => manifest.target == Target::IosArm64,
+        BuildPlatform::IosSimulator => matches!(
+            manifest.target,
+            Target::IosSimulatorArm64 | Target::IosSimulatorX64
+        ),
     };
     if matches {
         Ok(())
@@ -82,13 +89,11 @@ pub(crate) fn read_package_name(project: &Path) -> Result<String> {
     let name = json
         .get("name")
         .and_then(serde_json::Value::as_str)
-        .context("package.json name must be a string")?;
-    let is_safe = !name.is_empty()
-        && !matches!(name, "." | "..")
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character));
-    if !is_safe {
+        .context("package.json name is required")?;
+    if name.is_empty() {
+        bail!("package.json name is required");
+    }
+    if !appd_runtime::is_valid_app_name(name) {
         bail!("package.json name is not a safe app name: {name}");
     }
     Ok(name.to_owned())

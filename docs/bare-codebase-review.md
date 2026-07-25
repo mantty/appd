@@ -44,22 +44,24 @@ HTTP async iterator as a `ReadableStream` in the worker `Request` instead of
 calling `collect()` first. The app can still explicitly buffer by consuming
 the request body, but the runtime must not do so on its behalf.
 
-### 4. The Cloudflare compatibility surface is much smaller than it appears
+### 4. Cloudflare compatibility contract — defined
 
-The following are missing or only stubs within the current `cloudflare:workers`
-and Worker-runtime surface:
+The supported core contract now includes class-based `WorkerEntrypoint`
+construction with request-scoped `ctx` and `env`, and awaited `waitUntil()`
+completion. Unsupported Durable Objects and RPC targets fail explicitly when
+constructed instead of silently acting like supported APIs.
 
-- `WorkerEntrypoint` lifecycle and dispatch semantics, including a real `ctx`
-  and `env` passed to methods.
-- `ExecutionContext` lifecycle, `waitUntil` completion/error handling,
-  `passThroughOnException`, and request properties such as `ctx.props`.
-- Full Web Platform/Cloudflare additions such as `HTMLRewriter`, complete
-  WebSocket APIs, and Cloudflare-specific request/response extensions.
+The following remain intentionally outside the supported contract:
+
+- `passThroughOnException`, because appd has no origin server to pass a request
+  through to.
+- Durable Object storage/routing/hibernation and RPC dispatch.
+- Full Web Platform/Cloudflare additions such as `HTMLRewriter` and
+  Cloudflare-specific request/response extensions.
 - Colo/request metadata and `Request.cf` behavior.
 
-This is not a problem if appd deliberately defines a small supported contract;
-it is a problem if the compatibility package presents these names as if they
-were supported.
+The compatibility package should continue to expose only APIs with defined
+appd behavior, or fail explicitly as these unsupported features do.
 
 ### 5. Non-`fetch` Worker event handlers are not implemented
 
@@ -89,26 +91,22 @@ These are separate product integrations beyond the core Workers runtime:
 The compatibility contract should name which of these appd supports rather
 than implying that a generic `env` object provides them automatically.
 
-### 7. Cloudflare semantics are not yet matched
+### 7. Core Cloudflare semantics — substantially improved
 
-The missing behavior is broader than missing names:
+The runtime now awaits `waitUntil()` work, constructs class entrypoints per
+request, streams request/response bodies, derives request URLs from the Host
+header, returns a generic 500 response without leaking exception text, and
+uses Bare's standard process compatibility module for `process.env` and
+`process.nextTick`.
 
-- `waitUntil()` is fire-and-forget; `drain()` does not await or retain pending
-  work through the request lifecycle.
-- `passThroughOnException()` does nothing, and there is no platform fallback
-  response to pass through to.
-- `env` is a mutable global rather than an isolate/request-scoped binding
-  environment.
-- Class-based entrypoint lifecycle and dispatch semantics are not implemented.
-- WebSocket close events are emitted locally and remotely immediately, rather
-  than following wire close state. There is no `readyState`, close code/reason,
-  property event handlers, or complete backpressure/error behavior.
-- Request and response bodies are not streamed, and request URLs are rebuilt
-  with a hardcoded `https://localhost` authority.
-- Worker exceptions become a generic 500 response containing the exception
-  message, rather than following a defined production error policy.
-- The process shim has incomplete Node behavior; in particular, `nextTick`
-  ordering and `process.env` do not match Node.
+Remaining semantic differences are explicit:
+
+- `passThroughOnException()` fails explicitly because no origin fallback exists.
+- Imported `env` bindings are runtime-scoped; class entrypoints receive the
+  same bindings explicitly per request.
+- WebSocket close metadata is tracked by appd, but the vendored transport does
+  not expose all wire-level close details or backpressure metrics.
+- Cloudflare request metadata such as `Request.cf` is unavailable locally.
 
 ### 8. Certificate caching — completed
 
@@ -128,22 +126,24 @@ plumbing and blocks older devices.
 Build orchestration, worker compilation, target-pack handling, shared helpers,
 and Apple bundle/signing code now live in separate focused modules.
 
-### 11. Native builds depend on package-manager layout
+### 11. Native builds depend on package-manager layout — completed
 
-CMake resolves Bare modules through the root hoisted `node_modules`, while
-packaging uses isolated linking. Native compilation and packaging therefore
-depend on different dependency layouts.
+CMake now consumes a generated, target-specific isolated native-module
+deployment, matching the dependency layout used by packaging.
+The pinned BareKit dependencies remain resolved from the pinned BareKit source;
+appd's native addons no longer depend on the repository's root `node_modules`.
 
-### 12. Missing target packs trigger a source build
+### 12. Missing target packs no longer trigger a source build — completed
 
-The CLI falls back to building the Bare SDK, runtime, packer, and Rust runtime
-from the source workspace. That is useful for development but should be an
-explicit developer command, not an implicit product path.
+The app build path requires a bundled or explicitly supplied target pack. Source
+target-pack generation is available only through the explicit `appd pack build`
+developer command.
 
-### 13. Target-pack integrity is half implemented
+### 13. Target-pack integrity is verified — completed
 
-The manifest supports SHA-256 values, but generated manifests set every hash to
-`None`, and consumers do not verify artifact contents.
+Target-pack manifests require SHA-256 digests for every file or directory
+artifact. Source-generated packs calculate deterministic file and directory
+digests, and manifest loading verifies every artifact before the pack is used.
 
 ### 14. Vendored dependencies lack synchronization metadata
 
@@ -151,11 +151,12 @@ The repository contains full copies of `bare-tls`, `bare-ws`, and
 `cmake-toolchains`, but does not record a machine-checkable upstream revision or
 divergence manifest. Future upgrades will be difficult to audit.
 
-### 15. Generated output leaks into the working tree
+### 15. Generated output leaks into the working tree — completed
 
-Nested `tools/bare-pack/node_modules` and `target` directories are not covered
-by the root ignore rules. Packing cleanup is also best-effort, so failed builds
-can leave stale symlinks and files behind.
+Nested tool dependency and target directories are now ignored. Target-pack
+outputs and deploy destinations are cleared before each build, including stale
+symlinks, and the target-pack directory is cleared before source compilation so
+failed builds cannot leave an older pack appearing current.
 
 ### 16. Addon discovery is implicit
 
@@ -171,13 +172,10 @@ latency regression benchmark.
 
 ## Recommended order
 
-1. Decide and document the supported Cloudflare contract; fail explicitly for
-   everything else.
-2. Decide which non-`fetch` handlers and additional Cloudflare services are in
+1. Decide which non-`fetch` handlers and additional Cloudflare services are in
    scope.
-3. Make target-pack integrity and iOS deployment compatibility explicit
-   product decisions.
-4. Make native packaging hermetic and close the remaining CI coverage gaps.
+2. Make iOS deployment compatibility an explicit product decision.
+3. Close the remaining CI coverage gaps.
 
 The Bare architecture remains viable. These are boundary and contract issues,
 not evidence that the core technology choice is wrong.

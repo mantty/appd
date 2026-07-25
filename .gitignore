@@ -1,4 +1,6 @@
 /target/
 /node_modules/
+/tools/**/node_modules/
+/tools/**/target/
 *.pyc
 __pycache__/

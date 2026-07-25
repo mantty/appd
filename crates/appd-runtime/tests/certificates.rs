@@ -3,21 +3,26 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use appd_runtime::certs::{CertificateBundle, CertificatePaths};
-use openssl::nid::Nid;
-use openssl::stack::Stack;
-use openssl::x509::store::X509StoreBuilder;
-use openssl::x509::{X509, X509StoreContext, X509StoreContextRef};
+use x509_parser::{
+    certificate::X509Certificate,
+    extensions::{GeneralName, ParsedExtension},
+    parse_x509_certificate,
+    pem::parse_x509_pem,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[test]
 fn generates_certificate_bundle_with_platform_required_materials() -> TestResult {
-    let bundle = CertificateBundle::generate()?;
+    let bundle = CertificateBundle::generate("app.appd.local")?;
     assert_pem_material(&bundle);
 
-    let ca_cert = X509::from_pem(bundle.ca_cert_pem.as_bytes())?;
-    let server_cert = X509::from_pem(bundle.server_cert_pem.as_bytes())?;
-    let client_cert = X509::from_pem(bundle.client_cert_pem.as_bytes())?;
+    let ca_der = certificate_der(&bundle.ca_cert_pem)?;
+    let server_der = certificate_der(&bundle.server_cert_pem)?;
+    let client_der = certificate_der(&bundle.client_cert_pem)?;
+    let (_, ca_cert) = parse_x509_certificate(&ca_der)?;
+    let (_, server_cert) = parse_x509_certificate(&server_der)?;
+    let (_, client_cert) = parse_x509_certificate(&client_der)?;
     assert_certificate_chain(&ca_cert, &server_cert, &client_cert)?;
     assert_server_names(&server_cert)?;
     assert_certificate_usages(&ca_cert, &server_cert, &client_cert)?;
@@ -30,81 +35,112 @@ fn assert_pem_material(bundle: &CertificateBundle) {
     assert!(bundle.ca_cert_pem.starts_with(certificate));
     assert!(bundle.server_cert_pem.starts_with(certificate));
     assert!(bundle.server_key_pem.starts_with(key));
+    assert!(bundle.ca_key_pem.starts_with(key));
+    assert!(bundle.server_identity_pem.contains(&bundle.server_cert_pem));
+    assert!(bundle.server_identity_pem.contains(&bundle.server_key_pem));
     assert!(bundle.client_cert_pem.starts_with(certificate));
     assert!(bundle.client_key_pem.starts_with(key));
     assert!(!bundle.client_key_der.is_empty());
 }
 
-fn assert_certificate_chain(ca: &X509, server: &X509, client: &X509) -> TestResult {
+fn assert_certificate_chain(
+    ca: &X509Certificate<'_>,
+    server: &X509Certificate<'_>,
+    client: &X509Certificate<'_>,
+) -> TestResult {
     assert_eq!(common_name(ca)?, "appd local ca");
-    assert_eq!(common_name(server)?, "localhost");
+    assert_eq!(common_name(server)?, "app.appd.local");
     assert_eq!(common_name(client)?, "appd client");
-    let key = ca.public_key()?;
-    assert!(ca.verify(&key)?);
-    assert!(server.verify(&key)?);
-    assert!(client.verify(&key)?);
-    assert!(certificate_verifies_against_ca(server, ca)?);
-    assert!(certificate_verifies_against_ca(client, ca)?);
+    assert!(ca.validity().is_valid());
+    assert!(server.validity().is_valid());
+    assert!(client.validity().is_valid());
+    ca.verify_signature(None)?;
+    assert_eq!(server.issuer(), ca.subject());
+    assert_eq!(client.issuer(), ca.subject());
+    server.verify_signature(Some(ca.public_key()))?;
+    client.verify_signature(Some(ca.public_key()))?;
     Ok(())
 }
 
-fn assert_server_names(server: &X509) -> TestResult {
-    let san = server
-        .subject_alt_names()
+fn assert_server_names(server: &X509Certificate<'_>) -> TestResult {
+    let names = server
+        .extensions()
+        .iter()
+        .find_map(|extension| {
+            let ParsedExtension::SubjectAlternativeName(san) = extension.parsed_extension() else {
+                return None;
+            };
+            Some(&san.general_names)
+        })
         .ok_or("server certificate must include SANs")?;
-    assert!(san.iter().any(|name| name.dnsname() == Some("localhost")));
     assert!(
-        san.iter()
-            .any(|name| name.ipaddress() == Some(&[127, 0, 0, 1]))
+        names
+            .iter()
+            .any(|name| matches!(name, GeneralName::DNSName("localhost")))
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| matches!(name, GeneralName::DNSName("app.appd.local")))
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| matches!(name, GeneralName::IPAddress(value) if *value == [127, 0, 0, 1]))
     );
 
     Ok(())
 }
 
-fn assert_certificate_usages(ca: &X509, server: &X509, client: &X509) -> TestResult {
-    let ca_text = cert_text(ca)?;
-    assert!(ca_text.contains("CA:TRUE"));
-    assert!(ca_text.contains("Certificate Sign"));
-    assert!(ca_text.contains("CRL Sign"));
+fn assert_certificate_usages(
+    ca: &X509Certificate<'_>,
+    server: &X509Certificate<'_>,
+    client: &X509Certificate<'_>,
+) -> TestResult {
+    assert!(
+        ca.basic_constraints()?
+            .ok_or("CA basic constraints are missing")?
+            .value
+            .ca
+    );
+    let ca_usage = ca.key_usage()?.ok_or("CA key usage is missing")?.value;
+    assert!(ca_usage.key_cert_sign());
+    assert!(ca_usage.crl_sign());
 
-    let server_text = cert_text(server)?;
-    assert!(server_text.contains("TLS Web Server Authentication"));
-    assert!(!server_text.contains("TLS Web Client Authentication"));
+    let server_usage = server
+        .extended_key_usage()?
+        .ok_or("server extended key usage is missing")?
+        .value;
+    assert!(server_usage.server_auth);
+    assert!(!server_usage.client_auth);
 
-    let client_text = cert_text(client)?;
-    assert!(client_text.contains("TLS Web Client Authentication"));
-    assert!(!client_text.contains("TLS Web Server Authentication"));
+    let client_usage = client
+        .extended_key_usage()?
+        .ok_or("client extended key usage is missing")?
+        .value;
+    assert!(client_usage.client_auth);
+    assert!(!client_usage.server_auth);
 
     Ok(())
 }
 
-fn common_name(cert: &X509) -> TestResult<String> {
+fn common_name(cert: &X509Certificate<'_>) -> TestResult<String> {
     let entry = cert
-        .subject_name()
-        .entries_by_nid(Nid::COMMONNAME)
+        .subject()
+        .iter_common_name()
         .next()
         .ok_or("certificate subject is missing a common name")?;
-    Ok(entry.data().as_utf8()?.to_string())
+    Ok(entry.as_str()?.to_owned())
 }
 
-fn cert_text(cert: &X509) -> TestResult<String> {
-    Ok(String::from_utf8(cert.to_text()?)?)
-}
-
-fn certificate_verifies_against_ca(cert: &X509, ca: &X509) -> TestResult<bool> {
-    let mut store = X509StoreBuilder::new()?;
-    store.add_cert(ca.to_owned())?;
-    let store = store.build();
-    let chain = Stack::new()?;
-
-    let mut context = X509StoreContext::new()?;
-    Ok(context.init(&store, cert, &chain, X509StoreContextRef::verify_cert)?)
+fn certificate_der(pem: &str) -> TestResult<Vec<u8>> {
+    Ok(parse_x509_pem(pem.as_bytes())?.1.contents)
 }
 
 #[test]
 fn writes_and_loads_cached_certificate_bundle() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
-    let bundle = CertificateBundle::generate()?;
+    let bundle = CertificateBundle::generate("app.appd.local")?;
 
     bundle.write_all(temp_dir.path())?;
     assert!(CertificatePaths::all_exist(temp_dir.path()));
@@ -115,9 +151,11 @@ fn writes_and_loads_cached_certificate_bundle() -> TestResult {
 
     for name in [
         "ca.cert.pem",
+        "ca.key.pem",
         "ca.cert.der",
         "server.cert.pem",
         "server.key.pem",
+        "server.identity.pem",
         "client.cert.pem",
         "client.key.pem",
         "client.key.der",
@@ -131,6 +169,8 @@ fn writes_and_loads_cached_certificate_bundle() -> TestResult {
     #[cfg(unix)]
     for name in [
         CertificatePaths::SERVER_KEY_PEM,
+        CertificatePaths::CA_KEY_PEM,
+        CertificatePaths::SERVER_IDENTITY_PEM,
         CertificatePaths::CLIENT_KEY_PEM,
         CertificatePaths::CLIENT_KEY_DER,
     ] {

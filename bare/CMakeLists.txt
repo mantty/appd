@@ -5,13 +5,20 @@ project(appd_bare LANGUAGES C CXX VERSION 0.1.0)
 if(NOT DEFINED BARE_KIT_SOURCE)
   message(FATAL_ERROR "BARE_KIT_SOURCE must point to the pinned BareKit source")
 endif()
+if(NOT DEFINED APPD_BARE_MODULES_ROOT)
+  message(FATAL_ERROR "APPD_BARE_MODULES_ROOT must point to the isolated native module deployment")
+endif()
 
 foreach(package cmake-bare cmake-bare-bundle cmake-fetch cmake-java cmake-napi cmake-npm)
   set("${package}_DIR" "${BARE_KIT_SOURCE}/node_modules/${package}")
 endforeach()
 add_subdirectory("${BARE_KIT_SOURCE}" "${CMAKE_BINARY_DIR}/bare-kit")
 
-add_library(appd_bare STATIC)
+if(ANDROID)
+  add_library(appd_bare SHARED)
+else()
+  add_library(appd_bare STATIC)
+endif()
 
 set_target_properties(
   appd_bare
@@ -26,10 +33,14 @@ target_include_directories(appd_bare SYSTEM PRIVATE "${BARE_KIT_SOURCE}/shared")
 target_link_libraries(appd_bare PUBLIC bare_worklet)
 target_compile_options(appd_bare PRIVATE -Wall -Wextra -Werror -Wpedantic)
 
-link_bare_modules(appd_bare WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+link_bare_modules(appd_bare WORKING_DIRECTORY "${APPD_BARE_MODULES_ROOT}")
 
 add_executable(appd_bare_link_test tests/link.c)
-target_link_libraries(appd_bare_link_test PRIVATE appd_bare System)
+target_link_libraries(appd_bare_link_test PRIVATE appd_bare)
+
+if(NOT ANDROID)
+  target_link_libraries(appd_bare_link_test PRIVATE System)
+endif()
 
 if(APPLE)
   execute_process(
@@ -46,10 +57,14 @@ if(APPLE)
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(compiler_runtime "${compiler_resource_dir}/lib/darwin/libclang_rt.osx.a")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(compiler_runtime "${compiler_resource_dir}/lib/darwin/libclang_rt.ios.a")
+    if(CMAKE_C_COMPILER_TARGET MATCHES "simulator")
+      set(compiler_runtime "${compiler_resource_dir}/lib/darwin/libclang_rt.iossim.a")
+    else()
+      set(compiler_runtime "${compiler_resource_dir}/lib/darwin/libclang_rt.ios.a")
+    endif()
   endif()
   target_link_libraries(appd_bare_link_test PRIVATE "${compiler_runtime}")
 endif()
 
-install(TARGETS appd_bare ARCHIVE DESTINATION lib)
+install(TARGETS appd_bare ARCHIVE LIBRARY DESTINATION lib)
 install(FILES include/appd_bare.h DESTINATION include)

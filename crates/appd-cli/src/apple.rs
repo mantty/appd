@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use appd_runtime::wrangler_config::WranglerConfig;
-use appd_target_pack::TargetPackManifest;
+use appd_target_pack::{Target, TargetPackManifest};
 
 use super::support::{build_dir, copy_file, make_executable, reset_path};
 use super::worker::prepare_bare_app;
@@ -22,12 +22,11 @@ pub(crate) fn build_macos(
     let contents = bundle.join("Contents");
     let executable_dir = contents.join("MacOS");
     let app_dir = contents.join("Resources/app");
-    let frameworks = contents.join("Frameworks");
     fs::create_dir_all(&executable_dir)?;
     fs::create_dir_all(&app_dir)?;
 
     install_runtime(pack_root, manifest, &executable_dir.join(app_name))?;
-    prepare_bare_app(&app_dir, &frameworks, pack_root, manifest, wrangler)?;
+    prepare_bare_app(&app_dir, pack_root, manifest, wrangler)?;
     write_macos_plist(&contents.join("Info.plist"), &bundle_id(app_name), app_name)?;
     sign(&bundle, "-", None)?;
     Ok(BuildSummary {
@@ -43,20 +42,37 @@ pub(crate) fn build_ios(
     app_name: &str,
     wrangler: &WranglerConfig,
 ) -> Result<BuildSummary> {
-    let bundle = build_dir(project, BuildPlatform::Ios).join(format!("{app_name}.app"));
+    let platform = ios_build_platform(manifest.target)?;
+    let bundle = build_dir(project, platform).join(format!("{app_name}.app"));
     reset_path(&bundle)?;
     let app_dir = bundle.join("app");
-    let frameworks = bundle.join("Frameworks");
     fs::create_dir_all(&app_dir)?;
 
     install_runtime(pack_root, manifest, &bundle.join(app_name))?;
-    prepare_bare_app(&app_dir, &frameworks, pack_root, manifest, wrangler)?;
-    write_ios_plist(&bundle.join("Info.plist"), &bundle_id(app_name), app_name)?;
-    sign_ios(&bundle)?;
+    prepare_bare_app(&app_dir, pack_root, manifest, wrangler)?;
+    write_ios_plist(
+        &bundle.join("Info.plist"),
+        &bundle_id(app_name),
+        app_name,
+        platform == BuildPlatform::IosSimulator,
+    )?;
+    if platform == BuildPlatform::IosSimulator {
+        sign(&bundle, "-", None)?;
+    } else {
+        sign_ios(&bundle)?;
+    }
     Ok(BuildSummary {
-        platform: BuildPlatform::Ios,
+        platform,
         bundle_dir: bundle,
     })
+}
+
+fn ios_build_platform(target: Target) -> Result<BuildPlatform> {
+    match target {
+        Target::IosArm64 => Ok(BuildPlatform::Ios),
+        Target::IosSimulatorArm64 | Target::IosSimulatorX64 => Ok(BuildPlatform::IosSimulator),
+        _ => bail!("target pack {target} is not an iOS target"),
+    }
 }
 
 fn install_runtime(pack_root: &Path, manifest: &TargetPackManifest, to: &Path) -> Result<()> {
@@ -70,21 +86,24 @@ fn install_runtime(pack_root: &Path, manifest: &TargetPackManifest, to: &Path) -
 }
 
 fn write_macos_plist(path: &Path, identifier: &str, app_name: &str) -> Result<()> {
-    fs::write(path, plist(identifier, app_name, false))?;
+    fs::write(path, plist(identifier, app_name, macos_plist_entries()))?;
     Ok(())
 }
 
-fn write_ios_plist(path: &Path, identifier: &str, app_name: &str) -> Result<()> {
-    fs::write(path, plist(identifier, app_name, true))?;
-    Ok(())
-}
-
-fn plist(identifier: &str, app_name: &str, ios: bool) -> String {
-    let platform = if ios {
-        ios_plist_entries()
+fn write_ios_plist(path: &Path, identifier: &str, app_name: &str, simulator: bool) -> Result<()> {
+    let supported_platform = if simulator {
+        "iPhoneSimulator"
     } else {
-        macos_plist_entries()
+        "iPhoneOS"
     };
+    fs::write(
+        path,
+        plist(identifier, app_name, &ios_plist_entries(supported_platform)),
+    )?;
+    Ok(())
+}
+
+fn plist(identifier: &str, app_name: &str, platform: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -101,8 +120,11 @@ fn plist(identifier: &str, app_name: &str, ios: bool) -> String {
     )
 }
 
-fn ios_plist_entries() -> &'static str {
-    r"<key>MinimumOSVersion</key><string>17.0</string>
+fn ios_plist_entries(platform: &str) -> String {
+    format!(
+        r"<key>CFBundleSupportedPlatforms</key><array><string>{platform}</string></array>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>MinimumOSVersion</key><string>17.0</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
   <key>UILaunchScreen</key><dict/>
@@ -111,10 +133,12 @@ fn ios_plist_entries() -> &'static str {
     <string>UIInterfaceOrientationLandscapeLeft</string>
     <string>UIInterfaceOrientationLandscapeRight</string>
   </array>"
+    )
 }
 
 fn macos_plist_entries() -> &'static str {
-    "<key>NSHighResolutionCapable</key><true/>"
+    "<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>NSHighResolutionCapable</key><true/>"
 }
 
 fn sign_ios(bundle: &Path) -> Result<()> {
@@ -133,28 +157,9 @@ fn sign_ios_for_device(bundle: &Path, identity: &str, profile: &Path) -> Result<
     copy_file(profile, bundle.join("embedded.mobileprovision"))?;
     let entitlements = bundle.with_extension("entitlements.plist");
     extract_entitlements(profile, &entitlements)?;
-    sign_ios_frameworks(bundle, identity)?;
     let result = sign(bundle, identity, Some(&entitlements));
     fs::remove_file(entitlements)?;
     result
-}
-
-fn sign_ios_frameworks(bundle: &Path, identity: &str) -> Result<()> {
-    let frameworks = bundle.join("Frameworks");
-    if !frameworks.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(frameworks)? {
-        let entry = entry?;
-        if entry
-            .path()
-            .extension()
-            .is_some_and(|extension| extension == "framework")
-        {
-            sign(&entry.path(), identity, None)?;
-        }
-    }
-    Ok(())
 }
 
 fn extract_entitlements(profile: &Path, output: &Path) -> Result<()> {
@@ -221,4 +226,18 @@ fn sign(path: &Path, identity: &str, entitlements: Option<&Path>) -> Result<()> 
 
 fn bundle_id(app_name: &str) -> String {
     format!("com.appd.{app_name}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn apple_bundles_allow_local_networking() {
+        assert!(super::ios_plist_entries("iPhoneOS").contains("NSAllowsLocalNetworking"));
+        assert!(super::macos_plist_entries().contains("NSAllowsLocalNetworking"));
+    }
+
+    #[test]
+    fn simulator_bundles_use_the_simulator_platform() {
+        assert!(super::ios_plist_entries("iPhoneSimulator").contains("iPhoneSimulator"));
+    }
 }

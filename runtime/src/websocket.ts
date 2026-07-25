@@ -1,5 +1,10 @@
-type Listener = (event: MessageEvent | Event) => void;
+type Listener = (event: Event) => void;
 type TransportListener = (value?: Uint8Array | Error, binary?: boolean) => void;
+
+const CONNECTING = 0;
+const OPEN = 1;
+const CLOSING = 2;
+const CLOSED = 3;
 
 export interface Transport {
   destroy(error?: Error): void;
@@ -13,9 +18,41 @@ export class WorkerWebSocket {
   readonly #listeners = new Map<string, Set<Listener>>();
   #peer?: WorkerWebSocket;
   #transport?: Transport;
+  #readyState = CONNECTING;
+  #closeCode = 1000;
+  #closeReason = "";
+
+  onopen: Listener | null = null;
+  onmessage: Listener | null = null;
+  onclose: Listener | null = null;
+  onerror: Listener | null = null;
+
+  static readonly CONNECTING = CONNECTING;
+  static readonly OPEN = OPEN;
+  static readonly CLOSING = CLOSING;
+  static readonly CLOSED = CLOSED;
+
+  get readyState(): number {
+    return this.#readyState;
+  }
+
+  get bufferedAmount(): number {
+    return 0;
+  }
+
+  get protocol(): string {
+    return "";
+  }
+
+  get extensions(): string {
+    return "";
+  }
 
   accept(): void {
+    if (this.#readyState !== CONNECTING) return;
     this.#accepted = true;
+    this.#readyState = OPEN;
+    this.dispatch("open", socketEvent("open"));
   }
 
   addEventListener(type: string, listener: Listener): void {
@@ -29,15 +66,22 @@ export class WorkerWebSocket {
   }
 
   send(data: string | ArrayBuffer | ArrayBufferView): void {
-    if (!this.#accepted) throw new Error("WebSocket must be accepted before sending");
+    if (!this.#accepted || this.#readyState !== OPEN) {
+      throw new Error("WebSocket must be accepted and open before sending");
+    }
     this.#peer?.deliver(data);
   }
 
-  close(): void {
+  close(code = 1000, reason = ""): void {
+    validateClose(code, reason);
+    if (this.#readyState === CLOSING || this.#readyState === CLOSED) return;
+    this.#closeCode = code;
+    this.#closeReason = reason;
+    this.#readyState = CLOSING;
     this.#transport?.end();
     this.#peer?.endTransport();
-    this.dispatch("close", socketEvent("close"));
-    this.#peer?.dispatch("close", socketEvent("close"));
+    this.#peer?.receiveClose(code, reason);
+    if (this.#transport === undefined) this.markClosed();
   }
 
   pairWith(peer: WorkerWebSocket): void {
@@ -51,10 +95,15 @@ export class WorkerWebSocket {
         this.#peer?.deliver(binary === true ? data : decodeText(data));
       }
     });
-    transport.on("close", () => this.#peer?.dispatch("close", socketEvent("close")));
-    transport.on("error", (error) => this.#peer?.dispatch("error", socketEvent("error", {
-      error,
-    })));
+    transport.on("close", () => {
+      this.markClosed();
+      this.#peer?.receiveClose(this.#closeCode, this.#closeReason);
+    });
+    transport.on("error", (error) => {
+      const event = socketEvent("error", { error });
+      this.dispatch("error", event);
+      this.#peer?.dispatch("error", event);
+    });
   }
 
   private deliver(data: string | ArrayBuffer | ArrayBufferView): void {
@@ -67,10 +116,39 @@ export class WorkerWebSocket {
 
   private dispatch(type: string, event: Event): void {
     for (const listener of this.#listeners.get(type) ?? []) listener(event);
+    this.eventHandler(type)?.(event);
+  }
+
+  private eventHandler(type: string): Listener | null {
+    switch (type) {
+      case "open": return this.onopen;
+      case "message": return this.onmessage;
+      case "close": return this.onclose;
+      case "error": return this.onerror;
+      default: return null;
+    }
   }
 
   private endTransport(): void {
     this.#transport?.end();
+  }
+
+  private receiveClose(code: number, reason: string): void {
+    if (this.#readyState === CLOSED) return;
+    this.#closeCode = code;
+    this.#closeReason = reason;
+    this.#readyState = CLOSING;
+    this.markClosed();
+  }
+
+  private markClosed(): void {
+    if (this.#readyState === CLOSED) return;
+    this.#readyState = CLOSED;
+    this.dispatch("close", socketEvent("close", {
+      code: this.#closeCode,
+      reason: this.#closeReason,
+      wasClean: true,
+    }));
   }
 }
 
@@ -110,4 +188,15 @@ function toMessageData(data: string | ArrayBuffer | ArrayBufferView): string | A
 
 function socketEvent(type: string, fields: Record<string, unknown> = {}): Event {
   return { type, ...fields } as unknown as Event;
+}
+
+function validateClose(code: number, reason: string): void {
+  const validCode = code === 1000
+    || (code >= 1001 && code <= 1003)
+    || (code >= 1007 && code <= 1011)
+    || (code >= 3000 && code <= 4999);
+  if (!validCode) throw new RangeError("Invalid WebSocket close code");
+  if (Buffer.byteLength(reason, "utf8") > 123) {
+    throw new RangeError("WebSocket close reason is too long");
+  }
 }

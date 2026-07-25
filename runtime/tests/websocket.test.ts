@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WebSocketPair } from "../src/websocket.js";
+import { WebSocketPair, WorkerWebSocket } from "../src/websocket.js";
 
 void test("delivers messages across an accepted pair", () => {
   const pair = new WebSocketPair();
@@ -20,6 +20,22 @@ void test("requires accept before sending", () => {
   assert.throws(() => {
     pair[0].send("ping");
   }, /accepted/);
+});
+
+void test("tracks close state and exposes close details", () => {
+  const pair = new WebSocketPair();
+  const closeEvents: Event[] = [];
+  pair[0].addEventListener("close", (event) => closeEvents.push(event));
+  pair[1].accept();
+  pair[0].accept();
+
+  assert.equal(pair[0].readyState, WorkerWebSocket.OPEN);
+  pair[0].close(1000, "done");
+
+  assert.equal(pair[0].readyState, WorkerWebSocket.CLOSED);
+  assert.equal(pair[1].readyState, WorkerWebSocket.CLOSED);
+  assert.equal((closeEvents[0] as Event & { code: number }).code, 1000);
+  assert.equal((closeEvents[0] as Event & { reason: string }).reason, "done");
 });
 
 void test("bridges worker messages and close to a transport", () => {

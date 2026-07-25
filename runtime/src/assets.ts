@@ -32,7 +32,10 @@ export class AssetService implements Fetcher {
     const type = this.#manifest.files[resolution.key];
     const body = request.method === "HEAD"
       ? null
-      : Readable.toWeb(fs.createReadStream(`${this.#config.root}/${resolution.key}`)) as unknown as BodyInit;
+      : Readable.toWeb(fs.createReadStream(
+        `${this.#config.root}/${resolution.key}`,
+        { eagerOpen: false } as Parameters<typeof fs.createReadStream>[1],
+      )) as unknown as BodyInit;
     return Promise.resolve(new Response(body, {
       headers: { "content-type": type ?? "application/octet-stream" },
       status: resolution.status,

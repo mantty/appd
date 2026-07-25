@@ -87,7 +87,11 @@ fn validate_module_lock(manifest: &SdkManifest) -> Result<(), io::Error> {
 fn sdk_target(target: &str) -> Result<&'static str, io::Error> {
     match target {
         "aarch64-apple-darwin" => Ok("macos-arm64"),
+        "x86_64-apple-darwin" => Ok("macos-x64"),
         "aarch64-apple-ios" => Ok("ios-arm64"),
+        "aarch64-apple-ios-sim" => Ok("ios-simulator-arm64"),
+        "x86_64-apple-ios" => Ok("ios-simulator-x64"),
+        "aarch64-linux-android" => Ok("android-arm64"),
         _ => Err(io::Error::other(format!(
             "Bare SDK does not support {target}"
         ))),

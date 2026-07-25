@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use appd_target_pack::artifact_sha256;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -14,25 +15,34 @@ fn write_manifest_json(dir: &Path, json: &str) -> TestResult<PathBuf> {
 }
 
 fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
+    fs::create_dir_all(dir.join("bin"))?;
+    fs::create_dir_all(dir.join("runtime-js"))?;
+    fs::write(dir.join("bin/appd-runtime"), "runtime")?;
+    fs::write(dir.join("runtime-js/bootstrap.js"), "bootstrap")?;
+    let runtime_hash = artifact_sha256(dir.join("bin/appd-runtime"))?;
+    let runtime_js_hash = artifact_sha256(dir.join("runtime-js"))?;
     write_manifest_json(
         dir,
-        r#"{
-  "schemaVersion": 3,
+        &format!(
+            r#"{{
+  "schemaVersion": 4,
   "appdVersion": "0.1.0",
   "target": "macos-arm64",
   "artifacts": [
-    {
+    {{
       "kind": "runtimeExecutable",
       "path": "bin/appd-runtime",
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    {
+      "sha256": "{runtime_hash}"
+    }},
+    {{
       "kind": "runtimeJavaScriptDirectory",
-      "path": "runtime-js"
-    }
+      "path": "runtime-js",
+      "sha256": "{runtime_js_hash}"
+    }}
   ],
   "requiredTools": ["node"]
-}"#,
+}}"#
+        ),
     )
 }
 
@@ -40,10 +50,14 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
 fn lists_supported_targets() -> TestResult {
     let mut cmd = Command::cargo_bin("appd")?;
 
-    cmd.arg("targets")
-        .assert()
-        .success()
-        .stdout(contains("ios-arm64").and(contains("macos-arm64")));
+    cmd.arg("targets").assert().success().stdout(
+        contains("android-arm64")
+            .and(contains("ios-arm64"))
+            .and(contains("ios-simulator-arm64"))
+            .and(contains("ios-simulator-x64"))
+            .and(contains("macos-arm64"))
+            .and(contains("macos-x64")),
+    );
 
     Ok(())
 }
@@ -68,20 +82,26 @@ fn inspects_target_pack_manifest() -> TestResult {
 #[test]
 fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
+    fs::create_dir_all(temp_dir.path().join("bin"))?;
+    fs::write(temp_dir.path().join("bin/appd-runtime"), "runtime")?;
+    let runtime_hash = artifact_sha256(temp_dir.path().join("bin/appd-runtime"))?;
     let manifest_path = write_manifest_json(
         temp_dir.path(),
-        r#"{
-  "schemaVersion": 3,
+        &format!(
+            r#"{{
+  "schemaVersion": 4,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [
-    {
+    {{
       "kind": "runtimeExecutable",
-      "path": "bin/appd-runtime"
-    }
+      "path": "bin/appd-runtime",
+      "sha256": "{runtime_hash}"
+    }}
   ],
   "requiredTools": []
-}"#,
+}}"#
+        ),
     )?;
     let mut cmd = Command::cargo_bin("appd")?;
 
@@ -101,10 +121,10 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime"}],
+  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
   "requiredTools": []
 }"#,
     )?;

@@ -24,7 +24,21 @@ jobs:
         with:
           toolchain: 1.96.0
           components: clippy, rustfmt
-          targets: aarch64-apple-ios
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,x86_64-apple-darwin,aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;29.0.14206865"
+          ndk="${ANDROID_HOME}/ndk/29.0.14206865"
+          toolchain="$(find "${ndk}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          {
+            echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android31-clang"
+            echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/bin/aarch64-linux-android31-clang"
+          } >> "${GITHUB_ENV}"
 
       - name: Setup Python
         uses: actions/setup-python@v6.2.0
@@ -65,6 +79,10 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy -p appd-runtime --features bare-test-stubs -- -D warnings
           cargo clippy -p appd-runtime --target aarch64-apple-ios --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --target aarch64-apple-ios-sim --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --target x86_64-apple-ios --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --target x86_64-apple-darwin --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --target aarch64-linux-android --features bare-test-stubs -- -D warnings
           cargo test --workspace
 
       - name: Check Bare build scripts

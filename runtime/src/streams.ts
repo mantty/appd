@@ -1,6 +1,5 @@
 export interface ResponseWriter {
-  write(chunk: Uint8Array): boolean;
-  once(event: "drain", listener: () => void): void;
+  write(chunk: Uint8Array, callback: (error?: Error | null) => void): boolean;
   end(): void;
 }
 
@@ -30,7 +29,7 @@ export async function responseBody(
   try {
     let result = await reader.read();
     while (!result.done) {
-      if (!writer.write(result.value)) await drain(writer);
+      await writeChunk(writer, result.value);
       result = await reader.read();
     }
   } finally {
@@ -39,8 +38,13 @@ export async function responseBody(
   writer.end();
 }
 
-function drain(writer: ResponseWriter): Promise<void> {
-  return new Promise((resolve) => {
-    writer.once("drain", resolve);
+function writeChunk(writer: ResponseWriter, chunk: Uint8Array): Promise<void> {
+  if (chunk.byteLength === 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    writer.write(buffer, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
   });
 }

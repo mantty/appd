@@ -9,7 +9,11 @@ on:
         options:
           - all
           - macos-arm64
+          - macos-x64
           - ios-arm64
+          - ios-simulator-arm64
+          - ios-simulator-x64
+          - android-arm64
         default: all
   schedule:
     - cron: "17 3 * * 0"
@@ -43,10 +47,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON((github.event_name == 'schedule' || inputs.platform == 'all') && '["macos-arm64", "ios-arm64"]' || format('["{0}"]', inputs.platform)) }}
+        target: ${{ fromJSON((github.event_name == 'schedule' || inputs.platform == 'all') && '["macos-arm64", "macos-x64", "ios-arm64", "ios-simulator-arm64", "ios-simulator-x64", "android-arm64"]' || format('["{0}"]', inputs.platform)) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
+
+      - name: Setup Android SDK
+        if: matrix.target == 'android-arm64'
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+
+      - name: Install Android NDK
+        if: matrix.target == 'android-arm64'
+        run: sdkmanager "ndk;29.0.14206865"
 
       - name: Setup Python
         uses: actions/setup-python@v6.2.0
@@ -105,12 +117,14 @@ jobs:
             --output "target/bare/sdk/${{ matrix.target }}"
           sccache --show-stats
 
-      - name: Test compiled Bare TLS
+      - name: Test appd CONNECT mTLS
         if: matrix.target == 'macos-arm64'
         env:
           APPD_BARE_TLS_ARTIFACT: target/bare/sdk/macos-arm64/bare-tls.bare
           APPD_REQUIRE_NATIVE_TLS_TEST: "1"
-        run: python3 -m unittest -v bare.tests.test_mtls.BareTlsIntegrationTests.test_mtls_handshakes
+        run: |
+          pnpm build:runtime
+          python3 -m unittest -v bare.tests.test_mtls.BareTlsIntegrationTests.test_mtls_handshakes
 
       - name: Archive SDK
         run: |

@@ -1,16 +1,6 @@
 //! macOS `AppKit` + `WKWebView` runtime shell.
 
-use std::cell::OnceCell;
-use std::path::Path;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Arc, RwLock};
-#[cfg(feature = "bare-runtime")]
-use std::sync::{Mutex, OnceLock};
-use std::thread;
-
-#[cfg(feature = "bare-runtime")]
-use dispatch2::run_on_main;
+use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
@@ -20,23 +10,24 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSURLAuthenticationChallenge, ns_string,
+    NSString, NSURL, NSURLAuthenticationChallenge, NSURLRequest, ns_string,
 };
-#[cfg(feature = "bare-runtime")]
-use objc2_foundation::{NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{
     WKNavigation, WKNavigationDelegate, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
 };
+use std::cell::OnceCell;
+use std::sync::{Arc, RwLock};
 
 use super::apple::{
-    AuthenticationCompletionHandler, SharedCertificates, bundle_state_dir, bundle_work_dir,
-    clear_startup_error, handle_authentication_challenge as handle_apple_authentication_challenge,
-    record_startup_error,
+    AuthenticationCompletionHandler, SharedCertificates, app_host,
+    handle_authentication_challenge as handle_apple_authentication_challenge,
 };
-
-static WEBVIEW: AtomicPtr<WKWebView> = AtomicPtr::new(ptr::null_mut());
 #[cfg(feature = "bare-runtime")]
-static RUNTIME: OnceLock<Mutex<Option<crate::host::StartedRuntime>>> = OnceLock::new();
+use super::apple::{
+    bundle_state_dir, bundle_work_dir, record_startup_error, set_runtime_suspended, start_runtime,
+    store_runtime,
+};
+use super::proxy::configure_webview_proxy;
 
 #[derive(Debug)]
 struct RuntimeDelegateIvars {
@@ -64,6 +55,18 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn application_did_finish_launching(&self, notification: &NSNotification) {
             self.finish_launching(notification);
+        }
+
+        #[unsafe(method(applicationDidResignActive:))]
+        fn application_did_resign_active(&self, _: &NSNotification) {
+            #[cfg(feature = "bare-runtime")]
+            set_runtime_suspended(true);
+        }
+
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn application_did_become_active(&self, _: &NSNotification) {
+            #[cfg(feature = "bare-runtime")]
+            set_runtime_suspended(false);
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -96,41 +99,127 @@ impl RuntimeDelegate {
             .unwrap_or_else(|| NSApplication::sharedApplication(mtm));
 
         let window = create_window(mtm);
-        let Some(content_view) = window.contentView() else {
+        if window.contentView().is_none() {
             eprintln!("appd failed to create an NSWindow content view");
             std::process::exit(1);
-        };
-        let frame = content_view.bounds();
-        let nav_delegate = NavigationDelegate::new(mtm, Arc::clone(&self.ivars().certificates));
-        let webview = create_webview(mtm, frame, &nav_delegate);
-
-        content_view.addSubview(&webview);
-        WEBVIEW.store(Retained::as_ptr(&webview).cast_mut(), Ordering::Release);
-
+        }
         window.setDelegate(Some(ProtocolObject::from_ref(self)));
         window.center();
         window.makeKeyAndOrderFront(None);
         #[allow(deprecated)]
         app.activateIgnoringOtherApps(true);
 
-        if self.ivars().navigation_delegate.set(nav_delegate).is_err()
-            || self.ivars().webview.set(webview).is_err()
-            || self.ivars().window.set(window).is_err()
-        {
+        if self.ivars().window.set(window).is_err() {
             eprintln!("appd macOS shell was initialized more than once");
             std::process::exit(1);
         }
 
-        let certificates = Arc::clone(&self.ivars().certificates);
+        #[cfg(feature = "bare-runtime")]
+        self.start_runtime(mtm);
+        #[cfg(not(feature = "bare-runtime"))]
+        self.load_webview(mtm, 0, "app.appd.local");
+    }
+
+    #[cfg(feature = "bare-runtime")]
+    fn start_runtime(&self, mtm: MainThreadMarker) {
+        let host = match app_host() {
+            Ok(host) => host,
+            Err(error) => {
+                record_startup_error(&bundle_state_dir(), &error);
+                self.show_startup_error(mtm);
+                return;
+            }
+        };
+        let Some(delegate) = (unsafe { Retained::retain(std::ptr::from_ref(self).cast_mut()) })
+        else {
+            self.show_startup_error(mtm);
+            return;
+        };
+        let delegate = MainThreadBound::new(delegate, mtm);
         let packaged_dir = bundle_work_dir();
         let state_dir = bundle_state_dir();
-        let result = thread::Builder::new()
-            .name("appd-bare-init".to_owned())
-            .spawn(move || {
-                start_runtime(&packaged_dir, &state_dir, &certificates);
+        let certificates = Arc::clone(&self.ivars().certificates);
+        DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
+            DispatchQoS::UserInitiated,
+        ))
+        .exec_async(move || {
+            let runtime = start_runtime(&packaged_dir, &state_dir, &host, &certificates);
+            DispatchQueue::main().exec_async(move || {
+                let Some(mtm) = MainThreadMarker::new() else {
+                    return;
+                };
+                delegate.get(mtm).finish_runtime(mtm, host, runtime);
             });
-        if let Err(error) = result {
-            eprintln!("appd failed to start the runtime thread: {error}");
+        });
+    }
+
+    #[cfg(feature = "bare-runtime")]
+    fn finish_runtime(
+        &self,
+        mtm: MainThreadMarker,
+        host: String,
+        runtime: crate::RuntimeResult<crate::host::StartedRuntime>,
+    ) {
+        match runtime {
+            Ok(runtime) => {
+                self.load_webview(mtm, runtime.port, &host);
+                store_runtime(runtime);
+                drop(host);
+            }
+            Err(_) => self.show_startup_error(mtm),
+        }
+    }
+
+    fn load_webview(&self, mtm: MainThreadMarker, proxy_port: u16, host: &str) {
+        let Some(window) = self.ivars().window.get() else {
+            return;
+        };
+        let Some(content_view) = window.contentView() else {
+            return;
+        };
+        let nav_delegate =
+            NavigationDelegate::new(mtm, Arc::clone(&self.ivars().certificates), host.to_owned());
+        let webview = create_webview(mtm, content_view.bounds(), &nav_delegate, proxy_port, host);
+        content_view.addSubview(&webview);
+        if self.ivars().navigation_delegate.set(nav_delegate).is_err()
+            || self.ivars().webview.set(webview).is_err()
+        {
+            eprintln!("appd macOS shell was initialized more than once");
+            std::process::exit(1);
+        }
+    }
+
+    fn show_startup_error(&self, mtm: MainThreadMarker) {
+        let Some(window) = self.ivars().window.get() else {
+            return;
+        };
+        let Some(content_view) = window.contentView() else {
+            return;
+        };
+        let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
+        let webview = unsafe {
+            WKWebView::initWithFrame_configuration(
+                WKWebView::alloc(mtm),
+                content_view.bounds(),
+                &configuration,
+            )
+        };
+        unsafe {
+            webview.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            webview.loadHTMLString_baseURL(
+                &NSString::from_str(
+                    "<h1>App failed to start</h1><p>Check startup-error.log for details.</p>",
+                ),
+                None,
+            );
+        }
+        content_view.addSubview(&webview);
+        if self.ivars().webview.set(webview).is_err() {
+            eprintln!("appd macOS shell was initialized more than once");
+            std::process::exit(1);
         }
     }
 }
@@ -138,6 +227,7 @@ impl RuntimeDelegate {
 #[derive(Debug)]
 struct NavigationDelegateIvars {
     certificates: SharedCertificates,
+    host: String,
 }
 
 define_class!(
@@ -179,14 +269,19 @@ define_class!(
                 challenge,
                 completion_handler,
                 &self.ivars().certificates,
+                &self.ivars().host,
             );
         }
     }
 );
 
 impl NavigationDelegate {
-    fn new(mtm: MainThreadMarker, certificates: SharedCertificates) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars { certificates });
+    fn new(
+        mtm: MainThreadMarker,
+        certificates: SharedCertificates,
+        host: String,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars { certificates, host });
         // SAFETY: `NSObject -init` has the expected signature for this class.
         unsafe { msg_send![super(this), init] }
     }
@@ -232,9 +327,13 @@ fn create_webview(
     mtm: MainThreadMarker,
     frame: NSRect,
     nav_delegate: &NavigationDelegate,
+    proxy_port: u16,
+    host: &str,
 ) -> Retained<WKWebView> {
     let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
-    let data_store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
+    let data_store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
+    let data_store_ptr = Retained::as_ptr(&data_store).cast();
+    configure_webview_proxy(unsafe { &*data_store_ptr }, proxy_port, host);
     unsafe { configuration.setWebsiteDataStore(&data_store) };
     let webview = unsafe {
         WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &configuration)
@@ -246,53 +345,14 @@ fn create_webview(
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
     }
-    webview
-}
-
-#[cfg(feature = "bare-runtime")]
-fn start_runtime(packaged_dir: &Path, state_dir: &Path, certificates: &SharedCertificates) {
-    match crate::host::start_bare_runtime(packaged_dir, state_dir) {
-        Ok(runtime) => {
-            clear_startup_error(state_dir);
-            if let Ok(mut guard) = certificates.write() {
-                *guard = Some(runtime.certificates.clone());
-            }
-            navigate_to_localhost(runtime.port);
-            let state = RUNTIME.get_or_init(|| Mutex::new(None));
-            if let Ok(mut guard) = state.lock() {
-                *guard = Some(runtime);
-            }
-        }
-        Err(error) => {
-            record_startup_error(state_dir, &error);
-            eprintln!("appd runtime startup failed: {error:#}");
-        }
+    let url_string = NSString::from_str(&crate::frontend_url(host));
+    let Some(url) = NSURL::URLWithString(&url_string) else {
+        eprintln!("appd failed to construct frontend URL");
+        return webview;
+    };
+    let request = NSURLRequest::requestWithURL(&url);
+    unsafe {
+        let _ = webview.loadRequest(&request);
     }
-}
-
-#[cfg(not(feature = "bare-runtime"))]
-fn start_runtime(_: &Path, _: &Path, _: &SharedCertificates) {
-    eprintln!("appd runtime was built without the bare-runtime feature");
-}
-
-#[cfg(feature = "bare-runtime")]
-fn navigate_to_localhost(port: u16) {
-    run_on_main(move |_| {
-        let webview = WEBVIEW.load(Ordering::Acquire);
-        if webview.is_null() {
-            return;
-        }
-        let url_string = NSString::from_str(&crate::frontend_url(port));
-        let url = NSURL::URLWithString(&url_string);
-        let Some(url) = url else {
-            eprintln!("appd failed to construct frontend URL");
-            return;
-        };
-        let request = NSURLRequest::requestWithURL(&url);
-        // SAFETY: `WEBVIEW` is written only with a live `WKWebView` retained by
-        // `RuntimeDelegateIvars`, and all access here runs on the main queue.
-        unsafe {
-            let _ = (&*webview).loadRequest(&request);
-        }
-    });
+    webview
 }

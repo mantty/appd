@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -10,11 +11,28 @@ use appd_runtime::wrangler_config::WranglerConfig;
 use appd_target_pack::{ArtifactKind, Target, TargetPackManifest};
 use walkdir::WalkDir;
 
-use super::support::{artifact_path, copy_dir_contents, copy_file};
+use super::support::{artifact_path, copy_dir_contents};
 
 pub(crate) fn prepare_bare_app(
     app_dir: &Path,
-    frameworks: &Path,
+    pack_root: &Path,
+    manifest: &TargetPackManifest,
+    wrangler: &WranglerConfig,
+) -> Result<()> {
+    prepare_bare_app_contents(app_dir, pack_root, manifest, wrangler)
+}
+
+pub(crate) fn prepare_android_bare_app(
+    app_dir: &Path,
+    pack_root: &Path,
+    manifest: &TargetPackManifest,
+    wrangler: &WranglerConfig,
+) -> Result<()> {
+    prepare_bare_app_contents(app_dir, pack_root, manifest, wrangler)
+}
+
+fn prepare_bare_app_contents(
+    app_dir: &Path,
     pack_root: &Path,
     manifest: &TargetPackManifest,
     wrangler: &WranglerConfig,
@@ -36,7 +54,6 @@ pub(crate) fn prepare_bare_app(
     )?;
     let packer = artifact_path(pack_root, manifest, &ArtifactKind::BarePackExecutable)?;
     let compiler = artifact_path(pack_root, manifest, &ArtifactKind::EsbuildExecutable)?;
-    install_bare_addons(&runtime, frameworks, manifest.target)?;
     pack_worker(
         app_dir,
         &runtime,
@@ -45,70 +62,6 @@ pub(crate) fn prepare_bare_app(
         &wrangler.main,
         manifest.target,
     )
-}
-
-fn install_bare_addons(runtime: &Path, frameworks: &Path, target: Target) -> Result<()> {
-    let modules = runtime
-        .parent()
-        .context("runtime JavaScript directory must have a parent directory")?
-        .join("node_modules");
-    if !modules.is_dir() {
-        return Ok(());
-    }
-    for entry in WalkDir::new(&modules).follow_links(true) {
-        let entry = entry.map_err(std::io::Error::other)?;
-        if entry.file_name() != "package.json" || !is_bare_addon(entry.path())? {
-            continue;
-        }
-        install_bare_addon(entry.path(), frameworks, target)?;
-    }
-    Ok(())
-}
-
-fn install_bare_addon(manifest: &Path, frameworks: &Path, target: Target) -> Result<()> {
-    let package = manifest
-        .parent()
-        .context("Bare addon manifest must have a parent directory")?;
-    let metadata: serde_json::Value = serde_json::from_slice(&fs::read(manifest)?)?;
-    let name = metadata["name"]
-        .as_str()
-        .context("Bare addon package has no name")?;
-    let version = metadata["version"]
-        .as_str()
-        .context("Bare addon package has no version")?;
-    let module = addon_name(name);
-    let source = package
-        .join("prebuilds")
-        .join(bare_host(target))
-        .join(format!("{module}.bare"));
-    if !source.is_file() {
-        bail!("Bare addon prebuild is missing: {}", source.display());
-    }
-    let destination = frameworks
-        .join(format!("{module}.{version}.framework"))
-        .join(format!("{module}.{version}"));
-    copy_file(source, &destination)?;
-    let framework = frameworks.join(format!("{module}.{version}.framework"));
-    write_bare_addon_plist(&framework, &format!("{module}.{version}"))
-}
-
-fn write_bare_addon_plist(framework: &Path, executable: &str) -> Result<()> {
-    fs::write(
-        framework.join("Info.plist"),
-        format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n  <key>CFBundleIdentifier</key><string>com.appd.bare.{executable}</string>\n  <key>CFBundleExecutable</key><string>{executable}</string>\n  <key>CFBundlePackageType</key><string>FMWK</string>\n  <key>CFBundleVersion</key><string>1</string>\n</dict></plist>\n"
-        ),
-    )?;
-    Ok(())
-}
-
-fn is_bare_addon(manifest: &Path) -> Result<bool> {
-    let metadata: serde_json::Value = serde_json::from_slice(&fs::read(manifest)?)?;
-    Ok(metadata["addon"].as_bool() == Some(true))
-}
-
-fn addon_name(name: &str) -> String {
-    name.trim_start_matches('@').replace('/', "__")
 }
 
 fn pack_worker(
@@ -125,14 +78,18 @@ fn pack_worker(
         .context("runtime JavaScript directory must have a parent directory")?
         .join("node_modules");
     let modules_link = app_dir.join("node_modules");
+    let builtins = app_dir.join(".appd-builtins.json");
     symlink(&modules, &modules_link)?;
+    write_builtins(&modules, &builtins)?;
 
     let result = (|| {
         compile_commonjs(&entry, runtime, compiler, worker)?;
         let output = app_dir.join(WORKER_BUNDLE_FILE);
         let status = Command::new("node")
             .arg(packer)
-            .args(["--linked", "--host", bare_host(target), "--base", "/"])
+            .args(["--builtins"])
+            .arg(&builtins)
+            .args(["--host", bare_host(target), "--base", "/"])
             .arg("--out")
             .arg(&output)
             .arg(&entry)
@@ -146,7 +103,35 @@ fn pack_worker(
 
     let _ = fs::remove_file(entry);
     let _ = fs::remove_file(modules_link);
+    let _ = fs::remove_file(builtins);
     result
+}
+
+fn write_builtins(modules: &Path, output: &Path) -> Result<()> {
+    let mut addons = BTreeSet::new();
+
+    for entry in WalkDir::new(modules).follow_links(true) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        if entry.file_name() != "package.json" {
+            continue;
+        }
+        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+        if metadata["addon"].as_bool() != Some(true) {
+            continue;
+        }
+        let name = metadata["name"]
+            .as_str()
+            .context("Bare addon package has no name")?
+            .to_owned();
+        addons.insert(name);
+    }
+
+    let builtins: Vec<_> = addons
+        .into_iter()
+        .map(|addon| serde_json::json!({ "addon": addon }))
+        .collect();
+    fs::write(output, serde_json::to_vec(&builtins)?)?;
+    Ok(())
 }
 
 fn compile_commonjs(output: &Path, runtime: &Path, compiler: &Path, worker: &Path) -> Result<()> {
@@ -199,7 +184,11 @@ fn reject_wasm_files(root: &Path) -> Result<()> {
 
 fn bare_host(target: Target) -> &'static str {
     match target {
+        Target::AndroidArm64 => "android-arm64",
         Target::MacosArm64 => "darwin-arm64",
+        Target::MacosX64 => "darwin-x64",
         Target::IosArm64 => "ios-arm64",
+        Target::IosSimulatorArm64 => "ios-arm64-simulator",
+        Target::IosSimulatorX64 => "ios-x64-simulator",
     }
 }

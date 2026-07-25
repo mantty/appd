@@ -14,7 +14,10 @@ Build an SDK archive for a supported target:
 
 ```sh
 python3 bare/scripts/build-sdk.py --target macos-arm64
+python3 bare/scripts/build-sdk.py --target macos-x64
 python3 bare/scripts/build-sdk.py --target ios-arm64
+python3 bare/scripts/build-sdk.py --target ios-simulator-arm64
+python3 bare/scripts/build-sdk.py --target ios-simulator-x64
 ```
 
 Each output contains the public header, native link inputs, link arguments,

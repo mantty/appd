@@ -1,12 +1,19 @@
 import fs from "bare-fs";
-import * as bareHttps from "bare-https";
+import * as bareHttp from "bare-http1";
+import * as bareTcp from "bare-tcp";
+import * as bareTls from "bare-tls";
 import * as bareWs from "bare-ws";
 
 import { AssetService } from "./assets.js";
 import { setEnvironment } from "./cloudflare.js";
 import { RequestContext } from "./context.js";
-import { requestBody, responseBody } from "./streams.js";
-import type { RuntimeConfig, WorkerEnvironment, WorkerModule } from "./types.js";
+import { parseConnectRequest, type ConnectRequest } from "./proxy.js";
+import { responseHeaders, writeResponse } from "./responses.js";
+import { SocketResponse } from "./socket-response.js";
+import { requestBody } from "./streams.js";
+import { writeUpgradeResponse } from "./upgrade-response.js";
+import { invokeWorker } from "./worker.js";
+import type { RuntimeConfig, WorkerEnvironment, WorkerExport } from "./types.js";
 import type { Transport, WorkerWebSocket } from "./websocket.js";
 
 interface IncomingRequest extends AsyncIterable<Uint8Array> {
@@ -16,62 +23,82 @@ interface IncomingRequest extends AsyncIterable<Uint8Array> {
 }
 
 interface ServerResponse {
+  readonly socket: Socket;
   end(body?: string | Uint8Array): void;
-  once(event: "drain", listener: () => void): void;
-  write(body: Uint8Array): boolean;
-  writeHead(status: number, headers: Readonly<Record<string, string>>): void;
+  write(body: Uint8Array, callback?: (error?: Error | null) => void): boolean;
+  writeHead(status: number, headers: Readonly<Record<string, string | string[]>>): void;
 }
 
-interface RawSocket {
+interface Socket {
   destroy(error?: Error): void;
+  end(data?: string | Uint8Array): void;
+  on(event: "data", listener: (chunk: Uint8Array) => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  off(event: "data", listener: (chunk: Uint8Array) => void): this;
+  unshift(data: Uint8Array): void;
+  once(event: "drain" | "timeout", listener: () => void): this;
+  once(event: "error", listener: (error: Error) => void): this;
+  pipe(destination: Socket): Socket;
   setNoDelay(enable?: boolean): void;
+  setTimeout(milliseconds: number, listener?: () => void): this;
+  write(data: string | Uint8Array): boolean;
 }
 
-interface Server {
+interface Listener {
   address(): { port: number } | null;
   listen(port: number, host: string, listener: () => void): void;
-  ref(): void;
-  on(event: "upgrade", listener: UpgradeListener): void;
+  on(event: "connection", listener: (socket: Socket) => void): void;
   once(event: "error", listener: (error: Error) => void): void;
+  ref(): void;
 }
 
-type UpgradeListener = (request: IncomingRequest, socket: RawSocket, head: Uint8Array) => void;
+interface HttpServer {
+  on(event: "request", listener: (request: IncomingRequest, response: ServerResponse) => void): void;
+  on(event: "upgrade", listener: (request: IncomingRequest, socket: Socket, head: Uint8Array) => void): void;
+}
 
-interface HttpsModule {
-  createServer(
-    options: Readonly<Record<string, unknown>>,
-    listener: (request: IncomingRequest, response: ServerResponse) => void,
-  ): Server;
+interface Invocation {
+  readonly environment: WorkerEnvironment;
+  readonly host: string;
+  readonly worker: WorkerExport;
 }
 
 interface WebSocketModule {
   readonly Server: {
     handshake(
       request: IncomingRequest,
-      socket: RawSocket,
+      socket: Socket,
       head: Uint8Array,
       listener: (error?: Error | null) => void,
     ): void;
   };
-  readonly Socket: new (options: { isServer: boolean; socket: RawSocket }) => Transport;
+  readonly Socket: new (options: { isServer: boolean; socket: Socket }) => Transport;
 }
 
-const https = bareHttps as unknown as HttpsModule;
+const tcp = bareTcp as unknown as { Server: new (options: object) => Listener };
+const http = bareHttp as unknown as { Server: new () => HttpServer; ServerConnection: new (server: HttpServer, socket: Socket) => unknown };
 const webSocket = bareWs as unknown as WebSocketModule;
-let activeServer: Server | undefined;
+const tls = bareTls as unknown as { Socket: new (socket: Socket, options: Readonly<Record<string, unknown>>) => Socket };
+let activeServer: Listener | undefined;
+const CONNECT_TIMEOUT = 5_000;
 
 export async function startServer(config: RuntimeConfig): Promise<number> {
   const environment = createEnvironment(config);
   setEnvironment(environment);
   const module = await import("appd-worker");
-  const worker = module.default as WorkerModule;
-  const server = https.createServer(tlsOptions(config), (request, response) => {
-    void dispatch(request, response, worker, environment);
+  const worker = module.default as WorkerExport;
+  const httpServer = new http.Server();
+  httpServer.on("request", (request, response) => {
+    void dispatch(request, response, { worker, environment, host: config.host });
   });
-  server.on("upgrade", (request, socket, head) => {
-    void upgrade(request, socket, head, worker, environment);
+  httpServer.on("upgrade", (request, socket, head) => {
+    void upgrade(request, socket, head, { worker, environment, host: config.host });
   });
 
+  const server = new tcp.Server({ allowHalfOpen: false });
+  server.on("connection", (socket) => {
+    handleProxyConnection(socket, httpServer, config);
+  });
   await listen(server, config.port);
   server.ref();
   activeServer = server;
@@ -86,14 +113,67 @@ function createEnvironment(config: RuntimeConfig): WorkerEnvironment {
   return { [assets.binding]: assets };
 }
 
-function tlsOptions(config: RuntimeConfig): Readonly<Record<string, unknown>> {
-  return {
-    ca: readBytes(config.certificates.ca),
-    cert: readBytes(config.certificates.certificate),
-    key: readBytes(config.certificates.privateKey),
-    requestCert: true,
-    rejectUnauthorized: true,
+function handleProxyConnection(
+  socket: Socket,
+  httpServer: HttpServer,
+  config: RuntimeConfig,
+): void {
+  socket.setNoDelay(true);
+  let buffered: Uint8Array = new Uint8Array(0);
+  socket.setTimeout(CONNECT_TIMEOUT, () => {
+    socket.off("data", onData);
+    socket.destroy(new Error("Proxy CONNECT timed out"));
+  });
+  const onData = (chunk: Uint8Array) => {
+    try {
+      buffered = appendBytes(buffered, chunk);
+      const result = parseConnectRequest(buffered);
+      if (result === null) return;
+      socket.off("data", onData);
+      socket.setTimeout(0);
+      routeProxyConnection(socket, result, httpServer, config);
+    } catch (error) {
+      socket.off("data", onData);
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      socket.destroy(error instanceof Error ? error : new Error(String(error)));
+    }
   };
+  socket.on("data", onData);
+  socket.once("error", () => { socket.destroy(); });
+}
+
+function routeProxyConnection(
+  socket: Socket,
+  request: ConnectRequest,
+  httpServer: HttpServer,
+  config: RuntimeConfig,
+): void {
+  if (request.host !== config.host || request.port !== 443) {
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  const identity = readBytes(config.certificates.identity);
+  const tlsOptions: Record<string, unknown> = {
+    cert: identity,
+    key: identity,
+    isServer: true,
+    rejectUnauthorized: config.requireClientCertificate,
+  };
+  if (config.requireClientCertificate) {
+    tlsOptions.ca = readBytes(config.certificates.ca);
+  }
+  if (request.remainder.byteLength > 0) socket.unshift(request.remainder);
+  const secure = new tls.Socket(socket, tlsOptions);
+  new http.ServerConnection(httpServer, secure);
+}
+
+function appendBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const result = new Uint8Array(left.byteLength + right.byteLength);
+  result.set(left);
+  result.set(right, left.byteLength);
+  return result;
 }
 
 function readBytes(path: string): Uint8Array {
@@ -103,37 +183,44 @@ function readBytes(path: string): Uint8Array {
 async function dispatch(
   incoming: IncomingRequest,
   outgoing: ServerResponse,
-  worker: WorkerModule,
-  environment: WorkerEnvironment,
+  invocation: Invocation,
 ): Promise<void> {
+  let context: RequestContext | undefined;
   try {
-    const { request, context } = workerRequest(incoming);
-    const response = await worker.fetch(request, environment, context);
-    await writeResponse(outgoing, request, response);
-    context.drain();
+    const result = workerRequest(incoming, invocation.host);
+    context = result.context;
+    const response = await invokeWorker(invocation.worker, result.request, invocation.environment, context);
+    await writeWorkerResponse(outgoing, result.request, response);
   } catch (error) {
     writeError(outgoing, error);
+  } finally {
+    await context?.drain();
   }
 }
 
-function workerRequest(incoming: IncomingRequest): {
-  context: RequestContext;
-  request: Request;
-} {
+function writeWorkerResponse(outgoing: ServerResponse, request: Request, response: Response): Promise<void> {
+  const headers = responseHeaders(response);
+  const writer = hasMultipleCookies(headers)
+    ? new SocketResponse(outgoing.socket, request.method, response.statusText, response.body !== null)
+    : outgoing;
+  return writeResponse(writer, request, response, headers);
+}
+
+function hasMultipleCookies(headers: Readonly<Record<string, string | string[]>>): boolean {
+  return Array.isArray(headers["set-cookie"]);
+}
+
+function workerRequest(incoming: IncomingRequest, host: string): { context: RequestContext; request: Request } {
   const init: RequestInit = {
     headers: requestHeaders(incoming.headers),
     method: incoming.method,
   };
-  if (incoming.method !== "GET" && incoming.method !== "HEAD") {
-    init.body = requestBody(incoming);
-  }
-  const request = new Request(`https://localhost${incoming.url}`, init);
+  if (incoming.method !== "GET" && incoming.method !== "HEAD") init.body = requestBody(incoming);
+  const request = new Request(new URL(incoming.url, `https://${host}`), init);
   return { context: new RequestContext(), request };
 }
 
-function requestHeaders(
-  headers: Readonly<Record<string, string | string[] | undefined>>,
-): Record<string, string> {
+function requestHeaders(headers: Readonly<Record<string, string | string[] | undefined>>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     if (value !== undefined) result[name] = Array.isArray(value) ? value.join(", ") : value;
@@ -141,60 +228,53 @@ function requestHeaders(
   return result;
 }
 
-async function writeResponse(
-  outgoing: ServerResponse,
-  request: Request,
-  response: Response,
-): Promise<void> {
-  outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-  if (request.method === "HEAD" || response.body === null) {
-    outgoing.end();
-    return;
-  }
-  await responseBody(response.body, outgoing);
-}
-
 async function upgrade(
   incoming: IncomingRequest,
-  socket: RawSocket,
+  socket: Socket,
   head: Uint8Array,
-  worker: WorkerModule,
-  environment: WorkerEnvironment,
+  invocation: Invocation,
 ): Promise<void> {
-  socket.setNoDelay(true);
+  let context: RequestContext | undefined;
+  let response: (Response & { webSocket?: WorkerWebSocket }) | undefined;
   try {
-    const { request, context } = workerRequest(incoming);
-    const response = await worker.fetch(request, environment, context) as Response & {
-      webSocket?: WorkerWebSocket;
-    };
+    const result = workerRequest(incoming, invocation.host);
+    context = result.context;
+    response = await invokeWorker(invocation.worker, result.request, invocation.environment, context);
     if (response.status !== 101 || response.webSocket === undefined) {
-      socket.destroy(new Error("Worker rejected WebSocket upgrade"));
+      await writeUpgradeResponse(socket, result.request, response);
       return;
     }
-    finishUpgrade(incoming, socket, head, response.webSocket, context);
+    await finishUpgrade(incoming, socket, head, response.webSocket);
   } catch (error) {
-    socket.destroy(error instanceof Error ? error : new Error(String(error)));
+    if (response === undefined) {
+      console.error("Worker WebSocket upgrade failed", error);
+      const fallback = new Request(`https://${invocation.host}`, { method: incoming.method });
+      await writeUpgradeResponse(socket, fallback, new Response("Internal Server Error\n", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      }));
+    } else {
+      socket.destroy(error instanceof Error ? error : new Error(String(error)));
+    }
+  } finally {
+    await context?.drain();
   }
 }
 
-function finishUpgrade(
-  request: IncomingRequest,
-  socket: RawSocket,
-  head: Uint8Array,
-  workerSocket: WorkerWebSocket,
-  context: RequestContext,
-): void {
-  webSocket.Server.handshake(request, socket, head, (error) => {
-    if (error != null) {
-      socket.destroy(error);
-      return;
-    }
-    workerSocket.attach(new webSocket.Socket({ isServer: true, socket }));
-    context.drain();
+function finishUpgrade(request: IncomingRequest, socket: Socket, head: Uint8Array, workerSocket: WorkerWebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    webSocket.Server.handshake(request, socket, head, (error) => {
+      if (error != null) {
+        reject(error);
+        return;
+      }
+      workerSocket.attach(new webSocket.Socket({ isServer: true, socket }));
+      resolve();
+    });
   });
 }
 
-function listen(server: Server, port: number): Promise<void> {
+function listen(server: Listener, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
@@ -202,7 +282,8 @@ function listen(server: Server, port: number): Promise<void> {
 }
 
 function writeError(response: ServerResponse, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) console.error("Worker request failed", error);
+  else console.error("Worker request failed", String(error));
   response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-  response.end(`Internal Server Error\n${message}`);
+  response.end("Internal Server Error\n");
 }

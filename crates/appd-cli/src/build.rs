@@ -7,6 +7,8 @@ use appd_target_pack::load_manifest;
 
 use crate::{BuildPlatform, target_packs};
 
+#[path = "android.rs"]
+mod android;
 #[path = "apple.rs"]
 mod apple;
 #[path = "support.rs"]
@@ -83,6 +85,13 @@ fn build_platform(
         .context("target-pack manifest must have a parent directory")?;
 
     match platform {
+        BuildPlatform::Android => android::build_android(
+            &request.project_dir,
+            pack_root,
+            &manifest,
+            app_name,
+            wrangler,
+        ),
         BuildPlatform::Macos => apple::build_macos(
             &request.project_dir,
             pack_root,
@@ -90,7 +99,7 @@ fn build_platform(
             app_name,
             wrangler,
         ),
-        BuildPlatform::Ios => apple::build_ios(
+        BuildPlatform::Ios | BuildPlatform::IosSimulator => apple::build_ios(
             &request.project_dir,
             pack_root,
             &manifest,

@@ -32,10 +32,8 @@ pub enum Error {
 pub struct Certificates {
     /// Certificate authority PEM file.
     pub ca: PathBuf,
-    /// Server certificate PEM file.
-    pub certificate: PathBuf,
-    /// Server private-key PEM file.
-    pub private_key: PathBuf,
+    /// Server certificate and private-key PEM file.
+    pub identity: PathBuf,
 }
 
 /// Static asset service paths.
@@ -49,12 +47,17 @@ pub struct Assets {
 
 /// Configuration sent to the JavaScript runtime during startup.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeConfig {
     /// Optional static asset service.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assets: Option<Assets>,
-    /// Loopback mTLS certificates.
+    /// Loopback HTTPS certificates.
     pub certificates: Certificates,
+    /// Stable HTTPS hostname used by the `WebView`.
+    pub host: String,
+    /// Require the `WebView` to authenticate to the local gateway when it is network-facing.
+    pub require_client_certificate: bool,
     /// Requested port, or zero for an operating-system assigned port.
     pub port: u16,
 }
@@ -142,7 +145,7 @@ mod native {
     pub(super) fn start(bundle: &[u8], config: &[u8]) -> Result<BareRuntime> {
         let mut handle = std::ptr::null_mut();
         let mut port = 0;
-        let mut error = [0_i8; ERROR_CAPACITY];
+        let mut error = [0 as c_char; ERROR_CAPACITY];
         let status = unsafe {
             appd_bare_runtime_start(
                 bundle.as_ptr(),
@@ -173,7 +176,7 @@ mod native {
         }
     }
 
-    fn native_error(status: i32, error: &[i8]) -> Error {
+    fn native_error(status: i32, error: &[c_char]) -> Error {
         let bytes: Vec<u8> = error
             .iter()
             .take_while(|byte| **byte != 0)
@@ -233,13 +236,15 @@ mod tests {
             }),
             certificates: Certificates {
                 ca: Path::new("ca.pem").to_path_buf(),
-                certificate: Path::new("server.pem").to_path_buf(),
-                private_key: Path::new("server.key").to_path_buf(),
+                identity: Path::new("server.identity.pem").to_path_buf(),
             },
+            host: "app.appd.local".to_owned(),
             port: 0,
+            require_client_certificate: true,
         };
         let json = serde_json::to_value(config).unwrap_or_default();
-        assert_eq!(json["certificates"]["privateKey"], "server.key");
+        assert_eq!(json["certificates"]["identity"], "server.identity.pem");
+        assert_eq!(json["requireClientCertificate"], true);
         assert_eq!(json["assets"]["manifest"], "assets.json");
         assert_eq!(json["port"], 0);
     }

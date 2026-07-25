@@ -23,7 +23,9 @@ class BareBuildTests(unittest.TestCase):
 
     def test_generate_pins_javascriptcore(self) -> None:
         with mock.patch.object(appd_bare, "run_bare_make") as run:
-            appd_bare.generate(Path("build"), Path("source"), "darwin", "arm64")
+            appd_bare.generate(
+                Path("build"), Path("source"), "darwin", "arm64", Path("modules")
+            )
 
         arguments = run.call_args.args
         self.assertIn(
@@ -33,10 +35,45 @@ class BareBuildTests(unittest.TestCase):
 
     def test_generate_uses_ios_deployment_target(self) -> None:
         with mock.patch.object(appd_bare, "run_bare_make") as run:
-            appd_bare.generate(Path("build"), Path("source"), "ios", "arm64")
+            appd_bare.generate(
+                Path("build"), Path("source"), "ios", "arm64", Path("modules")
+            )
 
         arguments = run.call_args.args
         self.assertIn("CMAKE_OSX_DEPLOYMENT_TARGET:STRING=17.0", arguments)
+
+    def test_generate_uses_bare_default_engine_on_android(self) -> None:
+        with mock.patch.object(appd_bare, "run_bare_make") as run:
+            appd_bare.generate(
+                Path("build"), Path("source"), "android", "arm64", Path("modules")
+            )
+
+        self.assertNotIn("BARE_ENGINE:STRING", run.call_args.args)
+
+    def test_generate_marks_simulator_builds(self) -> None:
+        with mock.patch.object(appd_bare, "run_bare_make") as run:
+            appd_bare.generate(
+                Path("build"), Path("source"), "ios", "arm64", Path("modules"), True
+            )
+
+        self.assertIn("--simulator", run.call_args.args)
+        self.assertIn("APPLE_CLANG:BOOL=ON", run.call_args.args)
+
+    def test_target_settings_cover_apple_targets(self) -> None:
+        self.assertEqual(
+            appd_bare.target_settings("ios-simulator-x64"), ("ios", "x64", True)
+        )
+        self.assertEqual(
+            appd_bare.target_settings("macos-x64"), ("darwin", "x64", False)
+        )
+
+    def test_generate_uses_isolated_native_modules(self) -> None:
+        with mock.patch.object(appd_bare, "run_bare_make") as run:
+            appd_bare.generate(
+                Path("build"), Path("source"), "darwin", "arm64", Path("modules")
+            )
+
+        self.assertIn("APPD_BARE_MODULES_ROOT:PATH=modules", run.call_args.args)
 
     def test_link_arguments_drop_compiler_and_output(self) -> None:
         command = "clang++ smoke.o -o smoke libappd.a -framework CoreFoundation && :"

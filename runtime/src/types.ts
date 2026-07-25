@@ -1,7 +1,9 @@
 export interface RuntimeConfig {
   readonly assets?: AssetConfig;
   readonly certificates: CertificateConfig;
+  readonly host: string;
   readonly port: number;
+  readonly requireClientCertificate: boolean;
 }
 
 export interface AssetConfig {
@@ -11,8 +13,7 @@ export interface AssetConfig {
 
 export interface CertificateConfig {
   readonly ca: string;
-  readonly certificate: string;
-  readonly privateKey: string;
+  readonly identity: string;
 }
 
 export interface WorkerModule {
@@ -22,6 +23,12 @@ export interface WorkerModule {
     context: ExecutionContext,
   ): Response | Promise<Response>;
 }
+
+export interface WorkerEntrypointConstructor {
+  new (context: ExecutionContext, environment: WorkerEnvironment): WorkerModule;
+}
+
+export type WorkerExport = WorkerModule | WorkerEntrypointConstructor;
 
 export interface WorkerEnvironment {
   readonly ASSETS?: Fetcher;

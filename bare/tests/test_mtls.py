@@ -141,11 +141,18 @@ def make_leaf(
 def create_certificates(directory: Path) -> None:
     ca = make_ca(directory, "ca")
     wrong_ca = make_ca(directory, "wrong-ca")
-    make_leaf(directory, "server", ca, "serverAuth", "DNS:localhost")
-    make_leaf(directory, "server-wrong-host", ca, "serverAuth", "DNS:other")
-    make_leaf(directory, "server-expired", ca, "serverAuth", "DNS:localhost", expired=True)
+    server_key, server_certificate = make_leaf(directory, "server", ca, "serverAuth", "DNS:localhost")
+    wrong_host_key, wrong_host_certificate = make_leaf(directory, "server-wrong-host", ca, "serverAuth", "DNS:other")
+    expired_key, expired_certificate = make_leaf(directory, "server-expired", ca, "serverAuth", "DNS:localhost", expired=True)
     make_leaf(directory, "client", ca, "clientAuth")
     make_leaf(directory, "client-wrong-ca", wrong_ca, "clientAuth")
+    write_identity(directory / "server.identity.pem", server_certificate, server_key)
+    write_identity(directory / "server-wrong-host.identity.pem", wrong_host_certificate, wrong_host_key)
+    write_identity(directory / "server-expired.identity.pem", expired_certificate, expired_key)
+
+
+def write_identity(path: Path, certificate: Path, key: Path) -> None:
+    path.write_bytes(certificate.read_bytes() + key.read_bytes())
 
 
 def stage_runtime(directory: Path, artifact: Path) -> Path:
@@ -164,6 +171,12 @@ def stage_runtime(directory: Path, artifact: Path) -> Path:
         if dependency.name == "bare-tls":
             continue
         os.symlink(dependency, modules / dependency.name, target_is_directory=dependency.is_dir())
+    shutil.copytree(ROOT / "target/runtime-js", directory / "runtime")
+    (directory / "runtime/package.json").write_text('{"type":"module"}\n')
+    worker = modules / "appd-worker"
+    worker.mkdir()
+    (worker / "package.json").write_text('{"type":"module"}\n')
+    (worker / "index.js").write_text("export default { fetch: () => new Response(null, { status: 204 }) };\n")
     script = directory / "mtls_test.mjs"
     shutil.copy2(ROOT / "bare/tests/mtls_test.mjs", script)
     return script

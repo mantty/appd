@@ -5,7 +5,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use appd_target_pack::{
-    Artifact, ArtifactKind, Target, TargetPackManifest, TargetPackVersion, write_manifest,
+    Artifact, ArtifactKind, Target, TargetPackManifest, TargetPackVersion, artifact_sha256,
+    write_manifest,
 };
 
 use crate::BuildPlatform;
@@ -32,16 +33,25 @@ pub(crate) fn resolve_manifest(
         return Ok(manifest);
     }
 
-    let workspace = source_workspace_root()
-        .context("no bundled target pack found and source workspace is unavailable")?;
-    build_source_target_pack(&workspace, target)
+    bail!(
+        "no target pack found for {target}; pass --target-pack or build one explicitly with `appd pack build --target {target}`"
+    )
 }
 
 fn default_target(platform: BuildPlatform) -> Result<Target> {
     match platform {
+        BuildPlatform::Android => Ok(Target::AndroidArm64),
         BuildPlatform::Ios => Ok(Target::IosArm64),
+        BuildPlatform::IosSimulator if cfg!(target_arch = "aarch64") => {
+            Ok(Target::IosSimulatorArm64)
+        }
+        BuildPlatform::IosSimulator if cfg!(target_arch = "x86_64") => Ok(Target::IosSimulatorX64),
+        BuildPlatform::IosSimulator => {
+            bail!("iOS Simulator builds require an Intel or Apple Silicon host")
+        }
         BuildPlatform::Macos if cfg!(target_arch = "aarch64") => Ok(Target::MacosArm64),
-        BuildPlatform::Macos => bail!("macOS builds currently require an Apple Silicon host"),
+        BuildPlatform::Macos if cfg!(target_arch = "x86_64") => Ok(Target::MacosX64),
+        BuildPlatform::Macos => bail!("macOS builds require an Intel or Apple Silicon host"),
     }
 }
 
@@ -80,79 +90,76 @@ fn source_workspace_root() -> Option<PathBuf> {
     }
 }
 
-fn build_source_target_pack(workspace: &Path, target: Target) -> Result<PathBuf> {
+pub(crate) fn build_source_target_pack(target: Target) -> Result<PathBuf> {
+    let workspace = source_workspace_root()
+        .context("source workspace is unavailable; run this command from an appd checkout")?;
+    build_source_target_pack_at(&workspace, target)
+}
+
+fn build_source_target_pack_at(workspace: &Path, target: Target) -> Result<PathBuf> {
     let rust_target = rust_runtime_target(target);
-    build_bare_sdk(workspace, target)?;
-    build_runtime_tools(workspace)?;
-    eprintln!("Building appd runtime target pack for {target}...");
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "appd-runtime",
-            "--bin",
-            "appd-runtime",
-            "--release",
-            "--features",
-            "bare-runtime",
-            "--target",
-            rust_target,
-        ])
-        .current_dir(workspace)
-        .status()
-        .context("failed to run cargo build for appd-runtime")?;
-    if !status.success() {
-        bail!("appd-runtime build failed with status {status}");
-    }
-
-    let runtime_binary = RUNTIME_BINARY;
-    let binary = workspace
-        .join("target")
-        .join(rust_target)
-        .join("release")
-        .join(runtime_binary);
-    if !binary.is_file() {
-        bail!("runtime binary was not produced: {}", binary.display());
-    }
-
     let pack_dir = workspace
         .join("target/appd-target-packs")
         .join(target.to_string());
     reset_dir(&pack_dir)?;
+    build_bare_sdk(workspace, target)?;
+    build_runtime_tools(workspace)?;
+    let binary = build_runtime_binary(workspace, target, rust_target, &pack_dir)?;
+
+    let runtime_binary = runtime_artifact_name(target);
     let bin_dir = pack_dir.join("bin");
     fs::create_dir_all(&bin_dir)?;
     copy_file(&binary, bin_dir.join(runtime_binary))?;
+    if target == Target::AndroidArm64 {
+        copy_file(
+            &android_bare_host_library(workspace)?,
+            bin_dir.join("libappd_bare.so"),
+        )?;
+    }
     let tools_dir = pack_dir.join("tools");
     deploy_runtime(workspace, &tools_dir.join("runtime"))?;
     install_bare_tls(workspace, &tools_dir.join("runtime"), target)?;
     deploy_packer(workspace, &tools_dir.join("packer"))?;
 
+    let mut artifacts = vec![
+        packaged_artifact(
+            &pack_dir,
+            runtime_artifact_kind(target),
+            &format!("bin/{runtime_binary}"),
+        )?,
+        packaged_artifact(
+            &pack_dir,
+            ArtifactKind::RuntimeJavaScriptDirectory,
+            "tools/runtime/runtime-js",
+        )?,
+        packaged_artifact(
+            &pack_dir,
+            ArtifactKind::BarePackExecutable,
+            "tools/packer/node_modules/bare-pack/bin.js",
+        )?,
+        packaged_artifact(
+            &pack_dir,
+            ArtifactKind::EsbuildExecutable,
+            "tools/packer/node_modules/esbuild/bin/esbuild",
+        )?,
+    ];
+    if target == Target::AndroidArm64 {
+        artifacts.push(packaged_artifact(
+            &pack_dir,
+            ArtifactKind::BareHostLibrary,
+            "bin/libappd_bare.so",
+        )?);
+        artifacts.push(packaged_artifact(
+            &pack_dir,
+            ArtifactKind::AndroidKotlinDirectory,
+            "android-kotlin",
+        )?);
+    }
     let manifest = TargetPackManifest {
         schema_version: TargetPackVersion::CURRENT,
         appd_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
-        artifacts: vec![
-            Artifact {
-                kind: ArtifactKind::RuntimeExecutable,
-                path: format!("bin/{runtime_binary}"),
-                sha256: None,
-            },
-            Artifact {
-                kind: ArtifactKind::RuntimeJavaScriptDirectory,
-                path: "tools/runtime/runtime-js".to_owned(),
-                sha256: None,
-            },
-            Artifact {
-                kind: ArtifactKind::BarePackExecutable,
-                path: "tools/packer/node_modules/bare-pack/bin.js".to_owned(),
-                sha256: None,
-            },
-            Artifact {
-                kind: ArtifactKind::EsbuildExecutable,
-                path: "tools/packer/node_modules/esbuild/bin/esbuild".to_owned(),
-                sha256: None,
-            },
-        ],
+        artifacts,
         required_tools: vec!["node".to_owned()],
     };
     write_manifest(pack_dir.join("target-pack.json"), &manifest)?;
@@ -160,18 +167,144 @@ fn build_source_target_pack(workspace: &Path, target: Target) -> Result<PathBuf>
     Ok(pack_dir.join("target-pack.json"))
 }
 
-fn build_bare_sdk(workspace: &Path, target: Target) -> Result<()> {
-    let sdk_target = match target {
-        Target::MacosArm64 => "macos-arm64",
-        Target::IosArm64 => "ios-arm64",
+fn android_bare_host_library(workspace: &Path) -> Result<PathBuf> {
+    let inputs = workspace.join("target/bare/sdk/android-arm64/inputs");
+    let host = fs::read_dir(&inputs)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("-libappd_bare.so"))
+        });
+    host.with_context(|| format!("Android Bare host library is missing: {}", inputs.display()))
+}
+
+fn build_runtime_binary(
+    workspace: &Path,
+    target: Target,
+    rust_target: &str,
+    pack_dir: &Path,
+) -> Result<PathBuf> {
+    eprintln!("Building appd runtime target pack for {target}...");
+    let mut cargo = Command::new("cargo");
+    cargo.args([
+        "build",
+        "-p",
+        "appd-runtime",
+        "--release",
+        "--features",
+        "bare-runtime",
+        "--target",
+        rust_target,
+    ]);
+    if target == Target::AndroidArm64 {
+        cargo.arg("--lib");
+        configure_android_toolchain(&mut cargo)?;
+        let kotlin = workspace
+            .join("target/appd-wry-kotlin")
+            .join(target.to_string());
+        fs::create_dir_all(&kotlin)?;
+        cargo.env("WRY_ANDROID_PACKAGE", "com.appd.runtime");
+        cargo.env("WRY_ANDROID_LIBRARY", "appd_runtime");
+        cargo.env("WRY_ANDROID_KOTLIN_FILES_OUT_DIR", kotlin);
+        cargo.env(
+            "WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION",
+            "\n    private external fun appdClientCertificate(request: ClientCertRequest)\n    private external fun appdServerTrust(handler: SslErrorHandler, error: android.net.http.SslError)\n    override fun onReceivedClientCertRequest(view: WebView, request: ClientCertRequest) { appdClientCertificate(request) }\n    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) { appdServerTrust(handler, error) }\n",
+        );
+    } else {
+        cargo.args(["--bin", "appd-runtime"]);
+    }
+    let status = cargo
+        .current_dir(workspace)
+        .status()
+        .context("failed to run cargo build for appd-runtime")?;
+    if !status.success() {
+        bail!("appd-runtime build failed with status {status}");
+    }
+
+    let binary = workspace
+        .join("target")
+        .join(rust_target)
+        .join("release")
+        .join(runtime_artifact_name(target));
+    if !binary.is_file() {
+        bail!("runtime binary was not produced: {}", binary.display());
+    }
+
+    if target == Target::AndroidArm64 {
+        copy_directory(
+            &workspace
+                .join("target/appd-wry-kotlin")
+                .join(target.to_string()),
+            &pack_dir.join("android-kotlin"),
+        )?;
+    }
+
+    Ok(binary)
+}
+
+fn configure_android_toolchain(command: &mut Command) -> Result<()> {
+    let ndk = android_ndk_dir()?;
+    let prebuilt = ndk.join("toolchains/llvm/prebuilt");
+    let mut hosts = fs::read_dir(&prebuilt)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir());
+    let Some(host) = hosts.next() else {
+        bail!("Android NDK toolchain is missing: {}", prebuilt.display());
     };
-    let output = workspace.join("target/bare/sdk").join(sdk_target);
+    let compiler = host.join("bin/aarch64-linux-android31-clang");
+    if !compiler.is_file() {
+        bail!("Android NDK compiler is missing: {}", compiler.display());
+    }
+    command.env("CC_aarch64_linux_android", &compiler);
+    command.env("AR_aarch64_linux_android", host.join("bin/llvm-ar"));
+    command.env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", compiler);
+    Ok(())
+}
+
+fn android_ndk_dir() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("ANDROID_NDK_HOME").map(PathBuf::from)
+        && path.is_dir()
+    {
+        return Ok(path);
+    }
+    let Some(root) = env::var_os("ANDROID_HOME")
+        .or_else(|| env::var_os("ANDROID_SDK_ROOT"))
+        .map(PathBuf::from)
+    else {
+        bail!("set ANDROID_NDK_HOME or ANDROID_HOME to build Android target packs");
+    };
+    let ndks = root.join("ndk");
+    let mut versions = fs::read_dir(&ndks)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions
+        .pop()
+        .with_context(|| format!("Android NDK is missing: {}", ndks.display()))
+}
+
+fn packaged_artifact(root: &Path, kind: ArtifactKind, path: &str) -> Result<Artifact> {
+    Ok(Artifact {
+        kind,
+        path: path.to_owned(),
+        sha256: artifact_sha256(root.join(path))?,
+    })
+}
+
+fn build_bare_sdk(workspace: &Path, target: Target) -> Result<()> {
+    let sdk_target = target.to_string();
+    let output = workspace.join("target/bare/sdk").join(&sdk_target);
     if env::var_os("APPD_BARE_SDK_DIR").is_some() && output.join("sdk-manifest.json").is_file() {
         return Ok(());
     }
-    let status = Command::new("python3")
+    let status = Command::new(native_python())
         .arg("bare/scripts/build-sdk.py")
-        .args(["--target", sdk_target, "--output"])
+        .args(["--target", &sdk_target, "--output"])
         .arg(&output)
         .current_dir(workspace)
         .status()
@@ -180,6 +313,15 @@ fn build_bare_sdk(workspace: &Path, target: Target) -> Result<()> {
         Ok(())
     } else {
         bail!("Bare SDK build failed with status {status}")
+    }
+}
+
+fn native_python() -> PathBuf {
+    let homebrew = PathBuf::from("/opt/homebrew/bin/python3");
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") && homebrew.is_file() {
+        homebrew
+    } else {
+        PathBuf::from("python3")
     }
 }
 
@@ -197,13 +339,14 @@ fn build_runtime_tools(workspace: &Path) -> Result<()> {
 }
 
 fn install_bare_tls(workspace: &Path, runtime: &Path, target: Target) -> Result<()> {
-    let sdk_target = match target {
-        Target::MacosArm64 => "macos-arm64",
-        Target::IosArm64 => "ios-arm64",
-    };
+    let sdk_target = target.to_string();
     let host = match target {
+        Target::AndroidArm64 => "android-arm64",
         Target::MacosArm64 => "darwin-arm64",
+        Target::MacosX64 => "darwin-x64",
         Target::IosArm64 => "ios-arm64",
+        Target::IosSimulatorArm64 => "ios-arm64-simulator",
+        Target::IosSimulatorX64 => "ios-x64-simulator",
     };
     let source = workspace
         .join("target/bare/sdk")
@@ -217,6 +360,7 @@ fn install_bare_tls(workspace: &Path, runtime: &Path, target: Target) -> Result<
 }
 
 fn deploy_runtime(workspace: &Path, output: &Path) -> Result<()> {
+    clear_path(output)?;
     let status = Command::new("pnpm")
         .args([
             "--config.node-linker=isolated",
@@ -239,6 +383,7 @@ fn deploy_runtime(workspace: &Path, output: &Path) -> Result<()> {
 }
 
 fn deploy_packer(workspace: &Path, output: &Path) -> Result<()> {
+    clear_path(output)?;
     let status = Command::new("pnpm")
         .args([
             "--config.node-linker=isolated",
@@ -260,16 +405,43 @@ fn deploy_packer(workspace: &Path, output: &Path) -> Result<()> {
 
 fn rust_runtime_target(target: Target) -> &'static str {
     match target {
+        Target::AndroidArm64 => "aarch64-linux-android",
         Target::MacosArm64 => "aarch64-apple-darwin",
+        Target::MacosX64 => "x86_64-apple-darwin",
         Target::IosArm64 => "aarch64-apple-ios",
+        Target::IosSimulatorArm64 => "aarch64-apple-ios-sim",
+        Target::IosSimulatorX64 => "x86_64-apple-ios",
+    }
+}
+
+fn runtime_artifact_name(target: Target) -> &'static str {
+    if target == Target::AndroidArm64 {
+        "libappd_runtime.so"
+    } else {
+        RUNTIME_BINARY
+    }
+}
+
+fn runtime_artifact_kind(target: Target) -> ArtifactKind {
+    if target == Target::AndroidArm64 {
+        ArtifactKind::RuntimeLibrary
+    } else {
+        ArtifactKind::RuntimeExecutable
     }
 }
 
 fn reset_dir(path: &Path) -> Result<()> {
-    if path.exists() {
+    clear_path(path)?;
+    fs::create_dir_all(path)?;
+    Ok(())
+}
+
+fn clear_path(path: &Path) -> Result<()> {
+    if path.is_symlink() || path.is_file() {
+        fs::remove_file(path)?;
+    } else if path.is_dir() {
         fs::remove_dir_all(path)?;
     }
-    fs::create_dir_all(path)?;
     Ok(())
 }
 

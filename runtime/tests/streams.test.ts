@@ -19,23 +19,20 @@ void test("turns an async request source into a readable stream", async () => {
 void test("pipes response chunks with backpressure", async () => {
   const chunks: Uint8Array[] = [];
   let ended = false;
-  let drained = false;
   const writer: ResponseWriter = {
-    end: () => { ended = true; },
-    once: (_event, listener) => {
-      if (!drained) {
-        drained = true;
-        queueMicrotask(listener);
-      }
+    end: () => {
+      ended = true;
     },
-    write: (chunk) => {
+    write: (chunk, callback) => {
       chunks.push(chunk);
+      callback();
       return chunks.length > 1;
     },
   };
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(Uint8Array.from([1]));
+      controller.enqueue(new Uint8Array(0));
       controller.enqueue(Uint8Array.from([2]));
       controller.close();
     },
@@ -43,6 +40,6 @@ void test("pipes response chunks with backpressure", async () => {
 
   await responseBody(body, writer);
 
-  assert.deepEqual(chunks, [Uint8Array.from([1]), Uint8Array.from([2])]);
+  assert.deepEqual(chunks.map((chunk) => Array.from(chunk)), [[1], [2]]);
   assert.equal(ended, true);
 });

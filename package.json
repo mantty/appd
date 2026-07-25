@@ -7,7 +7,7 @@
   "scripts": {
     "build:runtime": "tsc --project runtime/tsconfig.build.json",
     "lint:ts": "eslint runtime --max-warnings 0 && tsc --project runtime/tsconfig.json",
-    "test:bare": "pnpm build:runtime && bare runtime/tests/response.bare.mjs",
+    "test:bare": "pnpm build:runtime && bare runtime/tests/response.bare.mjs && bare runtime/tests/crypto.bare.mjs",
     "test:ts": "node --import tsx --test runtime/tests/**/*.test.ts"
   },
   "dependencies": {
@@ -18,8 +18,11 @@
     "bare-events": "^2.6.0",
     "bare-fetch": "^3.0.1",
     "bare-fs": "^4.7.3",
+    "bare-http1": "^4.5.7",
     "bare-https": "^3.0.0",
+    "bare-process": "^4.5.1",
     "bare-stream": "^2.10.0",
+    "bare-tcp": "^2.5.2",
     "bare-tls": "file:vendor/bare-tls",
     "bare-url": "^2.4.0",
     "bare-ws": "file:vendor/bare-ws"

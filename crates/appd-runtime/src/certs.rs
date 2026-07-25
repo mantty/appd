@@ -5,18 +5,21 @@ use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
-    SerialNumber,
+    SerialNumber, SigningKey,
 };
 use time::{Duration, OffsetDateTime};
-use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
+use x509_parser::{extensions::GeneralName, parse_x509_certificate, pem::parse_x509_pem};
 
 use crate::RuntimeResult;
 
-const VALIDITY_DAYS: i64 = 90;
+const CA_VALIDITY_DAYS: i64 = 3_650;
+const LEAF_VALIDITY_DAYS: i64 = 90;
+pub(crate) const LEAF_RENEWAL_DAYS: i64 = 30;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime certificate and key material needed by Bare and platform `WebViews`.
@@ -24,10 +27,14 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct CertificateBundle {
     /// CA certificate PEM trusted by Bare for client authentication.
     pub ca_cert_pem: String,
+    /// CA private key PEM used to issue replacement leaf certificates.
+    pub ca_key_pem: String,
     /// Server certificate PEM used by Bare's TLS server.
     pub server_cert_pem: String,
     /// Server private key PEM used by Bare's TLS server.
     pub server_key_pem: String,
+    /// Server certificate and key PEM consumed atomically by Bare.
+    pub server_identity_pem: String,
     /// Client certificate PEM.
     pub client_cert_pem: String,
     /// Client private key PEM.
@@ -38,35 +45,71 @@ pub struct CertificateBundle {
     pub ca_cert_der: Vec<u8>,
 }
 
+/// Shared certificate material used by runtime and platform trust hooks.
+pub type SharedCertificateBundle = Arc<RwLock<Option<CertificateBundle>>>;
+
 impl CertificateBundle {
     /// Generate a fresh ECDSA P-256/SHA-256 certificate bundle.
     ///
     /// The generated shape matches the Zig runtime: a self-signed local CA, a
-    /// localhost server certificate with `DNS:localhost` and `IP:127.0.0.1`
-    /// SANs, and a client-auth certificate.
+    /// app origin server certificate with loopback SANs, and a client-auth
+    /// certificate.
     ///
     /// # Errors
     ///
     /// Returns an error when key generation, certificate signing, encoding, or
     /// system clock conversion fails.
-    pub fn generate() -> RuntimeResult<Self> {
+    pub fn generate(host: &str) -> RuntimeResult<Self> {
+        Self::generate_at(host, OffsetDateTime::now_utc())
+    }
+
+    pub(crate) fn generate_at(host: &str, now: OffsetDateTime) -> RuntimeResult<Self> {
         let ca_key = KeyPair::generate()?;
         let server_key = KeyPair::generate()?;
         let client_key = KeyPair::generate()?;
 
-        let (ca_params, ca_cert) = build_ca_certificate(&ca_key)?;
+        let (ca_params, ca_cert) = build_ca_certificate(&ca_key, now)?;
         let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
-        let server_cert = build_server_certificate(&server_key, &ca_issuer)?;
-        let client_cert = build_client_certificate(&client_key, &ca_issuer)?;
+        let server_cert = build_server_certificate(&server_key, &ca_issuer, host, now)?;
+        let client_cert = build_client_certificate(&client_key, &ca_issuer, now)?;
+        let server_cert_pem = server_cert.pem();
+        let server_key_pem = server_key.serialize_pem();
+        let client_cert_pem = client_cert.pem();
+        let client_key_pem = client_key.serialize_pem();
 
         Ok(Self {
             ca_cert_pem: ca_cert.pem(),
-            server_cert_pem: server_cert.pem(),
-            server_key_pem: server_key.serialize_pem(),
+            ca_key_pem: ca_key.serialize_pem(),
+            server_identity_pem: server_identity(&server_cert_pem, &server_key_pem),
+            server_cert_pem,
+            server_key_pem,
+            client_cert_pem,
+            client_key_pem,
+            client_key_der: client_key.serialized_der().to_vec(),
+            ca_cert_der: ca_cert.der().to_vec(),
+        })
+    }
+
+    pub(crate) fn renew_leaves(&self, host: &str, now: OffsetDateTime) -> RuntimeResult<Self> {
+        let ca_key = KeyPair::from_pem(&self.ca_key_pem)?;
+        let ca_issuer = Issuer::from_ca_cert_pem(&self.ca_cert_pem, ca_key)?;
+        let server_key = KeyPair::generate()?;
+        let client_key = KeyPair::generate()?;
+        let server_cert = build_server_certificate(&server_key, &ca_issuer, host, now)?;
+        let client_cert = build_client_certificate(&client_key, &ca_issuer, now)?;
+
+        let server_cert_pem = server_cert.pem();
+        let server_key_pem = server_key.serialize_pem();
+        Ok(Self {
+            ca_cert_pem: self.ca_cert_pem.clone(),
+            ca_key_pem: self.ca_key_pem.clone(),
+            server_identity_pem: server_identity(&server_cert_pem, &server_key_pem),
+            server_cert_pem,
+            server_key_pem,
             client_cert_pem: client_cert.pem(),
             client_key_pem: client_key.serialize_pem(),
             client_key_der: client_key.serialized_der().to_vec(),
-            ca_cert_der: ca_cert.der().to_vec(),
+            ca_cert_der: self.ca_cert_der.clone(),
         })
     }
 
@@ -86,8 +129,12 @@ impl CertificateBundle {
         }
         Ok(Self {
             ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
+            ca_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
             server_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_CERT_PEM))?,
             server_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_KEY_PEM))?,
+            server_identity_pem: fs::read_to_string(
+                work_dir.join(CertificatePaths::SERVER_IDENTITY_PEM),
+            )?,
             client_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_CERT_PEM))?,
             client_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_KEY_PEM))?,
             client_key_der: fs::read(work_dir.join(CertificatePaths::CLIENT_KEY_DER))?,
@@ -95,18 +142,80 @@ impl CertificateBundle {
         })
     }
 
+    pub(crate) fn load_issuer(work_dir: &Path) -> RuntimeResult<Self> {
+        Ok(Self {
+            ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
+            ca_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
+            server_cert_pem: String::new(),
+            server_key_pem: String::new(),
+            server_identity_pem: String::new(),
+            client_cert_pem: String::new(),
+            client_key_pem: String::new(),
+            client_key_der: Vec::new(),
+            ca_cert_der: fs::read(work_dir.join(CertificatePaths::CA_CERT_DER))?,
+        })
+    }
+
     pub(crate) fn cached_material_is_current(&self, now: OffsetDateTime) -> bool {
-        [
-            self.ca_cert_pem.as_str(),
-            self.server_cert_pem.as_str(),
-            self.client_cert_pem.as_str(),
-        ]
-        .into_iter()
-        .all(|pem| certificate_is_valid_now(pem, now))
-            && certificate_der_matches_pem(&self.ca_cert_pem, &self.ca_cert_der)
+        self.issuer_is_current(now)
+            && self.leaves_are_current(now)
             && certificate_matches_key(&self.server_cert_pem, &self.server_key_pem)
             && certificate_matches_key(&self.client_cert_pem, &self.client_key_pem)
             && key_matches_der(&self.client_key_pem, &self.client_key_der)
+            && certificate_is_issued_by(&self.server_cert_pem, &self.ca_cert_pem)
+            && certificate_is_issued_by(&self.client_cert_pem, &self.ca_cert_pem)
+            && self.server_identity_pem
+                == server_identity(&self.server_cert_pem, &self.server_key_pem)
+    }
+
+    pub(crate) fn issuer_is_current(&self, now: OffsetDateTime) -> bool {
+        certificate_is_valid_now(&self.ca_cert_pem, now)
+            && certificate_der_matches_pem(&self.ca_cert_pem, &self.ca_cert_der)
+            && certificate_matches_key(&self.ca_cert_pem, &self.ca_key_pem)
+    }
+
+    fn leaves_are_current(&self, now: OffsetDateTime) -> bool {
+        [self.server_cert_pem.as_str(), self.client_cert_pem.as_str()]
+            .into_iter()
+            .all(|pem| certificate_is_valid_now(pem, now))
+    }
+
+    pub(crate) fn leaf_renewal_is_due(&self, now: OffsetDateTime) -> bool {
+        certificate_not_before(&self.server_cert_pem)
+            .is_none_or(|not_before| now >= not_before + Duration::days(LEAF_RENEWAL_DAYS))
+    }
+
+    #[cfg(feature = "bare-runtime")]
+    pub(crate) fn renewal_delay(&self, now: OffsetDateTime) -> std::time::Duration {
+        let Some(not_before) = certificate_not_before(&self.server_cert_pem) else {
+            return std::time::Duration::ZERO;
+        };
+        let seconds = u64::try_from(
+            (not_before + Duration::days(LEAF_RENEWAL_DAYS) - now)
+                .whole_seconds()
+                .max(0),
+        )
+        .unwrap_or_default();
+        std::time::Duration::from_secs(seconds)
+    }
+
+    pub(crate) fn server_certificate_matches_host(&self, host: &str) -> bool {
+        let Ok((_, pem)) = parse_x509_pem(self.server_cert_pem.as_bytes()) else {
+            return false;
+        };
+        let Ok(certificate) = pem.parse_x509() else {
+            return false;
+        };
+        certificate.extensions().iter().any(|extension| {
+            let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
+                extension.parsed_extension()
+            else {
+                return false;
+            };
+            san.general_names
+                .iter()
+                .any(|name| matches!(name, GeneralName::DNSName(value) if *value == host))
+        })
     }
 
     /// Write all certificate files expected by Bare and platform `WebViews`.
@@ -122,6 +231,7 @@ impl CertificateBundle {
         remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
         for (name, content) in [
             (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),
+            (CertificatePaths::CA_KEY_PEM, self.ca_key_pem.as_bytes()),
             (
                 CertificatePaths::SERVER_CERT_PEM,
                 self.server_cert_pem.as_bytes(),
@@ -129,6 +239,10 @@ impl CertificateBundle {
             (
                 CertificatePaths::SERVER_KEY_PEM,
                 self.server_key_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::SERVER_IDENTITY_PEM,
+                self.server_identity_pem.as_bytes(),
             ),
             (
                 CertificatePaths::CLIENT_CERT_PEM,
@@ -149,6 +263,39 @@ impl CertificateBundle {
         write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)?;
         Ok(())
     }
+
+    pub(crate) fn write_leaves(&self, work_dir: &Path) -> RuntimeResult<()> {
+        remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
+        for (name, content) in [
+            (
+                CertificatePaths::SERVER_CERT_PEM,
+                self.server_cert_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::SERVER_KEY_PEM,
+                self.server_key_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::CLIENT_CERT_PEM,
+                self.client_cert_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::CLIENT_KEY_PEM,
+                self.client_key_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::CLIENT_KEY_DER,
+                self.client_key_der.as_slice(),
+            ),
+            (
+                CertificatePaths::SERVER_IDENTITY_PEM,
+                self.server_identity_pem.as_bytes(),
+            ),
+        ] {
+            write_atomic(work_dir, name, content, is_private_key(name))?;
+        }
+        write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)
+    }
 }
 
 /// Canonical certificate filenames used in each packaged app work directory.
@@ -157,12 +304,16 @@ pub struct CertificatePaths;
 impl CertificatePaths {
     /// CA certificate PEM filename.
     pub const CA_CERT_PEM: &'static str = "ca.cert.pem";
+    /// CA private key PEM filename.
+    pub const CA_KEY_PEM: &'static str = "ca.key.pem";
     /// CA certificate DER filename.
     pub const CA_CERT_DER: &'static str = "ca.cert.der";
     /// Server certificate PEM filename.
     pub const SERVER_CERT_PEM: &'static str = "server.cert.pem";
     /// Server private key PEM filename.
     pub const SERVER_KEY_PEM: &'static str = "server.key.pem";
+    /// Server certificate and key PEM filename.
+    pub const SERVER_IDENTITY_PEM: &'static str = "server.identity.pem";
     /// Client certificate PEM filename.
     pub const CLIENT_CERT_PEM: &'static str = "client.cert.pem";
     /// Client private key PEM filename.
@@ -174,9 +325,11 @@ impl CertificatePaths {
 
     const ALL: &'static [&'static str] = &[
         Self::CA_CERT_PEM,
+        Self::CA_KEY_PEM,
         Self::CA_CERT_DER,
         Self::SERVER_CERT_PEM,
         Self::SERVER_KEY_PEM,
+        Self::SERVER_IDENTITY_PEM,
         Self::CLIENT_CERT_PEM,
         Self::CLIENT_KEY_PEM,
         Self::CLIENT_KEY_DER,
@@ -196,20 +349,26 @@ impl CertificatePaths {
     }
 }
 
-fn build_ca_certificate(key: &KeyPair) -> RuntimeResult<(CertificateParams, Certificate)> {
-    let mut params = base_certificate_params("appd local ca", 1);
+fn build_ca_certificate(
+    key: &KeyPair,
+    now: OffsetDateTime,
+) -> RuntimeResult<(CertificateParams, Certificate)> {
+    let mut params = base_certificate_params("appd local ca", 1, now, CA_VALIDITY_DAYS);
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let certificate = params.self_signed(key)?;
     Ok((params, certificate))
 }
 
-fn build_server_certificate(
+fn build_server_certificate<S: SigningKey>(
     key: &KeyPair,
-    ca_issuer: &Issuer<'_, &KeyPair>,
+    ca_issuer: &Issuer<'_, S>,
+    host: &str,
+    now: OffsetDateTime,
 ) -> RuntimeResult<Certificate> {
-    let mut params = base_certificate_params("localhost", 2);
+    let mut params = base_certificate_params(host, 2, now, LEAF_VALIDITY_DAYS);
     params.subject_alt_names = vec![
+        SanType::DnsName(host.try_into()?),
         SanType::DnsName("localhost".try_into()?),
         SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
     ];
@@ -218,26 +377,41 @@ fn build_server_certificate(
     Ok(params.signed_by(key, ca_issuer)?)
 }
 
-fn build_client_certificate(
+fn build_client_certificate<S: SigningKey>(
     key: &KeyPair,
-    ca_issuer: &Issuer<'_, &KeyPair>,
+    ca_issuer: &Issuer<'_, S>,
+    now: OffsetDateTime,
 ) -> RuntimeResult<Certificate> {
-    let mut params = base_certificate_params("appd client", 3);
+    let mut params = base_certificate_params("appd client", 3, now, LEAF_VALIDITY_DAYS);
     params.is_ca = IsCa::ExplicitNoCa;
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     Ok(params.signed_by(key, ca_issuer)?)
 }
 
-fn base_certificate_params(common_name: &str, serial: u64) -> CertificateParams {
+fn base_certificate_params(
+    common_name: &str,
+    serial: u64,
+    now: OffsetDateTime,
+    validity_days: i64,
+) -> CertificateParams {
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CommonName, common_name);
-    let now = OffsetDateTime::now_utc();
     let mut params = CertificateParams::default();
     params.not_before = now - Duration::days(1);
-    params.not_after = now + Duration::days(VALIDITY_DAYS);
+    params.not_after = now + Duration::days(validity_days);
     params.serial_number = Some(SerialNumber::from(serial));
     params.distinguished_name = distinguished_name;
     params
+}
+
+fn server_identity(certificate: &str, key: &str) -> String {
+    format!("{certificate}{key}")
+}
+
+fn certificate_not_before(pem: &str) -> Option<OffsetDateTime> {
+    let (_, pem) = parse_x509_pem(pem.as_bytes()).ok()?;
+    let certificate = pem.parse_x509().ok()?;
+    OffsetDateTime::from_unix_timestamp(certificate.validity().not_before.timestamp()).ok()
 }
 
 fn certificate_is_valid_now(pem: &str, now: OffsetDateTime) -> bool {
@@ -265,6 +439,25 @@ fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> bool {
     certificate.public_key().raw == key.subject_public_key_info()
 }
 
+fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) -> bool {
+    let Ok((_, certificate_pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
+        return false;
+    };
+    let Ok(certificate) = certificate_pem.parse_x509() else {
+        return false;
+    };
+    let Ok((_, issuer_pem)) = parse_x509_pem(issuer_pem.as_bytes()) else {
+        return false;
+    };
+    let Ok(issuer) = issuer_pem.parse_x509() else {
+        return false;
+    };
+    certificate.issuer() == issuer.subject()
+        && certificate
+            .verify_signature(Some(issuer.public_key()))
+            .is_ok()
+}
+
 fn certificate_der_matches_pem(certificate_pem: &str, certificate_der: &[u8]) -> bool {
     let Ok((_, pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
         return false;
@@ -280,6 +473,8 @@ fn is_private_key(name: &str) -> bool {
     matches!(
         name,
         CertificatePaths::SERVER_KEY_PEM
+            | CertificatePaths::CA_KEY_PEM
+            | CertificatePaths::SERVER_IDENTITY_PEM
             | CertificatePaths::CLIENT_KEY_PEM
             | CertificatePaths::CLIENT_KEY_DER
     )

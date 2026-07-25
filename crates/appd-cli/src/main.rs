@@ -59,25 +59,37 @@ enum PackCommand {
         /// Path to target-pack.json.
         manifest: PathBuf,
     },
+    /// Build a target pack from the appd source workspace.
+    Build {
+        /// Runtime target to build.
+        #[arg(long)]
+        target: Target,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildPlatform {
+    Android,
     Ios,
+    IosSimulator,
     Macos,
 }
 
 impl BuildPlatform {
     fn display_name(self) -> &'static str {
         match self {
+            Self::Android => "Android",
             Self::Ios => "iOS",
+            Self::IosSimulator => "iOS Simulator",
             Self::Macos => "macOS",
         }
     }
 
     fn build_dir_name(self) -> &'static str {
         match self {
+            Self::Android => "android",
             Self::Ios => "ios",
+            Self::IosSimulator => "ios-simulator",
             Self::Macos => "macos",
         }
     }
@@ -88,9 +100,13 @@ impl FromStr for BuildPlatform {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "android" => Ok(Self::Android),
             "ios" => Ok(Self::Ios),
+            "ios-simulator" => Ok(Self::IosSimulator),
             "macos" => Ok(Self::Macos),
-            _ => bail!("unknown platform '{value}'; expected ios or macos"),
+            _ => {
+                bail!("unknown platform '{value}'; expected android, ios, ios-simulator, or macos")
+            }
         }
     }
 }
@@ -141,6 +157,13 @@ fn run() -> Result<()> {
         Command::Pack {
             command: PackCommand::Inspect { manifest },
         } => inspect_pack(&manifest),
+        Command::Pack {
+            command: PackCommand::Build { target },
+        } => {
+            let manifest = target_packs::build_source_target_pack(target)?;
+            println!("Built target pack: {}", manifest.display());
+            Ok(())
+        }
     }
 }
 

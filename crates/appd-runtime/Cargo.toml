@@ -5,6 +5,9 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [features]
 default = []
 native-shell = [
@@ -31,7 +34,7 @@ test = false
 appd-bare = { path = "../appd-bare", optional = true }
 jsonc-parser = { workspace = true, features = ["serde"] }
 mime_guess.workspace = true
-rcgen.workspace = true
+rcgen = { workspace = true, features = ["pem", "x509-parser"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -69,8 +72,12 @@ objc2-ui-kit = { workspace = true, features = [
     "objc2-core-foundation",
 ], optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+tao.workspace = true
+wry.workspace = true
+
 [dev-dependencies]
-openssl.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]

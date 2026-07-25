@@ -22,8 +22,12 @@ APPD_ROOT = BARE_ROOT.parent
 DEFAULT_TARGET_ROOT = APPD_ROOT / "target" / "bare"
 DEFAULT_UPSTREAM_CONFIG = BARE_ROOT / "upstream.toml"
 TARGETS = {
-    "macos-arm64": ("darwin", "arm64"),
-    "ios-arm64": ("ios", "arm64"),
+    "macos-arm64": ("darwin", "arm64", False),
+    "macos-x64": ("darwin", "x64", False),
+    "ios-arm64": ("ios", "arm64", False),
+    "ios-simulator-arm64": ("ios", "arm64", True),
+    "ios-simulator-x64": ("ios", "x64", True),
+    "android-arm64": ("android", "arm64", False),
 }
 
 
@@ -106,26 +110,33 @@ def install_upstream_dependencies(source_dir: Path) -> None:
 
 
 def build_sdk(target: str, output: Path, target_root: Path = DEFAULT_TARGET_ROOT) -> None:
-    platform, arch = target_settings(target)
+    platform, arch, simulator = target_settings(target)
     source = fetch_upstream(target_root)
+    modules = prepare_native_modules(target_root, target)
     build = target_root / "build" / target
-    generate(build, source, platform, arch)
+    generate(build, source, platform, arch, modules, simulator)
     run_bare_make("build", "--build", str(build), "--target", "appd_bare_link_test")
     bare_tls = build_bare_tls(build)
     package_sdk(build, output, target)
     shutil.copy2(bare_tls, output / "bare-tls.bare")
 
 
-def target_settings(target: str) -> tuple[str, str]:
+def target_settings(target: str) -> tuple[str, str, bool]:
     try:
         return TARGETS[target]
     except KeyError as error:
         raise ValueError(f"unsupported Bare target: {target}") from error
 
 
-def generate(build: Path, source: Path, platform: str, arch: str) -> None:
+def generate(
+    build: Path,
+    source: Path,
+    platform: str,
+    arch: str,
+    modules: Path,
+    simulator: bool = False,
+) -> None:
     upstream = load_upstream_config()
-    engine = f"{upstream['engine_repository']}#{upstream['engine_commit']}"
     arguments = [
         "generate",
         "--source",
@@ -140,8 +151,11 @@ def generate(build: Path, source: Path, platform: str, arch: str) -> None:
         "--define",
         f"BARE_KIT_SOURCE:PATH={source}",
         "--define",
-        f"BARE_ENGINE:STRING={engine}",
+        f"APPD_BARE_MODULES_ROOT:PATH={modules}",
     ]
+    if platform != "android":
+        engine = f"{upstream['engine_repository']}#{upstream['engine_commit']}"
+        arguments.extend(("--define", f"BARE_ENGINE:STRING={engine}"))
     if platform == "ios":
         arguments.extend(
             (
@@ -149,11 +163,44 @@ def generate(build: Path, source: Path, platform: str, arch: str) -> None:
                 "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=17.0",
             )
         )
+    if platform == "android":
+        arguments.extend(
+            (
+                "--define",
+                "ANDROID_PLATFORM:STRING=android-31",
+                "--define",
+                "ANDROID_STL:STRING=c++_static",
+            )
+        )
+    if simulator:
+        arguments.extend(("--simulator", "--define", "APPLE_CLANG:BOOL=ON"))
     launcher = os.environ.get("SCCACHE") or shutil.which("sccache")
     if launcher:
         for language in ("C", "CXX", "OBJC", "OBJCXX"):
             arguments.extend(("--define", f"CMAKE_{language}_COMPILER_LAUNCHER:FILEPATH={launcher}"))
     run_bare_make(*arguments)
+
+
+def prepare_native_modules(target_root: Path, target: str) -> Path:
+    output = target_root / "native-modules" / target
+    if output.is_symlink() or output.is_file():
+        output.unlink()
+    elif output.exists():
+        shutil.rmtree(output)
+    subprocess.run(
+        [
+            "pnpm",
+            "--config.node-linker=isolated",
+            "--filter",
+            "appd",
+            "deploy",
+            "--prod",
+            str(output),
+        ],
+        cwd=APPD_ROOT,
+        check=True,
+    )
+    return output
 
 
 def run_bare_make(*arguments: str) -> None:
@@ -181,7 +228,14 @@ def build_bare_tls(build: Path) -> Path:
 
 def package_sdk(build: Path, output: Path, target: str) -> None:
     command = link_command(build)
-    arguments = force_load_appd_bare(link_arguments(command)) + driver_link_arguments(target)
+    arguments = link_arguments(command)
+    if target.startswith("android-"):
+        arguments = [
+            next(argument for argument in arguments if Path(argument).name == "libappd_bare.so")
+        ]
+    else:
+        arguments = force_load_appd_bare(arguments)
+        arguments += driver_link_arguments(target)
     if output.exists():
         shutil.rmtree(output)
     inputs = copy_link_inputs(build, output, arguments)
@@ -206,6 +260,8 @@ def package_sdk(build: Path, output: Path, target: str) -> None:
 
 def driver_link_arguments(target: str) -> list[str]:
     target_settings(target)
+    if target.startswith("android-"):
+        return []
     return ["-lc++"]
 
 
@@ -252,7 +308,10 @@ def copy_link_inputs(
     seen: set[Path] = set()
     for argument in arguments:
         source = (build / argument).resolve()
-        if source in seen or not source.is_file() or source.suffix not in {".a", ".o"}:
+        is_android_host = source.name == "libappd_bare.so" and build in source.parents
+        if source in seen or not source.is_file() or (
+            source.suffix not in {".a", ".o"} and not is_android_host
+        ):
             continue
         seen.add(source)
         relative = f"inputs/{len(inputs):04d}-{source.name}"
