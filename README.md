@@ -12,12 +12,20 @@ uses the same JavaScript runtime and compatibility layer.
 - `crates/appd-bare/` exposes the appd-owned C ABI as a safe Rust runtime.
 - `runtime/` owns the JavaScript server, Cloudflare/Node compatibility, assets,
   and WebSockets.
-- `crates/appd-runtime/` owns certificates, lifecycle, and native platform
-  shells.
+- `crates/appd-runtime/` is the runtime library: certificates, lifecycle, and
+  events. A shell drives it; it owns no application object or event loop.
+- `crates/appd-shell-apple/` provides the precompiled Apple runtime library and
+  the Swift application shell compiled by `appd build`.
+- `crates/appd-shell-android/` provides the precompiled Android runtime library
+  and the Kotlin application shell compiled by `appd build`.
+- `crates/appd-bundle/` owns the on-disk app contract: layout, Wrangler
+  config, and the asset manifest. The CLI writes it and the runtime reads it.
 - `crates/appd-cli/` builds web projects and packages native application
   bundles.
 - `crates/appd-target-pack/` defines the versioned CLI/runtime artifact
   contract.
+- `plugins/` contains the frontend plugin bridge and plugin packages. Plugin
+  Swift and Kotlin sources compile with the application shell.
 
 `vendor/` contains the small appd-owned seams around Bare ecosystem packages.
 `bare-tls` provides the gateway TLS implementation and covers its
@@ -27,24 +35,32 @@ text-versus-binary message types for the Workerd-compatible WebSocket API; and
 dependencies pinned in `pnpm-lock.yaml`, not modifications to an installed
 dependency tree.
 
-The native shell is intentionally narrow. Bare owns HTTPS gateway handling,
-HTTP routing, worker execution, static assets, and WebSockets. Rust owns OS
-lifecycle and WebView integration. Client-certificate verification remains
-required for the current loopback gateway.
+The native shell is the application: it owns the process entry point, window,
+`WebView`, and operating-system lifecycle, and drives a precompiled appd
+runtime library through a narrow native API. Target packs contain that library
+and the shell sources for one target. `appd build` compiles the shell and links
+the library; it never compiles Rust. Bare owns HTTPS gateway handling, HTTP
+routing, worker execution, static assets, and WebSockets. Client-certificate
+verification remains required for the loopback gateway.
+
+Bare reports its port over BareKit's IPC channel once the listener binds, so
+startup never polls.
 
 ## Commands
 
 ```sh
 cargo fmt --all --check
+xcrun swift-format lint --strict crates/appd-shell-apple/native/*.swift plugins/*/apple/*.swift
 pnpm lint:ts
 pnpm test:ts
+pnpm test:bare
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p appd-runtime --features bare-test-stubs -- -D warnings
-cargo clippy -p appd-runtime --target aarch64-apple-ios --features bare-test-stubs -- -D warnings
-cargo clippy -p appd-runtime --target aarch64-apple-ios-sim --features bare-test-stubs -- -D warnings
-cargo clippy -p appd-runtime --target x86_64-apple-ios --features bare-test-stubs -- -D warnings
-cargo clippy -p appd-runtime --target x86_64-apple-darwin --features bare-test-stubs -- -D warnings
-cargo clippy -p appd-runtime --target aarch64-linux-android --features bare-test-stubs -- -D warnings
+cargo clippy -p appd-runtime --all-targets --features test-stubs -- -D warnings
+cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target aarch64-apple-ios -- -D warnings
+cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target aarch64-apple-ios-sim -- -D warnings
+cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target x86_64-apple-ios -- -D warnings
+cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target x86_64-apple-darwin -- -D warnings
+cargo clippy -p appd-shell-android --all-targets --features test-stubs --target aarch64-linux-android -- -D warnings
 cargo test --workspace
 python3 -m unittest discover -s bare/tests
 ```

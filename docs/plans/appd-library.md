@@ -1,13 +1,14 @@
 # appd as a library
 
-Status: proposal
+Status: implemented for macOS, iOS, and Android. Windows and Linux land with
+their platform support.
 
 First of three: this, then `appd-api-testing.md`, then `appd-plugins.md`.
 
 ## Purpose
 
-appd is the application today: it creates the application object, window,
-WebView, and event loop. This inverts. A per-platform shell becomes the
+appd used to be the application: it created the application object, window,
+WebView, and event loop. That inverted. A per-platform shell is the
 application and drives appd through a public API.
 
 appd is pre-release. Backwards compatibility is not a goal.
@@ -19,7 +20,9 @@ appd is pre-release. Backwards compatibility is not a goal.
 | `appd-runtime` | the library: certificates, runtime, events |
 | `appd-bare` | Bare integration |
 | `appd-bundle` | the on-disk app contract and source preparation |
-| `appd-cli` | building and packaging apps |
+| `appd-shell-apple` | precompiled Apple runtime ABI and Swift shell |
+| `appd-shell-android` | precompiled Android runtime ABI and Kotlin shell |
+| `appd-cli` | compiling native shells and packaging apps |
 
 `appd-bundle` is new. `wrangler_config` and `assets` move there out of
 `appd-runtime`. It owns the app layout and resolves every path within it, so
@@ -29,8 +32,10 @@ contract, `appd-runtime` reads it, and both depend on `appd-bundle`.
 `appd-bare` holds Bare-specific code only. Supporting a different backend
 means writing one new crate beside it, with no appd logic to move.
 
-Rust shells live in their own crates. Components inside `appd-runtime` depend
-on each other through narrow interfaces.
+Platform shell crates contain two distinct parts: a precompiled Rust runtime
+library and the native shell sources that `appd build` compiles and links
+against it. Components inside `appd-runtime` depend on each other through
+narrow interfaces.
 
 ## Certificates
 
@@ -55,11 +60,14 @@ on each other through narrow interfaces.
 
 The shell owns the process entry point, application object, UI event loop,
 window, WebView, and WebView proxy configuration. It starts, stops, suspends,
-and resumes appd, subscribes to events, and answers platform callbacks using
-the certificate component.
+and resumes appd, and answers platform callbacks using the certificate
+component.
 
-macOS and iOS shells stay Rust with `objc2`. Windows and Linux stay Rust.
-Android moves to Kotlin, replacing its JNI descriptor calls.
+macOS and iOS use the same Swift shell and C runtime ABI. Android uses a Kotlin
+shell and JNI runtime ABI. All target packs have the same boundary:
+precompiled Rust runtime library plus native shell sources. Developers need
+the native platform toolchain to build and sign an app, but never a Rust
+toolchain.
 
 ## Steps
 
@@ -68,12 +76,13 @@ Android moves to Kotlin, replacing its JNI descriptor calls.
    certificate challenges.
 3. Replace the Bare startup handshake so the port arrives when the listener
    binds.
-4. Move the entry point, application object, and event loop into the macOS and
-   iOS shells.
-5. Do the same for Android, in Kotlin.
+4. Move the entry point, application object, and event loop into the shared
+   Swift shell for macOS and iOS.
+5. Do the same for Android in Kotlin.
 6. Do the same for Windows and Linux alongside their platform support.
 
 ## Done when
 
-Every shell runs appd through the public API, and the library creates no
-application object or event loop.
+Every shell runs appd through the public API, the library creates no
+application object or event loop, and every app build links a precompiled
+runtime library without invoking Cargo.

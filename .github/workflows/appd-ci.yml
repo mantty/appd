@@ -73,16 +73,19 @@ jobs:
           test -f "${RUNNER_TEMP}/appd-packer/node_modules/bare-pack/bin.js"
           test -f "${RUNNER_TEMP}/appd-packer/node_modules/esbuild/bin/esbuild"
 
+      - name: Check native shells
+        run: xcrun swift-format lint --strict crates/appd-shell-apple/native/*.swift plugins/*/apple/*.swift
+
       - name: Check Rust
         run: |
           cargo fmt --all --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p appd-runtime --features bare-test-stubs -- -D warnings
-          cargo clippy -p appd-runtime --target aarch64-apple-ios --features bare-test-stubs -- -D warnings
-          cargo clippy -p appd-runtime --target aarch64-apple-ios-sim --features bare-test-stubs -- -D warnings
-          cargo clippy -p appd-runtime --target x86_64-apple-ios --features bare-test-stubs -- -D warnings
-          cargo clippy -p appd-runtime --target x86_64-apple-darwin --features bare-test-stubs -- -D warnings
-          cargo clippy -p appd-runtime --target aarch64-linux-android --features bare-test-stubs -- -D warnings
+          cargo clippy -p appd-runtime --all-targets --features test-stubs -- -D warnings
+          cargo clippy -p appd-shell-apple --all-targets --target aarch64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd-shell-apple --all-targets --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
+          cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-darwin --features test-stubs -- -D warnings
+          cargo clippy -p appd-shell-android --all-targets --target aarch64-linux-android --features test-stubs -- -D warnings
           cargo test --workspace
 
       - name: Check Bare build scripts

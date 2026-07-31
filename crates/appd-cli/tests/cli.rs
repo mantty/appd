@@ -25,12 +25,12 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
         dir,
         &format!(
             r#"{{
-  "schemaVersion": 4,
+  "schemaVersion": 7,
   "appdVersion": "0.1.0",
   "target": "macos-arm64",
   "artifacts": [
     {{
-      "kind": "runtimeExecutable",
+      "kind": "runtimeLibrary",
       "path": "bin/appd-runtime",
       "sha256": "{runtime_hash}"
     }},
@@ -89,12 +89,12 @@ fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
         temp_dir.path(),
         &format!(
             r#"{{
-  "schemaVersion": 4,
+  "schemaVersion": 7,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [
     {{
-      "kind": "runtimeExecutable",
+      "kind": "runtimeLibrary",
       "path": "bin/appd-runtime",
       "sha256": "{runtime_hash}"
     }}
@@ -121,10 +121,10 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 4,
+  "schemaVersion": 7,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
   "requiredTools": []
 }"#,
     )?;

@@ -15,8 +15,8 @@ fn valid_manifest() -> TargetPackManifest {
         target: Target::IosArm64,
         artifacts: vec![
             Artifact {
-                kind: ArtifactKind::RuntimeExecutable,
-                path: "bin/appd-runtime".to_owned(),
+                kind: ArtifactKind::RuntimeLibrary,
+                path: "frameworks/AppdRuntime.framework".to_owned(),
                 sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                     .to_owned(),
             },
@@ -78,15 +78,21 @@ fn serializes_every_target_with_its_display_name() -> TestResult {
 
 #[test]
 fn rejects_unsupported_schema_versions() {
-    let mut manifest = valid_manifest();
-    manifest.schema_version = TargetPackVersion(TargetPackVersion::CURRENT.0 + 1);
+    for found in [
+        TargetPackVersion::CURRENT.0 - 1,
+        TargetPackVersion::CURRENT.0 + 1,
+    ] {
+        let mut manifest = valid_manifest();
+        manifest.schema_version = TargetPackVersion(found);
 
-    assert!(matches!(
-        manifest.validate(),
-        Err(TargetPackError::UnsupportedSchemaVersion { expected, found })
-            if expected == TargetPackVersion::CURRENT.0
-                && found == TargetPackVersion::CURRENT.0 + 1
-    ));
+        assert!(matches!(
+            manifest.validate(),
+            Err(TargetPackError::UnsupportedSchemaVersion {
+                expected,
+                found: rejected,
+            }) if expected == TargetPackVersion::CURRENT.0 && rejected == found
+        ));
+    }
 }
 
 #[test]
@@ -160,12 +166,16 @@ fn rejects_invalid_sha256_values() {
 fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     let manifest_path = temp_dir.path().join("target-pack.json");
-    fs::create_dir_all(temp_dir.path().join("bin"))?;
+    fs::create_dir_all(temp_dir.path().join("frameworks"))?;
     fs::create_dir_all(temp_dir.path().join("runtime-js"))?;
-    fs::write(temp_dir.path().join("bin/appd-runtime"), "runtime")?;
+    fs::write(
+        temp_dir.path().join("frameworks/AppdRuntime.framework"),
+        "runtime",
+    )?;
     fs::write(temp_dir.path().join("runtime-js/bootstrap.js"), "bootstrap")?;
     let mut manifest = valid_manifest();
-    manifest.artifacts[0].sha256 = artifact_sha256(temp_dir.path().join("bin/appd-runtime"))?;
+    manifest.artifacts[0].sha256 =
+        artifact_sha256(temp_dir.path().join("frameworks/AppdRuntime.framework"))?;
     manifest.artifacts[1].sha256 = artifact_sha256(temp_dir.path().join("runtime-js"))?;
 
     write_manifest(&manifest_path, &manifest)?;
@@ -182,17 +192,25 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
 fn load_manifest_rejects_modified_artifacts() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     let manifest_path = temp_dir.path().join("target-pack.json");
-    fs::create_dir_all(temp_dir.path().join("bin"))?;
-    fs::write(temp_dir.path().join("bin/appd-runtime"), "runtime")?;
+    fs::create_dir_all(temp_dir.path().join("frameworks"))?;
+    fs::write(
+        temp_dir.path().join("frameworks/AppdRuntime.framework"),
+        "runtime",
+    )?;
     let mut manifest = valid_manifest();
     manifest.artifacts.truncate(1);
-    manifest.artifacts[0].sha256 = artifact_sha256(temp_dir.path().join("bin/appd-runtime"))?;
+    manifest.artifacts[0].sha256 =
+        artifact_sha256(temp_dir.path().join("frameworks/AppdRuntime.framework"))?;
     write_manifest(&manifest_path, &manifest)?;
-    fs::write(temp_dir.path().join("bin/appd-runtime"), "modified")?;
+    fs::write(
+        temp_dir.path().join("frameworks/AppdRuntime.framework"),
+        "modified",
+    )?;
 
     assert!(matches!(
         load_manifest(&manifest_path),
-        Err(TargetPackError::ArtifactHashMismatch { path, .. }) if path == "bin/appd-runtime"
+        Err(TargetPackError::ArtifactHashMismatch { path, .. })
+            if path == "frameworks/AppdRuntime.framework"
     ));
     Ok(())
 }
@@ -204,10 +222,10 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     fs::write(
         &manifest_path,
         r#"{
-  "schemaVersion": 4,
+  "schemaVersion": 7,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeExecutable", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
   "requiredTools": []
 }"#,
     )?;

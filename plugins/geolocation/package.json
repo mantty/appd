@@ -1,0 +1,19 @@
+{
+  "name": "@appd/geolocation",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@appd/plugin": "workspace:*"
+  },
+  "files": [
+    "android",
+    "apple",
+    "src",
+    "web",
+    "appd-plugin.json",
+    "README.md"
+  ]
+}

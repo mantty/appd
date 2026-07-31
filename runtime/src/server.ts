@@ -254,7 +254,7 @@ async function upgrade(
         headers: { "content-type": "text/plain; charset=utf-8" },
       }));
     } else {
-      socket.destroy(error instanceof Error ? error : new Error(String(error)));
+      socket.destroy();
     }
   } finally {
     await context?.drain();

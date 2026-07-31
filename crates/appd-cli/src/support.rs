@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use appd_runtime::wrangler_config::WranglerConfig;
+use appd_bundle::wrangler::WranglerConfig;
 use appd_target_pack::{ArtifactKind, Target, TargetPackManifest};
 use walkdir::WalkDir;
 
@@ -93,7 +93,7 @@ pub(crate) fn read_package_name(project: &Path) -> Result<String> {
     if name.is_empty() {
         bail!("package.json name is required");
     }
-    if !appd_runtime::is_valid_app_name(name) {
+    if !appd_bundle::is_valid_app_name(name) {
         bail!("package.json name is not a safe app name: {name}");
     }
     Ok(name.to_owned())

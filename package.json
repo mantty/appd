@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "build:runtime": "tsc --project runtime/tsconfig.build.json",
-    "lint:ts": "eslint runtime --max-warnings 0 && tsc --project runtime/tsconfig.json",
-    "test:bare": "pnpm build:runtime && bare runtime/tests/response.bare.mjs && bare runtime/tests/crypto.bare.mjs",
-    "test:ts": "node --import tsx --test runtime/tests/**/*.test.ts"
+    "lint:ts": "eslint runtime plugins --max-warnings 0 && tsc --project runtime/tsconfig.json && tsc --project plugins/tsconfig.json",
+    "test:bare": "pnpm build:runtime && bare runtime/tests/response.bare.mjs && bare runtime/tests/crypto.bare.mjs && bare runtime/tests/ipc.bare.mjs",
+    "test:ts": "node --import tsx --test runtime/tests/**/*.test.ts plugins/**/*.test.ts"
   },
   "dependencies": {
     "bare-abort-controller": "^1.0.1",

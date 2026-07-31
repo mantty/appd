@@ -1,95 +1,85 @@
 # appd plugins
 
-Status: proposal
-
-Third of three, after `appd-library.md` and `appd-api-testing.md`.
+Status: frontend plugin foundation implemented
 
 ## Purpose
 
-Give app code on-device capabilities — location, Bluetooth, NFC, camera —
-through plugins that also work on web deployments.
+Give app code access to device capabilities through npm packages that retain a
+normal web implementation.
 
-## Model
+## Package contract
 
-A plugin is frontend or backend, never both.
+An app declares a plugin by adding its package to `dependencies`. No separate
+appd configuration is required.
 
-- Frontend plugins run in the page: the browser on web, the WebView on native.
-- Backend plugins run in the worker: Cloudflare on web, Bare on native.
-
-appd does not move data between tiers. An app that collects something on one
-side and needs it on the other sends a request.
-
-## Writing one
-
-One TypeScript entrypoint defines the plugin.
-
-```ts
-export default class Geolocation extends BackendPlugin<Impl> {
-  static id = "geolocation";
-  current() { return this.call("current"); }
-}
-```
-
-- The base class, `FrontendPlugin` or `BackendPlugin`, sets the kind.
-- `id` is what app code imports.
-- The class's public methods are the API, typed for consumers.
-- `Impl` names what each platform implements. Its values are primitives, plain
-  objects, arrays, and buffers.
-- `call` and `subscribe` reach the platform implementation.
-
-Validation, caching, and fallbacks go in the entrypoint, written once.
-
-## Platform implementations
+A frontend plugin package contains:
 
 ```text
 <package>/
-  index.ts
-  web/ macos/ ios/ windows/ android/ linux/
+  appd-plugin.json
+  src/
+  web/
+  apple/
+  android/
 ```
 
-A platform is supported if its directory exists. An unrecognised directory is
-a build error. A missing platform still builds and type-checks; its calls
-throw `PluginNotImplemented`.
+The TypeScript entrypoint is the API imported by app code. It calls the web
+implementation in a browser and the native implementation when appd provides
+its frontend bridge.
 
-`web/` is an ES module. A native directory holds a build manifest naming a
-build command, an artifact, and a registration entry point. appd runs the
-command and links the result, and never reads the sources, so any language
-works.
+`appd-plugin.json` declares the plugin ID, kind, platform sources, native class,
+linked Apple frameworks, Info.plist values, and Android permissions. appd
+discovers manifests from the app's direct dependencies.
 
-## Resolution
+A platform omitted from the manifest has no native implementation. Calls made
+without an implementation throw `NotSupportedError`.
 
-`appd:plugin/<id>` resolves in whichever build produces the bundle.
+## Native build
 
-| Bundle | Built by |
-|---|---|
-| frontend, any target | the app's Vite build |
-| worker, Cloudflare | the app's Vite build |
-| worker, native | appd's esbuild step |
+The appd runtime remains prebuilt. `appd build` compiles only the native shell
+and plugin sources:
 
-Frontend bundles get frontend plugins, worker bundles get backend plugins, and
-the wrong pairing fails the build.
+- macOS, iOS, and iOS Simulator compile Swift sources into the application
+  executable and link declared system frameworks.
+- Android compiles Kotlin sources into the application and merges declared
+  permissions into its manifest.
 
-## Calls
+appd generates one registry per application, so plugins do not need manual
+shell registration.
 
-| Target | Route |
-|---|---|
-| web | direct call into `web/` |
-| native backend | the bare bridge, over the C ABI |
-| native frontend | WebView IPC, origin-gated |
+## Frontend calls
 
-## Phases
+Native calls use the WebView's process bridge rather than TCP:
 
-A. The model and the web path: `@appd/plugin`, plugin declaration in appd
-   config, resolution in both builds, web implementations of both kinds.
-B. Native code the worker can call: the bridge, native build orchestration,
-   and registration packages in Swift and Kotlin. macOS and iOS, then Android.
-C. Native code the page can call: WebView IPC in each shell.
-D. Capabilities that act with no request in flight, such as geofence wakes:
-   worker dispatch without a socket, on the library's lifecycle events.
+- Apple uses `WKScriptMessageHandler`.
+- Android uses `WebViewCompat.addWebMessageListener`.
+
+Both bridges accept messages only from the main frame at the exact
+`https://<app>.appd.local` origin. Calls return promises. Subscriptions return a
+function that stops native updates.
+
+Values crossing the bridge are JSON-compatible primitives, objects, and
+arrays. Native errors retain their DOM exception name and message.
+Each page load has a distinct bridge session. Navigation cancels native
+subscriptions and late responses from the previous page are ignored.
+
+## First plugin
+
+`@appd/geolocation` supports:
+
+- `getCurrentPosition()`
+- `watchPosition(next, error)`, returning a stop function
+
+Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
+`CoreLocation`. Android uses `LocationManager`.
 
 ## Deferred
 
-- Generating Info.plist entries, Android manifest permissions, and
-  entitlements from plugin metadata.
-- How a plugin declares the API version it needs.
-- Service workers on web, needed for push and background sync.
+- Backend plugins and Bare worker bindings.
+- Native plugin artifact manifests for languages other than the shell's Swift
+  or Kotlin.
+- Entitlements and platform metadata beyond string Info.plist values, Apple
+  frameworks, and Android permissions.
+- Plugin API compatibility declarations.
+- Compiled ESM, declaration files, and publication metadata for npm releases.
+- Background capability dispatch with no page or worker request in flight.

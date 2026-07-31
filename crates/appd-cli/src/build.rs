@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use appd_runtime::wrangler_config::{WranglerConfig, load_config, resolve_config_path};
+use appd_bundle::wrangler::{WranglerConfig, load_config, resolve_config_path};
 use appd_target_pack::load_manifest;
 
 use crate::{BuildPlatform, target_packs};
@@ -11,8 +11,10 @@ use crate::{BuildPlatform, target_packs};
 mod android;
 #[path = "apple.rs"]
 mod apple;
+#[path = "plugins.rs"]
+mod plugins;
 #[path = "support.rs"]
-mod support;
+pub(crate) mod support;
 #[path = "worker.rs"]
 mod worker;
 
@@ -43,11 +45,12 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let wrangler = load_config(&config_path)?;
     support::validate_web_build(&wrangler)?;
     let app_name = support::read_package_name(&request.project_dir)?;
+    let plugins = plugins::discover(&request.project_dir)?;
 
     request
         .platforms
         .iter()
-        .map(|platform| build_platform(request, *platform, &app_name, &wrangler))
+        .map(|platform| build_platform(request, *platform, &app_name, &wrangler, &plugins))
         .collect()
 }
 
@@ -72,6 +75,7 @@ fn build_platform(
     platform: BuildPlatform,
     app_name: &str,
     wrangler: &WranglerConfig,
+    plugins: &[plugins::Plugin],
 ) -> Result<BuildSummary> {
     let manifest_path = fs::canonicalize(target_packs::resolve_manifest(
         platform,
@@ -91,6 +95,7 @@ fn build_platform(
             &manifest,
             app_name,
             wrangler,
+            plugins,
         ),
         BuildPlatform::Macos => apple::build_macos(
             &request.project_dir,
@@ -98,6 +103,7 @@ fn build_platform(
             &manifest,
             app_name,
             wrangler,
+            plugins,
         ),
         BuildPlatform::Ios | BuildPlatform::IosSimulator => apple::build_ios(
             &request.project_dir,
@@ -105,6 +111,7 @@ fn build_platform(
             &manifest,
             app_name,
             wrangler,
+            plugins,
         ),
     }
 }

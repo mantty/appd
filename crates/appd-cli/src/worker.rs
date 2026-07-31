@@ -5,9 +5,9 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use appd_runtime::assets::write_manifest;
-use appd_runtime::host::{ASSET_DIRECTORY, WORKER_BUNDLE_FILE};
-use appd_runtime::wrangler_config::WranglerConfig;
+use appd_bundle::AppLayout;
+use appd_bundle::assets::write_manifest;
+use appd_bundle::wrangler::WranglerConfig;
 use appd_target_pack::{ArtifactKind, Target, TargetPackManifest};
 use walkdir::WalkDir;
 
@@ -19,33 +19,16 @@ pub(crate) fn prepare_bare_app(
     manifest: &TargetPackManifest,
     wrangler: &WranglerConfig,
 ) -> Result<()> {
-    prepare_bare_app_contents(app_dir, pack_root, manifest, wrangler)
-}
-
-pub(crate) fn prepare_android_bare_app(
-    app_dir: &Path,
-    pack_root: &Path,
-    manifest: &TargetPackManifest,
-    wrangler: &WranglerConfig,
-) -> Result<()> {
-    prepare_bare_app_contents(app_dir, pack_root, manifest, wrangler)
-}
-
-fn prepare_bare_app_contents(
-    app_dir: &Path,
-    pack_root: &Path,
-    manifest: &TargetPackManifest,
-    wrangler: &WranglerConfig,
-) -> Result<()> {
     let worker_root = wrangler
         .main
         .parent()
         .context("worker main must have a parent directory")?;
     reject_wasm_files(worker_root)?;
+    let layout = AppLayout::new(app_dir);
     if let Some(assets) = &wrangler.assets {
         reject_wasm_files(&assets.directory)?;
-        copy_dir_contents(&assets.directory, &app_dir.join(ASSET_DIRECTORY))?;
-        write_manifest(app_dir, assets)?;
+        copy_dir_contents(&assets.directory, &layout.assets())?;
+        write_manifest(&layout, assets)?;
     }
     let runtime = artifact_path(
         pack_root,
@@ -55,7 +38,7 @@ fn prepare_bare_app_contents(
     let packer = artifact_path(pack_root, manifest, &ArtifactKind::BarePackExecutable)?;
     let compiler = artifact_path(pack_root, manifest, &ArtifactKind::EsbuildExecutable)?;
     pack_worker(
-        app_dir,
+        &layout,
         &runtime,
         &packer,
         &compiler,
@@ -65,13 +48,14 @@ fn prepare_bare_app_contents(
 }
 
 fn pack_worker(
-    app_dir: &Path,
+    layout: &AppLayout,
     runtime: &Path,
     packer: &Path,
     compiler: &Path,
     worker: &Path,
     target: Target,
 ) -> Result<()> {
+    let app_dir = layout.root();
     let entry = app_dir.join("appd-worklet.cjs");
     let modules = runtime
         .parent()
@@ -84,7 +68,7 @@ fn pack_worker(
 
     let result = (|| {
         compile_commonjs(&entry, runtime, compiler, worker)?;
-        let output = app_dir.join(WORKER_BUNDLE_FILE);
+        let output = layout.worker_bundle();
         let status = Command::new("node")
             .arg(packer)
             .args(["--builtins"])

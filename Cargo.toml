@@ -2,8 +2,11 @@
 resolver = "3"
 members = [
     "crates/appd-bare",
+    "crates/appd-bundle",
     "crates/appd-cli",
     "crates/appd-runtime",
+    "crates/appd-shell-android",
+    "crates/appd-shell-apple",
     "crates/appd-target-pack",
 ]
 

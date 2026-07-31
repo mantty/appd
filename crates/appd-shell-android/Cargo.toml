@@ -1,0 +1,26 @@
+[package]
+name = "appd-shell-android"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+name = "appd_shell_android"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+test-stubs = ["appd-bare/test-stubs", "appd-runtime/test-stubs"]
+
+[dependencies]
+appd-bare = { path = "../appd-bare", features = ["native"] }
+appd-bundle = { path = "../appd-bundle" }
+appd-runtime = { path = "../appd-runtime", features = ["native"] }
+jni.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

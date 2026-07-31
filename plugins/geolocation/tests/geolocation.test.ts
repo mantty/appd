@@ -1,0 +1,185 @@
+import assert from "node:assert/strict";
+import { afterEach, test } from "node:test";
+
+import { geolocation } from "../src/index.js";
+
+const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+
+afterEach(() => {
+  Reflect.deleteProperty(globalThis, "__appdNative");
+  Reflect.deleteProperty(globalThis, "__appdReceive");
+  if (originalNavigator) {
+    Object.defineProperty(globalThis, "navigator", originalNavigator);
+  } else {
+    Reflect.deleteProperty(globalThis, "navigator");
+  }
+});
+
+void test("uses browser geolocation on the web", async () => {
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      geolocation: {
+        getCurrentPosition(success: PositionCallback) {
+          success(browserPosition(51.5, -0.1));
+        },
+      },
+    },
+  });
+
+  const position = await geolocation.getCurrentPosition();
+
+  assert.equal(position.coords.latitude, 51.5);
+  assert.equal(position.coords.longitude, -0.1);
+});
+
+void test("reports unavailable web geolocation as unsupported", async () => {
+  Reflect.deleteProperty(globalThis, "navigator");
+
+  await assert.rejects(
+    geolocation.getCurrentPosition(),
+    (error: unknown) =>
+      error instanceof DOMException && error.name === "NotSupportedError",
+  );
+});
+
+void test("uses the native bridge and cancels watched updates", () => {
+  const sent: Record<string, unknown>[] = [];
+  globalThis.__appdNative = {
+    onmessage: null,
+    postMessage(message) {
+      sent.push(JSON.parse(message) as Record<string, unknown>);
+    },
+  };
+  const updates: number[] = [];
+
+  const cancel = geolocation.watchPosition(
+    (position) => updates.push(position.coords.latitude),
+    () => assert.fail("watch failed"),
+  );
+  const session = sent[0]?.session as string;
+  const id = sent[1]?.id as number;
+  globalThis.__appdReceive?.({
+    session,
+    id,
+    value: nativePosition(52, 0.2),
+    done: false,
+  });
+  cancel();
+
+  assert.deepEqual(updates, [52]);
+  assert.deepEqual(sent[2], { type: "cancel", session, id });
+});
+
+void test("ignores native responses from an earlier page session", async () => {
+  const sent: Record<string, unknown>[] = [];
+  globalThis.__appdNative = {
+    onmessage: null,
+    postMessage(message) {
+      sent.push(JSON.parse(message) as Record<string, unknown>);
+    },
+  };
+
+  const position = geolocation.getCurrentPosition();
+  const session = sent[0]?.session as string;
+  const id = sent[1]?.id as number;
+  globalThis.__appdReceive?.({
+    session: "earlier-page",
+    id,
+    value: nativePosition(1, 2),
+    done: true,
+  });
+  globalThis.__appdReceive?.({
+    session,
+    id,
+    value: nativePosition(52, 0.2),
+    done: true,
+  });
+
+  assert.equal((await position).coords.latitude, 52);
+});
+
+void test("preserves native DOM exception errors", async () => {
+  const sent: Record<string, unknown>[] = [];
+  globalThis.__appdNative = {
+    onmessage: null,
+    postMessage(message) {
+      sent.push(JSON.parse(message) as Record<string, unknown>);
+    },
+  };
+
+  const position = geolocation.getCurrentPosition();
+  const session = sent[0]?.session as string;
+  const id = sent[1]?.id as number;
+  globalThis.__appdReceive?.({
+    session,
+    id,
+    error: {
+      name: "NotAllowedError",
+      message: "Location permission was denied",
+    },
+    done: true,
+  });
+
+  await assert.rejects(
+    position,
+    (error: unknown) =>
+      error instanceof DOMException &&
+      error.name === "NotAllowedError" &&
+      error.message === "Location permission was denied",
+  );
+});
+
+void test("keeps a native watch active after an error", () => {
+  const sent: Record<string, unknown>[] = [];
+  globalThis.__appdNative = {
+    onmessage: null,
+    postMessage(message) {
+      sent.push(JSON.parse(message) as Record<string, unknown>);
+    },
+  };
+  const updates: number[] = [];
+  const errors: string[] = [];
+
+  const cancel = geolocation.watchPosition(
+    (position) => updates.push(position.coords.latitude),
+    (error) => errors.push(error.name),
+  );
+  const session = sent[0]?.session as string;
+  const id = sent[1]?.id as number;
+  globalThis.__appdReceive?.({
+    session,
+    id,
+    error: { name: "NotReadableError", message: "Location is unavailable" },
+    done: false,
+  });
+  globalThis.__appdReceive?.({
+    session,
+    id,
+    value: nativePosition(52, 0.2),
+    done: false,
+  });
+  cancel();
+
+  assert.deepEqual(errors, ["NotReadableError"]);
+  assert.deepEqual(updates, [52]);
+});
+
+function browserPosition(latitude: number, longitude: number): GeolocationPosition {
+  return nativePosition(latitude, longitude) as GeolocationPosition;
+}
+
+function nativePosition(latitude: number, longitude: number) {
+  return {
+    coords: {
+      latitude,
+      longitude,
+      accuracy: 1,
+      altitude: null,
+      altitudeAccuracy: null,
+      heading: null,
+      speed: null,
+    },
+    timestamp: 1,
+  };
+}

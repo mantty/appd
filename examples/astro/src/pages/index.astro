@@ -1,6 +1,7 @@
 ---
 // SSR page — rendered on every request. Server timestamp proves it.
 import Base from "../layouts/Base.astro";
+import Geolocation from "../components/Geolocation.astro";
 import PingPong from "../components/PingPong.astro";
 import WordPicker from "../components/WordPicker.astro";
 import heroSvg from "../assets/hero.svg";
@@ -63,6 +64,9 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
   </div>
 
   <PingPong />
+  <div class="mt-6">
+    <Geolocation />
+  </div>
   <div class="mt-6">
     <WordPicker />
   </div>

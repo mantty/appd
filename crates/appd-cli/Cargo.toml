@@ -11,9 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-appd-runtime = { path = "../appd-runtime" }
+appd-bundle = { path = "../appd-bundle" }
 appd-target-pack = { path = "../appd-target-pack" }
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true
 
