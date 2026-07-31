@@ -9,7 +9,7 @@ uses the same JavaScript runtime and compatibility layer.
 
 - `bare/` pins and builds BareKit, links the required Bare addons, and packages
   a native SDK.
-- `crates/appd-bare/` exposes the appd-owned C ABI as a safe Rust runtime.
+- `crates/appd-bare/` owns BareKit worklets through its native C API.
 - `runtime/` owns the JavaScript server, Cloudflare/Node compatibility, assets,
   and WebSockets.
 - `crates/appd-runtime/` is the runtime library: certificates, lifecycle, and

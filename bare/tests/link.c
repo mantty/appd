@@ -1,6 +1,11 @@
-#include "appd_bare.h"
+#include <stdlib.h>
+
+#include "worklet.h"
 
 int
 main(void) {
-  return appd_bare_runtime_resume(NULL) == 0;
+  bare_worklet_t *worklet = NULL;
+  int result = bare_worklet_alloc(&worklet);
+  free(worklet);
+  return result;
 }

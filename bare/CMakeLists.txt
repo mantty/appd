@@ -27,11 +27,8 @@ set_target_properties(
   POSITION_INDEPENDENT_CODE ON
 )
 
-target_sources(appd_bare PRIVATE src/appd_bare.c)
-target_include_directories(appd_bare PUBLIC include)
-target_include_directories(appd_bare SYSTEM PRIVATE "${BARE_KIT_SOURCE}/shared")
+target_include_directories(appd_bare SYSTEM PUBLIC "${BARE_KIT_SOURCE}/shared")
 target_link_libraries(appd_bare PUBLIC bare_worklet)
-target_compile_options(appd_bare PRIVATE -Wall -Wextra -Werror -Wpedantic)
 
 link_bare_modules(appd_bare WORKING_DIRECTORY "${APPD_BARE_MODULES_ROOT}")
 
@@ -67,4 +64,3 @@ if(APPLE)
 endif()
 
 install(TARGETS appd_bare ARCHIVE LIBRARY DESTINATION lib)
-install(FILES include/appd_bare.h DESTINATION include)

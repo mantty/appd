@@ -76,6 +76,15 @@ jobs:
       - name: Check native shells
         run: xcrun swift-format lint --strict crates/appd-shell-apple/native/*.swift plugins/*/apple/*.swift
 
+      - name: Build host Bare SDK
+        run: |
+          case "$(uname -m)" in
+            arm64) target=macos-arm64 ;;
+            x86_64) target=macos-x64 ;;
+            *) echo "unsupported runner architecture" >&2; exit 1 ;;
+          esac
+          python3 bare/scripts/build-sdk.py --target "${target}"
+
       - name: Check Rust
         run: |
           cargo fmt --all --check
@@ -86,6 +95,7 @@ jobs:
           cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-ios --features test-stubs -- -D warnings
           cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-darwin --features test-stubs -- -D warnings
           cargo clippy -p appd-shell-android --all-targets --target aarch64-linux-android --features test-stubs -- -D warnings
+          cargo test -p appd-bare --features native
           cargo test --workspace
 
       - name: Check Bare build scripts

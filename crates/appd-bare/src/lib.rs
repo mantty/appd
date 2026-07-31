@@ -7,6 +7,37 @@ use std::path::PathBuf;
 use serde::Serialize;
 use thiserror::Error;
 
+#[cfg(all(feature = "native", not(feature = "test-stubs")))]
+mod native;
+
+#[cfg(all(feature = "native", feature = "test-stubs"))]
+#[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+mod native {
+    use super::Result;
+
+    pub(super) struct Runtime {
+        port: u16,
+    }
+
+    impl Runtime {
+        pub(super) fn start(_: &[u8], _: &[u8]) -> Result<Self> {
+            Ok(Self { port: 8443 })
+        }
+
+        pub(super) const fn port(&self) -> u16 {
+            self.port
+        }
+
+        pub(super) const fn suspend(&self, _: i32) -> Result<()> {
+            Ok(())
+        }
+
+        pub(super) const fn resume(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+}
+
 /// Result returned by the Bare integration.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -24,6 +55,9 @@ pub enum Error {
         /// Native error message.
         message: String,
     },
+    /// The JavaScript runtime could not complete its startup protocol.
+    #[error("Bare startup failed: {0}")]
+    Startup(String),
 }
 
 /// Certificate paths consumed by the Bare HTTPS server.
@@ -65,8 +99,7 @@ pub struct RuntimeConfig {
 /// A running Bare worklet.
 #[cfg(feature = "native")]
 pub struct BareRuntime {
-    handle: std::ptr::NonNull<std::ffi::c_void>,
-    port: u16,
+    runtime: native::Runtime,
 }
 
 #[cfg(feature = "native")]
@@ -78,13 +111,15 @@ impl BareRuntime {
     /// Returns an error when configuration serialization or native startup fails.
     pub fn start(bundle: &[u8], config: &RuntimeConfig) -> Result<Self> {
         let config = serde_json::to_vec(config)?;
-        native::start(bundle, &config)
+        Ok(Self {
+            runtime: native::Runtime::start(bundle, &config)?,
+        })
     }
 
     /// Return the loopback HTTPS port.
     #[must_use]
     pub fn port(&self) -> u16 {
-        self.port
+        self.runtime.port()
     }
 
     /// Suspend JavaScript execution, allowing `linger` milliseconds to settle work.
@@ -93,7 +128,7 @@ impl BareRuntime {
     ///
     /// Returns an error when Bare rejects the lifecycle transition.
     pub fn suspend(&self, linger: i32) -> Result<()> {
-        native::status(unsafe { native::appd_bare_runtime_suspend(self.handle.as_ptr(), linger) })
+        self.runtime.suspend(linger)
     }
 
     /// Resume JavaScript execution.
@@ -102,7 +137,7 @@ impl BareRuntime {
     ///
     /// Returns an error when Bare rejects the lifecycle transition.
     pub fn resume(&self) -> Result<()> {
-        native::status(unsafe { native::appd_bare_runtime_resume(self.handle.as_ptr()) })
+        self.runtime.resume()
     }
 }
 
@@ -111,131 +146,59 @@ impl std::fmt::Debug for BareRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("BareRuntime")
-            .field("port", &self.port)
+            .field("port", &self.port())
             .finish_non_exhaustive()
     }
 }
 
-#[cfg(feature = "native")]
-impl Drop for BareRuntime {
-    fn drop(&mut self) {
-        unsafe { native::appd_bare_runtime_terminate(self.handle.as_ptr()) };
+#[cfg(any(all(feature = "native", not(feature = "test-stubs")), test))]
+fn parse_startup_reply(reply: &str) -> Result<u16> {
+    if let Some(message) = reply.strip_prefix("error ") {
+        return Err(Error::Startup(message.to_owned()));
     }
-}
-
-#[cfg(feature = "native")]
-unsafe impl Send for BareRuntime {}
-
-#[cfg(feature = "native")]
-mod native {
-    use std::ffi::{c_char, c_int, c_void};
-    use std::ptr::NonNull;
-
-    use super::{BareRuntime, Error, Result};
-
-    const ERROR_CAPACITY: usize = 512;
-
-    #[cfg(not(feature = "test-stubs"))]
-    unsafe extern "C" {
-        pub(super) fn appd_bare_runtime_start(
-            bundle: *const u8,
-            bundle_len: usize,
-            config: *const u8,
-            config_len: usize,
-            runtime: *mut *mut c_void,
-            port: *mut u16,
-            error: *mut c_char,
-            error_len: usize,
-        ) -> c_int;
-        pub(super) fn appd_bare_runtime_suspend(runtime: *mut c_void, linger: c_int) -> c_int;
-        pub(super) fn appd_bare_runtime_resume(runtime: *mut c_void) -> c_int;
-        pub(super) fn appd_bare_runtime_terminate(runtime: *mut c_void);
-    }
-
-    pub(super) fn start(bundle: &[u8], config: &[u8]) -> Result<BareRuntime> {
-        let mut handle = std::ptr::null_mut();
-        let mut port = 0;
-        let mut error = [0 as c_char; ERROR_CAPACITY];
-        let status = unsafe {
-            appd_bare_runtime_start(
-                bundle.as_ptr(),
-                bundle.len(),
-                config.as_ptr(),
-                config.len(),
-                &raw mut handle,
-                &raw mut port,
-                error.as_mut_ptr(),
-                error.len(),
-            )
-        };
-        if status != 0 {
-            return Err(native_error(status, &error));
-        }
-        let handle = NonNull::new(handle).ok_or_else(|| native_error(-1, &error))?;
-        Ok(BareRuntime { handle, port })
-    }
-
-    pub(super) fn status(status: i32) -> Result<()> {
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(Error::Native {
-                status,
-                message: "lifecycle transition failed".to_owned(),
-            })
-        }
-    }
-
-    fn native_error(status: i32, error: &[c_char]) -> Error {
-        let bytes: Vec<u8> = error
-            .iter()
-            .take_while(|byte| **byte != 0)
-            .map(|byte| byte.to_ne_bytes()[0])
-            .collect();
-        Error::Native {
-            status,
-            message: String::from_utf8_lossy(&bytes).into_owned(),
-        }
-    }
-
-    #[cfg(feature = "test-stubs")]
-    #[allow(clippy::too_many_arguments)]
-    pub(super) unsafe fn appd_bare_runtime_start(
-        _: *const u8,
-        _: usize,
-        _: *const u8,
-        _: usize,
-        runtime: *mut *mut c_void,
-        port: *mut u16,
-        _: *mut c_char,
-        _: usize,
-    ) -> c_int {
-        unsafe {
-            runtime.write(NonNull::<u8>::dangling().as_ptr().cast());
-            port.write(8443);
-        }
-        0
-    }
-
-    #[cfg(feature = "test-stubs")]
-    pub(super) unsafe fn appd_bare_runtime_suspend(_: *mut c_void, _: c_int) -> c_int {
-        0
-    }
-
-    #[cfg(feature = "test-stubs")]
-    pub(super) unsafe fn appd_bare_runtime_resume(_: *mut c_void) -> c_int {
-        0
-    }
-
-    #[cfg(feature = "test-stubs")]
-    pub(super) unsafe fn appd_bare_runtime_terminate(_: *mut c_void) {}
+    let Some(value) = reply.strip_prefix("listening ") else {
+        return Err(Error::Startup(format!("unexpected reply: {reply}")));
+    };
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| Error::Startup("invalid listening port".to_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{Assets, Certificates, RuntimeConfig};
+    use super::{Assets, Certificates, Error, RuntimeConfig, parse_startup_reply};
+
+    #[test]
+    fn parses_listening_port() {
+        assert_eq!(
+            parse_startup_reply("listening 8443").unwrap_or_default(),
+            8443
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_startup_replies() {
+        for reply in [
+            "listening 0",
+            "listening 65536",
+            "listening nope",
+            "unexpected 8443",
+        ] {
+            assert!(parse_startup_reply(reply).is_err(), "accepted {reply}");
+        }
+    }
+
+    #[test]
+    fn preserves_reported_startup_error() {
+        assert!(matches!(
+            parse_startup_reply("error certificate missing"),
+            Err(Error::Startup(message)) if message == "certificate missing"
+        ));
+    }
 
     #[test]
     fn configuration_matches_javascript_contract() {

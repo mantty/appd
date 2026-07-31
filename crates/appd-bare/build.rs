@@ -42,6 +42,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|argument| resolve_argument(&sdk, &manifest.link_inputs, argument))
         .collect::<Vec<_>>();
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        for argument in &arguments {
+            println!("cargo:rustc-link-arg={argument}");
+        }
+    }
     println!(
         "cargo::metadata=link_args={}",
         serde_json::to_string(&arguments)?

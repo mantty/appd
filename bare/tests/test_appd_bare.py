@@ -136,7 +136,6 @@ class BareBuildTests(unittest.TestCase):
                 ["-framework", "JavaScriptCore", "-lc++"],
             )
             self.assertEqual(manifest["link_inputs"], [{"path": "inputs/0000-libappd_bare.a"}])
-            self.assertTrue((output / "appd_bare.h").is_file())
 
 
 if __name__ == "__main__":

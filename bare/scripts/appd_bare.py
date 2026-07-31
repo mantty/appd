@@ -255,7 +255,6 @@ def package_sdk(build: Path, output: Path, target: str) -> None:
     }
     output.mkdir(parents=True, exist_ok=True)
     (output / "sdk-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    shutil.copy2(BARE_ROOT / "include" / "appd_bare.h", output / "appd_bare.h")
 
 
 def driver_link_arguments(target: str) -> list[str]:
