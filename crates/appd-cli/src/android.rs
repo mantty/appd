@@ -59,8 +59,9 @@ pub(crate) fn build_android(
 fn install_runtime(pack_root: &Path, manifest: &TargetPackManifest, native: &Path) -> Result<()> {
     let runtime = artifact_path(pack_root, manifest, &ArtifactKind::RuntimeLibrary)?;
     copy_file(runtime, native.join("libappd_shell_android.so"))?;
-    let bare = artifact_path(pack_root, manifest, &ArtifactKind::BareHostLibrary)?;
-    copy_file(bare, native.join("libappd_bare.so"))
+    let bare = artifact_path(pack_root, manifest, &ArtifactKind::BareRuntimeDirectory)?;
+    copy_dir_contents(&bare, native)?;
+    Ok(())
 }
 
 fn install_shell_sources(

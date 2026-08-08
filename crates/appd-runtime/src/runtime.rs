@@ -1,10 +1,11 @@
 //! Runtime lifecycle.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use appd_bare::{Assets, BareRuntime, Certificates as BareCertificates, RuntimeConfig};
 use appd_bundle::AppLayout;
+use appd_bundle::environment::load as load_environment;
 
 use crate::Result;
 use crate::certificates::{Certificates, Renewal};
@@ -47,11 +48,12 @@ impl Runtime {
     pub fn start(config: Config, listener: impl Fn(Event) + Send + Sync + 'static) -> Result<Self> {
         let events = Events::new(listener);
         events.emit(Event::Starting);
-        let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
+        let state_dir = config.state_dir.clone();
+        let certificates = Arc::new(Certificates::start(state_dir.clone(), config.host.clone())?);
         let bundle = std::fs::read(config.app.worker_bundle())?;
         let bare = BareRuntime::start(
             &bundle,
-            &bare_config(&config.app, &certificates, &config.host),
+            &bare_config(&config.app, &certificates, &config.host, &state_dir)?,
         )?;
         let renewal = certificates.start_renewal(events.clone());
         let port = bare.port();
@@ -108,24 +110,36 @@ impl Runtime {
     }
 }
 
-fn bare_config(app: &AppLayout, certificates: &Certificates, host: &str) -> RuntimeConfig {
-    RuntimeConfig {
+fn bare_config(
+    app: &AppLayout,
+    certificates: &Certificates,
+    host: &str,
+    state_dir: &Path,
+) -> Result<RuntimeConfig> {
+    Ok(RuntimeConfig {
         assets: app.serves_assets().then(|| Assets {
             manifest: app.asset_manifest(),
             root: app.assets(),
         }),
+        cache: state_dir.join("cache"),
         certificates: BareCertificates {
             ca: certificates.authority_path(),
             identity: certificates.identity_path(),
         },
+        environment: load_environment(app)?.vars,
         host: host.to_owned(),
         port: 0,
         require_client_certificate: true,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use appd_bundle::environment::{WorkerEnvironment, write as write_environment};
+    use serde_json::json;
+
     use super::{Config, bare_config};
     use crate::certificates::Certificates;
     use appd_bundle::AppLayout;
@@ -137,12 +151,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let certificates =
             Certificates::start(directory.path().to_path_buf(), "app.appd.local".to_owned())?;
+        let app = AppLayout::new(directory.path());
+        write_environment(&app, &WorkerEnvironment::default())?;
 
-        let config = bare_config(
-            &AppLayout::new(directory.path()),
-            &certificates,
-            "app.appd.local",
-        );
+        let config = bare_config(&app, &certificates, "app.appd.local", directory.path())?;
 
         assert!(config.require_client_certificate);
         assert_eq!(config.port, 0);
@@ -155,9 +167,10 @@ mod tests {
         let certificates =
             Certificates::start(directory.path().to_path_buf(), "app.appd.local".to_owned())?;
         let app = AppLayout::new(directory.path());
+        write_environment(&app, &WorkerEnvironment::default())?;
 
         assert!(
-            bare_config(&app, &certificates, "app.appd.local")
+            bare_config(&app, &certificates, "app.appd.local", directory.path())?
                 .assets
                 .is_none()
         );
@@ -165,9 +178,31 @@ mod tests {
         std::fs::write(app.asset_manifest(), "{}")?;
 
         assert!(
-            bare_config(&app, &certificates, "app.appd.local")
+            bare_config(&app, &certificates, "app.appd.local", directory.path())?
                 .assets
                 .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loads_packaged_worker_vars() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let certificates =
+            Certificates::start(directory.path().to_path_buf(), "app.appd.local".to_owned())?;
+        let app = AppLayout::new(directory.path());
+        write_environment(
+            &app,
+            &WorkerEnvironment {
+                vars: BTreeMap::from([("JSON".to_owned(), json!({ "enabled": true }))]),
+            },
+        )?;
+
+        assert_eq!(
+            bare_config(&app, &certificates, "app.appd.local", directory.path())?
+                .environment
+                .get("JSON"),
+            Some(&json!({ "enabled": true }))
         );
         Ok(())
     }

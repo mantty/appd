@@ -15,6 +15,8 @@ mod apple;
 mod plugins;
 #[path = "support.rs"]
 pub(crate) mod support;
+#[path = "windows.rs"]
+mod windows;
 #[path = "worker.rs"]
 mod worker;
 
@@ -112,6 +114,13 @@ fn build_platform(
             app_name,
             wrangler,
             plugins,
+        ),
+        BuildPlatform::Windows => windows::build_windows(
+            &request.project_dir,
+            pack_root,
+            &manifest,
+            app_name,
+            wrangler,
         ),
     }
 }

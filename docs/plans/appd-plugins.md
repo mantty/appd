@@ -71,7 +71,8 @@ subscriptions and late responses from the previous page are ignored.
 - `watchPosition(next, error)`, returning a stop function
 
 Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
-`CoreLocation`. Android uses `LocationManager`.
+`CoreLocation`. Android uses `LocationManager`. Windows uses WebView2's
+geolocation implementation, with consent restricted to the app origin.
 
 ## Deferred
 

@@ -7,6 +7,7 @@ members = [
     "crates/appd-runtime",
     "crates/appd-shell-android",
     "crates/appd-shell-apple",
+    "crates/appd-shell-windows",
     "crates/appd-target-pack",
 ]
 
@@ -37,6 +38,7 @@ expect_used = "deny"
 [workspace.dependencies]
 anyhow = "1.0.102"
 assert_cmd = "2.2.2"
+base64 = "0.22.1"
 block2 = "0.6.2"
 clap = { version = "4.6.1", features = ["derive"] }
 dispatch2 = "0.3.1"
@@ -49,6 +51,7 @@ objc2-foundation = "0.3.2"
 objc2-security = "0.3.2"
 objc2-ui-kit = "0.3.2"
 objc2-web-kit = "0.3.2"
+openssl = { version = "0.10.80", features = ["vendored"] }
 jni = "0.21.1"
 libc = "0.2.186"
 p256 = { version = "0.13.2", features = ["pkcs8"] }
@@ -64,4 +67,6 @@ tao = { version = "0.35.3", default-features = false, features = ["rwh_06"] }
 toml = "1.1.2"
 walkdir = "2.5.0"
 wry = { version = "0.55.1", default-features = false }
+webview2-com = "0.38.2"
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }

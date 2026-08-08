@@ -5,6 +5,7 @@ use appd_bundle::{
     Error,
     wrangler::{HtmlHandling, NotFoundHandling, load_config, resolve_config_path},
 };
+use serde_json::json;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -172,6 +173,7 @@ fn parses_jsonc_wrangler_config_subset_and_resolves_paths() -> TestResult {
   "main": "build/server/entry.mjs",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": { "TEXT": "value", "JSON": { "enabled": true } },
   "assets": {
     "directory": "build/client",
     "binding": "STATIC",
@@ -195,6 +197,8 @@ fn parses_jsonc_wrangler_config_subset_and_resolves_paths() -> TestResult {
         assets.not_found_handling,
         NotFoundHandling::SinglePageApplication
     );
+    assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
+    assert_eq!(config.vars.get("JSON"), Some(&json!({ "enabled": true })));
     Ok(())
 }
 
@@ -209,6 +213,10 @@ fn parses_toml_wrangler_config_subset() -> TestResult {
 main = "worker/entry.mjs"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
+
+[vars]
+TEXT = "value"
+JSON = { enabled = true }
 
 [assets]
 directory = "public"
@@ -228,6 +236,8 @@ not_found_handling = "404-page"
     assert_eq!(assets.directory, root.join("public"));
     assert_eq!(assets.html_handling, HtmlHandling::Force);
     assert_eq!(assets.not_found_handling, NotFoundHandling::Page404);
+    assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
+    assert_eq!(config.vars.get("JSON"), Some(&json!({ "enabled": true })));
     Ok(())
 }
 

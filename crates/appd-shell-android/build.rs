@@ -1,6 +1,6 @@
 use std::env;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,22 +9,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if target_os != "android" {
         return Ok(());
     }
-    link_bare()?;
+    if env::var_os("CARGO_FEATURE_TEST_STUBS").is_none() {
+        link_bare()?;
+    }
     println!("cargo:rustc-link-lib=log");
     link_compiler_runtime()?;
     Ok(())
 }
 
 fn link_bare() -> Result<(), io::Error> {
-    // Absent when appd-bare is stubbed for host checks.
-    let Ok(encoded) = env::var("DEP_APPD_BARE_LINK_ARGS") else {
-        return Ok(());
-    };
-    let arguments: Vec<String> = serde_json::from_str(&encoded).map_err(io::Error::other)?;
-    for argument in arguments {
-        println!("cargo:rustc-link-arg={argument}");
+    let sdk = env::var_os("APPD_BARE_SDK_DIR").map_or_else(
+        || workspace_root().join("target/bare/sdk/android-arm64"),
+        PathBuf::from,
+    );
+    let runtime = sdk.join("runtime");
+    if !runtime.join("libbare-kit.so").is_file() {
+        return Err(io::Error::other("BareKit runtime is missing"));
     }
+    println!("cargo:rustc-link-search=native={}", runtime.display());
+    println!("cargo:rustc-link-lib=dylib=bare-kit");
     Ok(())
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
 }
 
 fn link_compiler_runtime() -> Result<(), io::Error> {

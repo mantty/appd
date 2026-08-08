@@ -1,5 +1,6 @@
 [package]
 name = "appd-shell-apple"
+build = "build.rs"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -1,8 +1,0 @@
-[upstream]
-repository = "https://github.com/holepunchto/bare-kit"
-tag = "v2.3.0"
-commit = "264ebb068d23ca5c5168ed92ea1a0ce85b12259d"
-source_url = "https://github.com/holepunchto/bare-kit/archive/refs/tags/v2.3.0.tar.gz"
-source_sha256 = "ceb89eda5a81e5791d93ebb7eab0264318c76652fbb6cc475ae34d7684d3271f"
-engine_repository = "github:holepunchto/libjsc"
-engine_commit = "df04ed716bf0f8d5b9d4d4e6bccdacd1306f19a7"

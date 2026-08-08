@@ -5,14 +5,11 @@
 
 use std::fmt;
 use std::fs;
-use std::io::Read;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
-use walkdir::WalkDir;
 
 /// The current target-pack manifest schema version.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -21,7 +18,7 @@ pub struct TargetPackVersion(pub u32);
 
 impl TargetPackVersion {
     /// Current manifest schema version.
-    pub const CURRENT: Self = Self(7);
+    pub const CURRENT: Self = Self(12);
 }
 
 /// Supported `appd` runtime target triples.
@@ -39,6 +36,8 @@ pub enum Target {
     MacosArm64,
     /// Intel macOS.
     MacosX64,
+    /// 64-bit Windows.
+    WindowsX64,
 }
 
 impl Target {
@@ -50,6 +49,7 @@ impl Target {
         Self::IosSimulatorX64,
         Self::MacosArm64,
         Self::MacosX64,
+        Self::WindowsX64,
     ];
 
     fn manifest_name(self) -> &'static str {
@@ -60,6 +60,7 @@ impl Target {
             Self::IosSimulatorX64 => "ios-simulator-x64",
             Self::MacosArm64 => "macos-arm64",
             Self::MacosX64 => "macos-x64",
+            Self::WindowsX64 => "windows-x64",
         }
     }
 }
@@ -111,8 +112,10 @@ impl FromStr for Target {
 pub enum ArtifactKind {
     /// Precompiled runtime library or framework.
     RuntimeLibrary,
-    /// Android Bare host library used by the runtime and native addons.
-    BareHostLibrary,
+    /// Precompiled native application-shell executable.
+    RuntimeExecutable,
+    /// Upstream `BareKit` runtime files embedded in the native application.
+    BareRuntimeDirectory,
     /// Native application-shell sources compiled during an app build.
     NativeShellDirectory,
     /// Compiled appd JavaScript runtime modules used by the host packer.
@@ -131,8 +134,6 @@ pub struct Artifact {
     pub kind: ArtifactKind,
     /// Path relative to the target-pack root.
     pub path: String,
-    /// SHA-256 hex digest for the artifact contents.
-    pub sha256: String,
 }
 
 /// Versioned manifest included in each `appd` target pack.
@@ -157,8 +158,7 @@ impl TargetPackManifest {
     /// # Errors
     ///
     /// Returns an error when required fields are missing, the schema version is
-    /// unsupported, an artifact path escapes the pack root, or a digest is not a
-    /// lowercase SHA-256 hex value.
+    /// unsupported, or an artifact path escapes the pack root.
     pub fn validate(&self) -> Result<(), TargetPackError> {
         if self.schema_version != TargetPackVersion::CURRENT {
             return Err(TargetPackError::UnsupportedSchemaVersion {
@@ -177,30 +177,8 @@ impl TargetPackManifest {
 
         for artifact in &self.artifacts {
             validate_relative_path(&artifact.path)?;
-            validate_sha256(&artifact.sha256)?;
         }
 
-        Ok(())
-    }
-
-    /// Verify every artifact against its manifest digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an artifact is missing or its contents do not
-    /// match the digest recorded in the manifest.
-    pub fn verify_artifacts(&self, root: impl AsRef<Path>) -> Result<(), TargetPackError> {
-        for artifact in &self.artifacts {
-            let path = root.as_ref().join(&artifact.path);
-            let actual = artifact_sha256(&path)?;
-            if actual != artifact.sha256 {
-                return Err(TargetPackError::ArtifactHashMismatch {
-                    path: artifact.path.clone(),
-                    expected: artifact.sha256.clone(),
-                    actual,
-                });
-            }
-        }
         Ok(())
     }
 }
@@ -216,39 +194,7 @@ pub fn load_manifest(path: impl AsRef<Path>) -> Result<TargetPackManifest, Targe
     let content = fs::read_to_string(path)?;
     let manifest = serde_json::from_str(&content)?;
     TargetPackManifest::validate(&manifest)?;
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
-    manifest.verify_artifacts(root)?;
     Ok(manifest)
-}
-
-/// Calculate the SHA-256 digest of a target-pack file or directory.
-///
-/// # Errors
-///
-/// Returns an error when the path is missing, unsupported, or cannot be read.
-pub fn artifact_sha256(path: impl AsRef<Path>) -> Result<String, TargetPackError> {
-    let path = path.as_ref();
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            TargetPackError::MissingArtifact(path.display().to_string())
-        } else {
-            TargetPackError::Io(error)
-        }
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(TargetPackError::UnsupportedArtifact(
-            path.display().to_string(),
-        ));
-    }
-    if metadata.is_file() {
-        return hash_file(path);
-    }
-    if metadata.is_dir() {
-        return hash_directory(path);
-    }
-    Err(TargetPackError::UnsupportedArtifact(
-        path.display().to_string(),
-    ))
 }
 
 /// Write a target-pack manifest as pretty JSON.
@@ -293,25 +239,6 @@ pub enum TargetPackError {
     /// Artifact path was absolute or escaped the pack root.
     #[error("artifact path must stay inside the target pack: {0}")]
     UnsafeArtifactPath(String),
-    /// Artifact SHA-256 digest was not lowercase hex.
-    #[error("sha256 must be 64 lowercase hex characters: {0}")]
-    InvalidSha256(String),
-    /// Artifact was not present in the target pack.
-    #[error("target-pack artifact not found: {0}")]
-    MissingArtifact(String),
-    /// Artifact was not a regular file or directory.
-    #[error("target-pack artifact is not a regular file or directory: {0}")]
-    UnsupportedArtifact(String),
-    /// Artifact contents did not match the manifest digest.
-    #[error("target-pack artifact hash mismatch for {path}: expected {expected}, found {actual}")]
-    ArtifactHashMismatch {
-        /// Artifact path relative to the target-pack root.
-        path: String,
-        /// Digest recorded in the manifest.
-        expected: String,
-        /// Digest calculated from the artifact.
-        actual: String,
-    },
     /// File IO failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -344,72 +271,4 @@ fn validate_relative_path(path: &str) -> Result<(), TargetPackError> {
 fn has_windows_drive_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
-}
-
-fn validate_sha256(value: &str) -> Result<(), TargetPackError> {
-    let is_valid = value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-
-    if is_valid {
-        Ok(())
-    } else {
-        Err(TargetPackError::InvalidSha256(value.to_owned()))
-    }
-}
-
-fn hash_file(path: &Path) -> Result<String, TargetPackError> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 8 * 1024];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(hex_digest(&hasher.finalize()))
-}
-
-fn hash_directory(path: &Path) -> Result<String, TargetPackError> {
-    let mut files = Vec::new();
-    for entry in WalkDir::new(path).follow_links(false) {
-        let entry = entry.map_err(|error| TargetPackError::Io(std::io::Error::other(error)))?;
-        if entry.path() == path {
-            continue;
-        }
-        if entry.file_type().is_symlink() {
-            return Err(TargetPackError::UnsupportedArtifact(
-                entry.path().display().to_string(),
-            ));
-        }
-        if entry.file_type().is_file() {
-            files.push(entry.into_path());
-        }
-    }
-    files.sort();
-
-    let mut hasher = Sha256::new();
-    for file in files {
-        let relative = file
-            .strip_prefix(path)
-            .map_err(|error| TargetPackError::Io(std::io::Error::other(error)))?;
-        hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
-        hasher.update([0]);
-        hasher.update(fs::read(file)?);
-        hasher.update([0]);
-    }
-    Ok(hex_digest(&hasher.finalize()))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }

@@ -9,9 +9,9 @@ main risks to address before expanding the feature surface.
 
 ### 1. Vendored WebSocket protocol code — completed
 
-`vendor/bare-ws/lib/frame.js` now encodes RSV1, RSV2, and RSV3 independently,
-and `vendor/bare-ws/lib/socket.js` validates masking on zero-length frames.
-`runtime/tests/bare-ws.test.ts` covers both protocol cases.
+`bare/vendor/bare-ws/lib/frame.js` now encodes RSV1, RSV2, and RSV3 independently,
+and `bare/vendor/bare-ws/lib/socket.js` validates masking on zero-length frames.
+`bare/runtime/tests/bare-ws.test.ts` covers both protocol cases.
 
 ### 2. The mTLS boundary has compiled handshake integration coverage — completed
 
@@ -139,32 +139,26 @@ The app build path requires a bundled or explicitly supplied target pack. Source
 target-pack generation is available only through the explicit `appd pack build`
 developer command.
 
-### 13. Target-pack integrity is verified — completed
-
-Target-pack manifests require SHA-256 digests for every file or directory
-artifact. Source-generated packs calculate deterministic file and directory
-digests, and manifest loading verifies every artifact before the pack is used.
-
-### 14. Vendored dependencies lack synchronization metadata
+### 13. Vendored dependencies lack synchronization metadata
 
 The repository contains full copies of `bare-tls`, `bare-ws`, and
 `cmake-toolchains`, but does not record a machine-checkable upstream revision or
 divergence manifest. Future upgrades will be difficult to audit.
 
-### 15. Generated output leaks into the working tree — completed
+### 14. Generated output leaks into the working tree — completed
 
 Nested tool dependency and target directories are now ignored. Target-pack
 outputs and deploy destinations are cleared before each build, including stale
 symlinks, and the target-pack directory is cleared before source compilation so
 failed builds cannot leave an older pack appearing current.
 
-### 16. Addon discovery is implicit
+### 15. Addon discovery is implicit
 
 The CLI scans every dependency for `addon: true`, derives framework names, and
 special-cases `bare-tls` separately. An explicit target-pack addon manifest
 would make the native artifact contract deterministic.
 
-### 17. CI misses some riskiest paths
+### 16. CI misses some riskiest paths
 
 Pull-request CI does not build the native Bare SDK or run a real bundled app.
 There is no macOS end-to-end test, physical iOS smoke test, or WebSocket

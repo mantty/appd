@@ -110,6 +110,19 @@ impl Certificates {
             } => client_identity(&current, previous_failures),
         }
     }
+
+    /// Return whether `certificate` is the current server certificate for `host`.
+    #[must_use]
+    pub fn trusts_server_certificate(&self, host: &str, certificate: &str) -> bool {
+        if !same_dns_host(host, &self.host) {
+            return false;
+        }
+        let Ok(current) = self.current.read() else {
+            return false;
+        };
+        crate::material::certificate_der(certificate)
+            == crate::material::certificate_der(&current.server_cert_pem)
+    }
 }
 
 fn client_identity(current: &CertificateBundle, previous_failures: usize) -> Decision {
@@ -277,6 +290,23 @@ mod tests {
             }),
             Decision::Cancel
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trusts_only_the_current_server_certificate_for_the_app_host() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let certificates = certificates(directory.path())?;
+        let server = std::fs::read_to_string(certificates.identity_path())?;
+        let certificate = server
+            .split("-----END CERTIFICATE-----")
+            .next()
+            .ok_or("server certificate is missing")?;
+        let certificate = format!("{certificate}-----END CERTIFICATE-----\n");
+
+        assert!(certificates.trusts_server_certificate("app.appd.local", &certificate));
+        assert!(!certificates.trusts_server_certificate("example.com", &certificate));
+        assert!(!certificates.trusts_server_certificate("app.appd.local", "invalid"));
         Ok(())
     }
 

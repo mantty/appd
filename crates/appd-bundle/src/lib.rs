@@ -5,6 +5,7 @@
 //! `appd-cli` prepares an app with these types and the runtime reads it back.
 
 pub mod assets;
+pub mod environment;
 pub mod wrangler;
 
 mod layout;

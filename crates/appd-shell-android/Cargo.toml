@@ -19,8 +19,5 @@ appd-bundle = { path = "../appd-bundle" }
 appd-runtime = { path = "../appd-runtime", features = ["native"] }
 jni.workspace = true
 
-[build-dependencies]
-serde_json.workspace = true
-
 [lints]
 workspace = true

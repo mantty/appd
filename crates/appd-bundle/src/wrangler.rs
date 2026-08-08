@@ -1,10 +1,12 @@
 //! Minimal Wrangler configuration loading for appd packaging.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{Error, Result};
 
@@ -19,6 +21,8 @@ pub struct WranglerConfig {
     pub main: PathBuf,
     /// Static asset configuration, when the Worker declares assets.
     pub assets: Option<WranglerAssets>,
+    /// Text and JSON environment bindings declared in `vars`.
+    pub vars: BTreeMap<String, Value>,
 }
 
 /// Static asset subset of a Wrangler config that appd consumes.
@@ -167,6 +171,7 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
             .assets
             .map(|assets| resolve_assets(&config_path, &config_dir, assets))
             .transpose()?,
+        vars: raw.vars,
     })
 }
 
@@ -174,6 +179,8 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
 struct RawWranglerConfig {
     main: Option<String>,
     assets: Option<RawWranglerAssets>,
+    #[serde(default)]
+    vars: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]

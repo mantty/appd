@@ -87,15 +87,14 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     _ manager: CLLocationManager,
     didFailWithError error: Error
   ) {
-    if (error as? CLError)?.code == .locationUnknown { return }
-    fail(
-      AppdPluginError(
-        name: "NotReadableError",
-        message: error.localizedDescription
-      ))
+    fail(locationError(error))
   }
 
   private func start() {
+    guard CLLocationManager.locationServicesEnabled() else {
+      fail(unavailable("Location services are disabled"))
+      return
+    }
     switch manager.authorizationStatus {
     case .authorizedAlways, .authorizedWhenInUse:
       manager.startUpdatingLocation()
@@ -122,6 +121,20 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     if watchers.isEmpty {
       manager.stopUpdatingLocation()
     }
+  }
+
+  private func locationError(_ error: Error) -> AppdPluginError {
+    if (error as? CLError)?.code == .denied {
+      return AppdPluginError(
+        name: "NotAllowedError",
+        message: "Location permission was denied"
+      )
+    }
+    return unavailable(error.localizedDescription)
+  }
+
+  private func unavailable(_ message: String) -> AppdPluginError {
+    AppdPluginError(name: "NotReadableError", message: message)
   }
 
   private func stopIfIdle() {

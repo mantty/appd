@@ -487,7 +487,7 @@ fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) -> bool {
             .is_ok()
 }
 
-fn certificate_der(pem: &str) -> Option<Vec<u8>> {
+pub(crate) fn certificate_der(pem: &str) -> Option<Vec<u8>> {
     parse_x509_pem(pem.as_bytes())
         .ok()
         .map(|(_, certificate)| certificate.contents)
@@ -550,12 +550,15 @@ fn write_temporary(path: &Path, content: &[u8], private: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn set_directory_permissions(directory: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    }
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_directory_permissions(_: &Path) -> Result<()> {
     Ok(())
 }
 

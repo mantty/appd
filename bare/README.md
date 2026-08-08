@@ -1,26 +1,17 @@
-# Bare SDK
+# Bare runtime
 
-This directory builds the upstream BareKit and addon artifacts consumed by
-appd. The upstream source is pinned by tag, commit, and archive SHA-256 in
-`upstream.toml`; it is downloaded into `target/bare/downloads` and extracted
-under `target/bare/src`.
+This directory contains appd's Bare runtime code and native module sources.
+`CMakeLists.txt` follows BareKit's source-build pattern: it fetches pinned
+BareKit source, uses JavaScriptCore on Apple platforms, and statically links
+the runtime's native modules into BareKit. Rust calls BareKit's worklet and
+IPC C APIs directly.
 
-`CMakeLists.txt` links BareKit and the addons required by the appd JavaScript
-runtime. Rust calls BareKit's worklet and IPC C APIs directly.
-
-Build an SDK archive for a supported target:
+Build a target pack, including the static BareKit artifact:
 
 ```sh
-python3 bare/scripts/build-sdk.py --target macos-arm64
-python3 bare/scripts/build-sdk.py --target macos-x64
-python3 bare/scripts/build-sdk.py --target ios-arm64
-python3 bare/scripts/build-sdk.py --target ios-simulator-arm64
-python3 bare/scripts/build-sdk.py --target ios-simulator-x64
+appd pack build --target macos-arm64
 ```
 
-Each output contains native link inputs, link arguments, and an
-`sdk-manifest.json` consumed by `crates/appd-bare/build.rs`.
-
-Set `SCCACHE` to an sccache executable to cache C and C++ compilation. The
-weekly GitHub workflow configures sccache against the existing R2 build-cache
-bucket and publishes both SDK archives as a GitHub release.
+The artifact is written to `target/bare/sdk/<target>/runtime`. Set `SCCACHE`
+to an sccache executable to cache C and C++ compilation. The weekly GitHub
+workflow publishes those artifacts as releases.

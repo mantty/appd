@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use appd_target_pack::artifact_sha256;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -19,30 +18,24 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
     fs::create_dir_all(dir.join("runtime-js"))?;
     fs::write(dir.join("bin/appd-runtime"), "runtime")?;
     fs::write(dir.join("runtime-js/bootstrap.js"), "bootstrap")?;
-    let runtime_hash = artifact_sha256(dir.join("bin/appd-runtime"))?;
-    let runtime_js_hash = artifact_sha256(dir.join("runtime-js"))?;
     write_manifest_json(
         dir,
-        &format!(
-            r#"{{
-  "schemaVersion": 7,
+        r#"{
+  "schemaVersion": 12,
   "appdVersion": "0.1.0",
   "target": "macos-arm64",
   "artifacts": [
-    {{
+    {
       "kind": "runtimeLibrary",
-      "path": "bin/appd-runtime",
-      "sha256": "{runtime_hash}"
-    }},
-    {{
+      "path": "bin/appd-runtime"
+    },
+    {
       "kind": "runtimeJavaScriptDirectory",
-      "path": "runtime-js",
-      "sha256": "{runtime_js_hash}"
-    }}
+      "path": "runtime-js"
+    }
   ],
   "requiredTools": ["node"]
-}}"#
-        ),
+}"#,
     )
 }
 
@@ -56,7 +49,8 @@ fn lists_supported_targets() -> TestResult {
             .and(contains("ios-simulator-arm64"))
             .and(contains("ios-simulator-x64"))
             .and(contains("macos-arm64"))
-            .and(contains("macos-x64")),
+            .and(contains("macos-x64"))
+            .and(contains("windows-x64")),
     );
 
     Ok(())
@@ -84,24 +78,20 @@ fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     fs::create_dir_all(temp_dir.path().join("bin"))?;
     fs::write(temp_dir.path().join("bin/appd-runtime"), "runtime")?;
-    let runtime_hash = artifact_sha256(temp_dir.path().join("bin/appd-runtime"))?;
     let manifest_path = write_manifest_json(
         temp_dir.path(),
-        &format!(
-            r#"{{
-  "schemaVersion": 7,
+        r#"{
+  "schemaVersion": 12,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [
-    {{
+    {
       "kind": "runtimeLibrary",
-      "path": "bin/appd-runtime",
-      "sha256": "{runtime_hash}"
-    }}
+      "path": "bin/appd-runtime"
+    }
   ],
   "requiredTools": []
-}}"#
-        ),
+}"#,
     )?;
     let mut cmd = Command::cargo_bin("appd")?;
 
@@ -121,10 +111,10 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 7,
+  "schemaVersion": 12,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime"}],
   "requiredTools": []
 }"#,
     )?;

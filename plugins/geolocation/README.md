@@ -14,5 +14,6 @@ const stop = geolocation.watchPosition(
 ```
 
 The web implementation uses `navigator.geolocation`. Native appd builds use
-Core Location on Apple platforms and `LocationManager` on Android. Calling the
-API on a platform without geolocation support throws `NotSupportedError`.
+Core Location on Apple platforms, `LocationManager` on Android, and WebView2's
+geolocation implementation on Windows. Calling the API on a platform without
+geolocation support throws `NotSupportedError`.

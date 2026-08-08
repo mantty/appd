@@ -73,6 +73,7 @@ enum BuildPlatform {
     Ios,
     IosSimulator,
     Macos,
+    Windows,
 }
 
 impl BuildPlatform {
@@ -82,6 +83,7 @@ impl BuildPlatform {
             Self::Ios => "iOS",
             Self::IosSimulator => "iOS Simulator",
             Self::Macos => "macOS",
+            Self::Windows => "Windows",
         }
     }
 
@@ -91,6 +93,7 @@ impl BuildPlatform {
             Self::Ios => "ios",
             Self::IosSimulator => "ios-simulator",
             Self::Macos => "macos",
+            Self::Windows => "windows",
         }
     }
 }
@@ -104,8 +107,11 @@ impl FromStr for BuildPlatform {
             "ios" => Ok(Self::Ios),
             "ios-simulator" => Ok(Self::IosSimulator),
             "macos" => Ok(Self::Macos),
+            "windows" => Ok(Self::Windows),
             _ => {
-                bail!("unknown platform '{value}'; expected android, ios, ios-simulator, or macos")
+                bail!(
+                    "unknown platform '{value}'; expected android, ios, ios-simulator, macos, or windows"
+                )
             }
         }
     }

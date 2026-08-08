@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use appd_target_pack::{
     Artifact, ArtifactKind, Target, TargetPackError, TargetPackManifest, TargetPackVersion,
-    artifact_sha256, load_manifest, write_manifest,
+    load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -17,14 +17,10 @@ fn valid_manifest() -> TargetPackManifest {
             Artifact {
                 kind: ArtifactKind::RuntimeLibrary,
                 path: "frameworks/AppdRuntime.framework".to_owned(),
-                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_owned(),
             },
             Artifact {
                 kind: ArtifactKind::RuntimeJavaScriptDirectory,
                 path: "runtime-js".to_owned(),
-                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_owned(),
             },
         ],
         required_tools: vec!["xcode".to_owned()],
@@ -50,6 +46,7 @@ fn parses_known_targets_and_rejects_unknown_targets() {
     assert_eq!(Target::IosSimulatorX64.to_string(), "ios-simulator-x64");
     assert_eq!(Target::MacosArm64.to_string(), "macos-arm64");
     assert_eq!(Target::MacosX64.to_string(), "macos-x64");
+    assert_eq!(Target::WindowsX64.to_string(), "windows-x64");
     assert!(matches!(
         Target::from_str("ios-armv7"),
         Err(TargetPackError::UnknownTarget(target)) if target == "ios-armv7"
@@ -152,66 +149,19 @@ fn rejects_windows_absolute_artifact_paths_on_any_host() {
 }
 
 #[test]
-fn rejects_invalid_sha256_values() {
-    let mut manifest = valid_manifest();
-    manifest.artifacts[0].sha256 = "not-a-digest".to_owned();
-
-    assert!(matches!(
-        manifest.validate(),
-        Err(TargetPackError::InvalidSha256(value)) if value == "not-a-digest"
-    ));
-}
-
-#[test]
 fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     let manifest_path = temp_dir.path().join("target-pack.json");
-    fs::create_dir_all(temp_dir.path().join("frameworks"))?;
-    fs::create_dir_all(temp_dir.path().join("runtime-js"))?;
-    fs::write(
-        temp_dir.path().join("frameworks/AppdRuntime.framework"),
-        "runtime",
-    )?;
-    fs::write(temp_dir.path().join("runtime-js/bootstrap.js"), "bootstrap")?;
-    let mut manifest = valid_manifest();
-    manifest.artifacts[0].sha256 =
-        artifact_sha256(temp_dir.path().join("frameworks/AppdRuntime.framework"))?;
-    manifest.artifacts[1].sha256 = artifact_sha256(temp_dir.path().join("runtime-js"))?;
+    let manifest = valid_manifest();
 
     write_manifest(&manifest_path, &manifest)?;
     let json = fs::read_to_string(&manifest_path)?;
     assert!(json.contains("\"target\": \"ios-arm64\""));
+    assert!(!json.contains("sha256"));
 
     let loaded = load_manifest(&manifest_path)?;
     assert_eq!(loaded, manifest);
 
-    Ok(())
-}
-
-#[test]
-fn load_manifest_rejects_modified_artifacts() -> TestResult {
-    let temp_dir = tempfile::tempdir()?;
-    let manifest_path = temp_dir.path().join("target-pack.json");
-    fs::create_dir_all(temp_dir.path().join("frameworks"))?;
-    fs::write(
-        temp_dir.path().join("frameworks/AppdRuntime.framework"),
-        "runtime",
-    )?;
-    let mut manifest = valid_manifest();
-    manifest.artifacts.truncate(1);
-    manifest.artifacts[0].sha256 =
-        artifact_sha256(temp_dir.path().join("frameworks/AppdRuntime.framework"))?;
-    write_manifest(&manifest_path, &manifest)?;
-    fs::write(
-        temp_dir.path().join("frameworks/AppdRuntime.framework"),
-        "modified",
-    )?;
-
-    assert!(matches!(
-        load_manifest(&manifest_path),
-        Err(TargetPackError::ArtifactHashMismatch { path, .. })
-            if path == "frameworks/AppdRuntime.framework"
-    ));
     Ok(())
 }
 
@@ -222,10 +172,10 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     fs::write(
         &manifest_path,
         r#"{
-  "schemaVersion": 7,
+  "schemaVersion": 12,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime"}],
   "requiredTools": []
 }"#,
     )?;

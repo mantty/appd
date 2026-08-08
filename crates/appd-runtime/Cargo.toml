@@ -1,5 +1,6 @@
 [package]
 name = "appd-runtime"
+build = "build.rs"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -19,6 +20,7 @@ time.workspace = true
 x509-parser = { workspace = true, features = ["verify"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -5,23 +5,89 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  cmake-toolchains: file:vendor/cmake-toolchains
-  bare-tls: file:vendor/bare-tls
-  bare-ws: file:vendor/bare-ws
+  cmake-toolchains: file:bare/vendor/cmake-toolchains
+  bare-tls: file:bare/vendor/bare-tls
+  bare-ws: file:bare/vendor/bare-ws
 
 importers:
 
   .:
+    devDependencies:
+      '@eslint/js':
+        specifier: ^9.39.2
+        version: 9.39.4
+      '@types/node':
+        specifier: ^22.19.15
+        version: 22.20.1
+      eslint:
+        specifier: ^9.39.2
+        version: 9.39.4(jiti@2.7.0)
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.53.1
+        version: 8.63.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+
+  bare:
+    devDependencies:
+      bare:
+        specifier: 1.29.4
+        version: 1.29.4(bare-buffer@3.6.2)(bare-console@6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-runtime@1.30.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-structured-clone@1.6.0)(bare-timers@3.2.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
+      bare-make:
+        specifier: ^1.8.0
+        version: 1.8.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
+      cmake-bare:
+        specifier: ^1.3.0
+        version: 1.8.0
+      cmake-fetch:
+        specifier: ^1.1.0
+        version: 1.5.2
+      cmake-npm:
+        specifier: ^1.1.0
+        version: 1.1.2
+
+  bare/pack:
+    dependencies:
+      bare-pack:
+        specifier: 2.2.0
+        version: 2.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+
+  bare/runtime:
     dependencies:
       bare-abort-controller:
         specifier: ^1.0.1
         version: 1.1.2
+      bare-assert:
+        specifier: ^1.2.0
+        version: 1.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      bare-async-hooks:
+        specifier: ^0.0.0
+        version: 0.0.0
       bare-buffer:
         specifier: ^3.0.2
         version: 3.6.2
+      bare-console:
+        specifier: ^6.2.0
+        version: 6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       bare-crypto:
         specifier: ^1.2.8
         version: 1.15.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      bare-diagnostics-channel:
+        specifier: ^1.1.0
+        version: 1.1.0
+      bare-dns:
+        specifier: ^2.1.4
+        version: 2.1.4
       bare-encoding:
         specifier: ^1.0.3
         version: 1.0.3(bare-buffer@3.6.2)
@@ -40,94 +106,57 @@ importers:
       bare-https:
         specifier: ^3.0.0
         version: 3.0.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
-      bare-process:
-        specifier: ^4.5.1
-        version: 4.5.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
+      bare-inspect:
+        specifier: ^3.1.4
+        version: 3.1.4(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      bare-mime:
+        specifier: ^1.0.0
+        version: 1.0.0
+      bare-net:
+        specifier: ^2.3.2
+        version: 2.3.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
+      bare-path:
+        specifier: ^3.1.1
+        version: 3.1.1
+      bare-punycode:
+        specifier: ^0.0.0
+        version: 0.0.0
+      bare-querystring:
+        specifier: ^1.1.0
+        version: 1.1.0
       bare-stream:
         specifier: ^2.10.0
         version: 2.13.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      bare-string-decoder:
+        specifier: ^1.0.0
+        version: 1.0.0(bare-buffer@3.6.2)
+      bare-structured-clone:
+        specifier: ^1.6.0
+        version: 1.6.0
       bare-tcp:
         specifier: ^2.5.2
         version: 2.5.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))
+      bare-timers:
+        specifier: ^3.2.1
+        version: 3.2.1(bare-abort-controller@1.1.2)
       bare-tls:
-        specifier: file:vendor/bare-tls
-        version: file:vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+        specifier: file:../vendor/bare-tls
+        version: file:bare/vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       bare-url:
         specifier: ^2.4.0
         version: 2.4.5
       bare-ws:
-        specifier: file:vendor/bare-ws
-        version: file:vendor/bare-ws(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
-    devDependencies:
-      '@eslint/js':
-        specifier: ^9.39.2
-        version: 9.39.4
-      '@types/node':
-        specifier: ^22.19.15
-        version: 22.20.1
-      bare:
-        specifier: 1.29.4
-        version: 1.29.4(bare-buffer@3.6.2)(bare-console@6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-runtime@1.30.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-structured-clone@1.6.0)(bare-url@2.4.5)
-      bare-bundle:
-        specifier: ^1.10.0
-        version: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-console:
-        specifier: ^6.2.0
-        version: 6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
-      bare-ipc:
-        specifier: ^1.1.0
-        version: 1.1.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
-      bare-logger:
-        specifier: ^2.0.0
-        version: 2.0.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
-      bare-make:
-        specifier: ^1.8.0
-        version: 1.8.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
-      bare-module:
-        specifier: ^6.0.1
-        version: 6.4.0(bare-buffer@3.6.2)
-      bare-module-resolve:
-        specifier: ^1.12.2
-        version: 1.12.2(bare-url@2.4.5)
-      bare-path:
-        specifier: ^3.1.1
-        version: 3.1.1
-      bare-system-logger:
-        specifier: ^1.0.1
-        version: 1.0.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
-      bare-unpack:
-        specifier: ^1.0.2
-        version: 1.1.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
-      cmake-bare:
-        specifier: ^1.3.0
-        version: 1.8.0
-      cmake-bare-bundle:
-        specifier: ^2.1.3
-        version: 2.1.5(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
-      cmake-fetch:
-        specifier: ^1.1.0
-        version: 1.5.2
-      cmake-java:
-        specifier: ^0.1.2
-        version: 0.1.2
-      cmake-napi:
-        specifier: ^1.1.2
-        version: 1.2.2
-      cmake-npm:
-        specifier: ^1.1.0
-        version: 1.1.2
-      eslint:
-        specifier: ^9.39.2
-        version: 9.39.4(jiti@2.7.0)
-      tsx:
-        specifier: ^4.21.0
-        version: 4.23.0
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      typescript-eslint:
-        specifier: ^8.53.1
-        version: 8.63.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+        specifier: file:../vendor/bare-ws
+        version: file:bare/vendor/bare-ws(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
+      bare-zlib:
+        specifier: ^1.4.1
+        version: 1.4.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      ipaddr.js:
+        specifier: ^2.5.0
+        version: 2.5.0
+      pathe:
+        specifier: ^2.0.3
+        version: 2.0.3
 
   examples/astro:
     dependencies:
@@ -154,15 +183,6 @@ importers:
       '@appd/plugin':
         specifier: workspace:*
         version: link:../core
-
-  tools/bare-pack:
-    dependencies:
-      bare-pack:
-        specifier: 2.2.0
-        version: 2.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
-      esbuild:
-        specifier: 0.28.1
-        version: 0.28.1
 
 packages:
 
@@ -1392,14 +1412,12 @@ packages:
   bare-assert@1.2.0:
     resolution: {integrity: sha512-c6uvgvTJBspTDxtVnPgrBKmLgcpW3Fp72NVKDLg6oT4QjQbhGtvrkHMhGYMK1sh4vjBHOBmuUalyt9hSzV37fQ==}
 
+  bare-async-hooks@0.0.0:
+    resolution: {integrity: sha512-xNfGwUobaomCGMGAqohAekS3uMCj+4tvI4AoOaJnO7NfpN+dvFdkC5xkeQtmZzs2vxf2TR5J6i5FDd1ImCZERw==}
+
   bare-buffer@3.6.2:
     resolution: {integrity: sha512-WT9xx12FJvWbBCkgfjuAeWfY40RW6BKVr2fK9UGrTEYKbvqhcaW0J9AMkA3Sj36Wgi+DUuGXYkZPxn5jVH61LA==}
     engines: {bare: '>=1.20.0'}
-
-  bare-bundle-compile@1.2.2:
-    resolution: {integrity: sha512-oKvqnnBjd4tVVpvDxxE0jOn33sATsnSM5DkoMqXPfQhvHm67CGf2t3UDJ/IDpxZCDH5Kb2lYVH0pDsdFPYGMxw==}
-    peerDependencies:
-      bare-bundle: ^1.8.0
 
   bare-bundle-id@1.0.2:
     resolution: {integrity: sha512-RG/y1J/s6zWmsqUIDtclXh+xxMRTh1jo/10vFL58FKhe9UESchMNkwn0Cz10o5AdA/35WR/KUGoHhIGdyCjQrg==}
@@ -1428,6 +1446,9 @@ packages:
     peerDependenciesMeta:
       bare-buffer:
         optional: true
+
+  bare-diagnostics-channel@1.1.0:
+    resolution: {integrity: sha512-Reu+EQo+eLpB+a5p8UykFEdXndFaRaSgKV38uAMh/qhE2eTeJcdwAwo74hKYyeN8GD3DIFqC9ZlM4bnDc03CIg==}
 
   bare-dns@2.1.4:
     resolution: {integrity: sha512-abwjHmpWqSRNB7V5615QxPH92L71AVzFm/kKTs8VYiNTAi2xVdonpv0BjJ0hwXLwomoW+xsSOPjW6PZPO14asg==}
@@ -1502,9 +1523,6 @@ packages:
     resolution: {integrity: sha512-jfW5KRA84o3REpI6Vr4nbvMn+hqVAw8GU1mMdRwUsY5yJovQamxYeKGVKGqdzs+8ZbG4jRzGUXP/3Ji/DnqfPg==}
     engines: {bare: '>=1.18.0'}
 
-  bare-ipc@1.1.2:
-    resolution: {integrity: sha512-z2VXX9nHkWTgtiOwDJpuZa3RJeUDqG1VpGJJttVHEdqX9ebX09Bf4K9/RwYeNKerpFJ9tJP0kjfTjk6bJC9wXw==}
-
   bare-logger@2.0.3:
     resolution: {integrity: sha512-U6K7NxHdeAHxEgHFDV8zXvgjgDZKQO6LlCrxQvUvlrZEVTnoezSImMWizi85rbZpVsbeI1ZWcLCRGnoIf5EV8Q==}
 
@@ -1536,17 +1554,6 @@ packages:
       bare-url:
         optional: true
 
-  bare-module-traverse@1.8.3:
-    resolution: {integrity: sha512-Iykt1899FOo0lpejEwAUK50fYIzQ18uiJFqybgZvIIqnZSV0/0GhJp+3w3Vx5hTVeTIROF8UmTUB5jHNs65PAg==}
-    peerDependencies:
-      bare-buffer: '*'
-      bare-url: '*'
-    peerDependenciesMeta:
-      bare-buffer:
-        optional: true
-      bare-url:
-        optional: true
-
   bare-module-traverse@2.2.0:
     resolution: {integrity: sha512-jETLGPMzll0mrrsaRyCyPVdQyDK3utZHDqKJvqSTG9omCb5Pz53WLs31mc1Fyu0zb7KpOgqjeN3jfCGg+NFoVA==}
     peerDependencies:
@@ -1558,33 +1565,12 @@ packages:
       bare-url:
         optional: true
 
-  bare-module@6.4.0:
-    resolution: {integrity: sha512-Yn4V5g5EqGQL4LYUOmt7fjKzj2JPWyJOqE3lPoeZwfUH5rk4CKUfZj6JhDwbzhBYCqqmUgjgQ5aY8cihAPILLA==}
-    engines: {bare: '>=1.29.4'}
-    peerDependencies:
-      bare-buffer: '*'
-    peerDependenciesMeta:
-      bare-buffer:
-        optional: true
-
   bare-net@2.3.2:
     resolution: {integrity: sha512-I+yz+pqbYsBkxDsnu5vkKvy7RSNY9CcAvu2jZT6PsmdXJQG1i3dmD5V7xc3334OVp2absgtUEYLmmuNFlphBzg==}
 
   bare-os@3.9.3:
     resolution: {integrity: sha512-fF4Q7QsyKVF5Rj0qvI8BgUNjqzC2JvQlpTaPLjVJVxYVUX5Zr9un+y3w1HmA4nNKdFmRBT8z/WmrjvXzXVerKQ==}
     engines: {bare: '>=1.14.0'}
-
-  bare-pack@1.5.1:
-    resolution: {integrity: sha512-ACc5Tx3p3LMD4ov2GYQSe1kKTyvNqzXTjdO+USL/5kD9r77VBTn0y+W7Cl5j3xp8u/REs5NoOCHyK+ykaMpwGA==}
-    hasBin: true
-    peerDependencies:
-      bare-buffer: '*'
-      bare-url: '*'
-    peerDependenciesMeta:
-      bare-buffer:
-        optional: true
-      bare-url:
-        optional: true
 
   bare-pack@2.2.0:
     resolution: {integrity: sha512-/3bvlNkE/jzXK8H4ZM0lRxX1OR1qxDg9i3rfAt6rgYsLHFIcwielN8YuC3z08vKV9kZTCrTJGuWzBuGGc3BTuQ==}
@@ -1610,6 +1596,12 @@ packages:
 
   bare-process@4.5.1:
     resolution: {integrity: sha512-CaAvy1trputD49mtwfJ6G75vydhnirLrW/F3Sznp4H556e1uZn8YMo9ELicBTrGYy7RBNUgPl9bpB/ERzRCiDw==}
+
+  bare-punycode@0.0.0:
+    resolution: {integrity: sha512-PC2Y6mGLytZPJCB9M7CvO5Zb6uWYVUZ+5t3L6vePFuFM6tdC6SsQ+sIsuf0Sa6LHBoWURX7I9yMMbPXMv7TIdQ==}
+
+  bare-querystring@1.1.0:
+    resolution: {integrity: sha512-pUtEM6JrX53MbEJFwO92F0Ch7BwZ67KD7LyglcB8/tvkkVdwTgN1f7oIklRe+NTT/WCYZgwjDFYS9efBxDSq8g==}
 
   bare-runtime-android-arm64@1.30.3:
     resolution: {integrity: sha512-X79HV8rKYTEQqe7dpOVQ7WDiE8zEU6pbzXQ6oSPHtgw8Y/Ho61WCjvYLepHuRb6WiuOYptIg4f+yfXb+nQ/feQ==}
@@ -1717,6 +1709,14 @@ packages:
       bare-events:
         optional: true
 
+  bare-string-decoder@1.0.0:
+    resolution: {integrity: sha512-FjFvfHo88U7borNQSj9ijP2JTb1asqY6K28OZrix4dF9iZf5D2wi1+99CgLlHT3HtYqdwxRhDAiKu8rVstt5rQ==}
+    peerDependencies:
+      bare-buffer: '*'
+    peerDependenciesMeta:
+      bare-buffer:
+        optional: true
+
   bare-structured-clone@1.6.0:
     resolution: {integrity: sha512-AZjEERyqF7kAuudlmgrweT2KwwWM0LsGG4Gx/bWyFwJrKU7E3wNG8c09z2DIrdw93p3vDtfOX8fyHOcXfy5m+g==}
     engines: {bare: '>=1.2.0'}
@@ -1751,35 +1751,32 @@ packages:
       bare-pipe:
         optional: true
 
-  bare-tls@file:vendor/bare-tls:
-    resolution: {directory: vendor/bare-tls, type: directory}
+  bare-timers@3.2.1:
+    resolution: {integrity: sha512-O+9e6Jol/BoYsQUzAFXG0gWUW1GWryFMblGcNBfi3smPrD3rJIKQwpw2FJARl2j/1VHne4a8YaHPK1cxDKfiYQ==}
+    engines: {bare: '>=1.7.0'}
+    peerDependencies:
+      bare-abort-controller: '*'
+    peerDependenciesMeta:
+      bare-abort-controller:
+        optional: true
+
+  bare-tls@file:bare/vendor/bare-tls:
+    resolution: {directory: bare/vendor/bare-tls, type: directory}
     engines: {bare: '>=1.7.0'}
 
   bare-tty@5.1.2:
     resolution: {integrity: sha512-wDHPU/yVQtrDCUrKVdIVOLmfIw7dFPETz30UayuFlROvgz8Juv2SmISSMhqxYQVO+fVnG/1ZoLcbGh/35eAjDA==}
     engines: {bare: '>=1.16.0'}
 
-  bare-type-stripper@0.1.4:
-    resolution: {integrity: sha512-FdZhp9XEnQpj8AWFmIft/sVUyKS9XSmB6PhcxBHhuEDxxZM5Kkt8+kFS7eEpLXR7TkaRkNpSENoGH/8lpAmtkA==}
-    peerDependencies:
-      bare-buffer: '*'
-    peerDependenciesMeta:
-      bare-buffer:
-        optional: true
-
   bare-type@1.1.0:
     resolution: {integrity: sha512-LdtnnEEYldOc87Dr4GpsKnStStZk3zfgoEMXy8yvEZkXrcCv9RtYDrUYWFsBQHtaB0s1EUWmcvS6XmEZYIj3Bw==}
     engines: {bare: '>=1.2.0'}
 
-  bare-unpack@1.1.3:
-    resolution: {integrity: sha512-b+OFTi74dsMaVQy9w90U6WMqhVBcx5hONJnFbOSfhTefG/9OuY6ZxU3IvybVa5/i3edzboa7rebaMG25K6/kAA==}
-    hasBin: true
-
   bare-url@2.4.5:
     resolution: {integrity: sha512-K+y9xF1tN+CdPu4qWwr0QiK1Al07eFPGYK5M2pDXcmHdMdgC/tT/bpmMe1hrmRHaidKLkXrC+cRNYf3XVDUhSQ==}
 
-  bare-ws@file:vendor/bare-ws:
-    resolution: {directory: vendor/bare-ws, type: directory}
+  bare-ws@file:bare/vendor/bare-ws:
+    resolution: {directory: bare/vendor/bare-ws, type: directory}
     peerDependencies:
       bare-buffer: '*'
       bare-url: '*'
@@ -1870,20 +1867,11 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
 
-  cmake-bare-bundle@2.1.5:
-    resolution: {integrity: sha512-z345Vlgjy89Zvh1bex2l4jpztG22ebp+6vNhm4i6v8QiyS/yTyT1AnogfMiyyjs1BlHT7DlAsAoQNvjZd9ks1g==}
-
   cmake-bare@1.8.0:
     resolution: {integrity: sha512-dUE5i9Drhp8ZVnQ57RiHXqVpZ5iBondpIsgAmQ/VBmgkCy1g5F+mFX8e/FM7kwSKgKxtra+pREzhDGundZKxvw==}
 
   cmake-fetch@1.5.2:
     resolution: {integrity: sha512-TKgXV/vi43gsDQjWYu80CiPByoTKGZZa0NeD90p6blWStr/Fotffl6J9tuChL5N0AlFCmYMNmver3vt5yJd9/g==}
-
-  cmake-java@0.1.2:
-    resolution: {integrity: sha512-BC+CC0aFcJCkLQX2xu7zdBXKR4a3uO9HDbqSa58cLsquZQ42tZmcV/MaR6w6FM8PwxeQY9/utTzjX9alCr8ExA==}
-
-  cmake-napi@1.2.2:
-    resolution: {integrity: sha512-xPhSCy8GnqXAc8JsEqNYygGTDrErFgg1vT8CosfOxZ5dQ9yZsZJSVbIjl3k7v8ghzs710vksW1RsyvbRaqakkw==}
 
   cmake-npm@1.1.2:
     resolution: {integrity: sha512-CfN53Ov9usNBeaIsr8TtEQwwXeRZkJWZSoGe0qybr9bojxGlwTdxHk8LQwJFNypsSgFoYyOWUMjKGuahsiGifA==}
@@ -1928,8 +1916,8 @@ packages:
     resolution: {integrity: sha512-EH5OO3OmCa676Y1OdLT6Q+Kg+SWYfkZQMjG1PFsdFbgn0Vxhs5UZGpXTgF9HnDMDgv9DEiUAzYEAB12z3768Pw==}
     hasBin: true
 
-  cmake-toolchains@file:vendor/cmake-toolchains:
-    resolution: {directory: vendor/cmake-toolchains, type: directory}
+  cmake-toolchains@file:bare/vendor/cmake-toolchains:
+    resolution: {directory: bare/vendor/cmake-toolchains, type: directory}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -2278,9 +2266,9 @@ packages:
     resolution: {integrity: sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==}
     engines: {node: '>=0.8.19'}
 
-  include-static@1.1.0:
-    resolution: {integrity: sha512-1lAeUDHVfCUFcL84pDPFto5kzNY6uOYENJumGAmFdQQEvgsL7pprNYLWTaLyKo014IXVNtF5adDaSezu6XZWLA==}
-    hasBin: true
+  ipaddr.js@2.5.0:
+    resolution: {integrity: sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w==}
+    engines: {node: '>= 10'}
 
   iron-webcrypto@1.2.1:
     resolution: {integrity: sha512-feOM6FaSr6rEABp/eDfVseKyTMDt+KGpeB35SkVn9Tyn0CqvVsY3EwI0v5i8nMHyJnzCIQf7nsy3p41TPkJZhg==}
@@ -4308,17 +4296,15 @@ snapshots:
       - bare-events
       - react-native-b4a
 
+  bare-async-hooks@0.0.0: {}
+
   bare-buffer@3.6.2: {}
 
-  bare-bundle-compile@1.2.2(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)):
-    dependencies:
-      bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-
-  bare-bundle-id@1.0.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
+  bare-bundle-id@1.0.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-url@2.4.5):
     dependencies:
       bare-buffer: 3.6.2
       bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      sodium-native: 5.1.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
+      sodium-native: 5.1.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-events
@@ -4353,6 +4339,8 @@ snapshots:
       - bare-abort-controller
       - bare-events
       - react-native-b4a
+
+  bare-diagnostics-channel@1.1.0: {}
 
   bare-dns@2.1.4: {}
 
@@ -4438,7 +4426,7 @@ snapshots:
     dependencies:
       bare-http1: 4.5.7(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5)
       bare-tcp: 2.5.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))
-      bare-tls: file:vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
+      bare-tls: file:bare/vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -4451,17 +4439,6 @@ snapshots:
     dependencies:
       bare-ansi-escapes: 2.2.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       bare-type: 1.1.0
-    transitivePeerDependencies:
-      - bare-abort-controller
-      - bare-buffer
-      - bare-events
-      - react-native-b4a
-
-  bare-ipc@1.1.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)):
-    dependencies:
-      bare-pipe: 4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
-      bare-stream: 2.13.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
-      bare-structured-clone: 1.6.0
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -4485,7 +4462,7 @@ snapshots:
       bare-path: 3.1.1
       bare-process: 4.5.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
       cmake-runtime: 4.3.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
-      cmake-toolchains: file:vendor/cmake-toolchains(bare-url@2.4.5)
+      cmake-toolchains: file:bare/vendor/cmake-toolchains(bare-url@2.4.5)
       ninja-runtime: 1.13.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
       paparam: 1.10.1
     optionalDependencies:
@@ -4512,15 +4489,6 @@ snapshots:
     optionalDependencies:
       bare-url: 2.4.5
 
-  bare-module-traverse@1.8.3(bare-buffer@3.6.2)(bare-url@2.4.5):
-    dependencies:
-      bare-addon-resolve: 1.10.0(bare-url@2.4.5)
-      bare-module-lexer: 1.6.2(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-module-resolve: 1.12.2(bare-url@2.4.5)
-    optionalDependencies:
-      bare-buffer: 3.6.2
-      bare-url: 2.4.5
-
   bare-module-traverse@2.2.0(bare-buffer@3.6.2)(bare-url@2.4.5):
     dependencies:
       bare-addon-resolve: 1.10.0(bare-url@2.4.5)
@@ -4529,17 +4497,6 @@ snapshots:
     optionalDependencies:
       bare-buffer: 3.6.2
       bare-url: 2.4.5
-
-  bare-module@6.4.0(bare-buffer@3.6.2):
-    dependencies:
-      bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-module-lexer: 1.6.2(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-module-resolve: 1.12.2(bare-url@2.4.5)
-      bare-path: 3.1.1
-      bare-type-stripper: 0.1.4(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-url: 2.4.5
-    optionalDependencies:
-      bare-buffer: 3.6.2
 
   bare-net@2.3.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2):
     dependencies:
@@ -4554,27 +4511,10 @@ snapshots:
 
   bare-os@3.9.3: {}
 
-  bare-pack@1.5.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
+  bare-pack@2.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5):
     dependencies:
       bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-bundle-id: 1.0.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
-      bare-fs: 4.7.4(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
-      bare-module-traverse: 1.8.3(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-path: 3.1.1
-      paparam: 1.10.1
-      promaphore: 1.0.0
-    optionalDependencies:
-      bare-buffer: 3.6.2
-      bare-url: 2.4.5
-    transitivePeerDependencies:
-      - bare-abort-controller
-      - bare-events
-      - react-native-b4a
-
-  bare-pack@2.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
-    dependencies:
-      bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-bundle-id: 1.0.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
+      bare-bundle-id: 1.0.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-url@2.4.5)
       bare-fs: 4.7.4(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
       bare-module-traverse: 2.2.0(bare-buffer@3.6.2)(bare-url@2.4.5)
       bare-path: 3.1.1
@@ -4615,6 +4555,12 @@ snapshots:
       - bare-abort-controller
       - bare-buffer
       - react-native-b4a
+
+  bare-punycode@0.0.0:
+    dependencies:
+      punycode: 2.3.1
+
+  bare-querystring@1.1.0: {}
 
   bare-runtime-android-arm64@1.30.3(bare-url@2.4.5):
     dependencies:
@@ -4764,6 +4710,14 @@ snapshots:
     transitivePeerDependencies:
       - react-native-b4a
 
+  bare-string-decoder@1.0.0(bare-buffer@3.6.2):
+    dependencies:
+      text-decoder: 1.2.7
+    optionalDependencies:
+      bare-buffer: 3.6.2
+    transitivePeerDependencies:
+      - react-native-b4a
+
   bare-structured-clone@1.6.0:
     dependencies:
       bare-buffer: 3.6.2
@@ -4822,7 +4776,11 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  bare-tls@file:vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)):
+  bare-timers@3.2.1(bare-abort-controller@1.1.2):
+    optionalDependencies:
+      bare-abort-controller: 1.1.2
+
+  bare-tls@file:bare/vendor/bare-tls(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)):
     dependencies:
       bare-net: 2.3.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
       bare-stream: 2.13.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
@@ -4842,34 +4800,13 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  bare-type-stripper@0.1.4(bare-buffer@3.6.2)(bare-url@2.4.5):
-    dependencies:
-      require-addon: 1.2.0(bare-url@2.4.5)
-    optionalDependencies:
-      bare-buffer: 3.6.2
-    transitivePeerDependencies:
-      - bare-url
-
   bare-type@1.1.0: {}
-
-  bare-unpack@1.1.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5):
-    dependencies:
-      bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-fs: 4.7.4(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)
-      bare-path: 3.1.1
-      paparam: 1.10.1
-      promaphore: 1.0.0
-    transitivePeerDependencies:
-      - bare-abort-controller
-      - bare-buffer
-      - bare-url
-      - react-native-b4a
 
   bare-url@2.4.5:
     dependencies:
       bare-path: 3.1.1
 
-  bare-ws@file:vendor/bare-ws(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5):
+  bare-ws@file:bare/vendor/bare-ws(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-pipe@4.2.2(bare-abort-controller@1.1.2)(bare-buffer@3.6.2))(bare-url@2.4.5):
     dependencies:
       bare-crypto: 1.15.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       bare-events: 2.9.1(bare-abort-controller@1.1.2)
@@ -4894,7 +4831,7 @@ snapshots:
       - bare-events
       - react-native-b4a
 
-  bare@1.29.4(bare-buffer@3.6.2)(bare-console@6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-runtime@1.30.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-structured-clone@1.6.0)(bare-url@2.4.5):
+  bare@1.29.4(bare-buffer@3.6.2)(bare-console@6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2)))(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-runtime@1.30.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5))(bare-structured-clone@1.6.0)(bare-timers@3.2.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
     dependencies:
       bare-runtime: 1.30.3(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5)
     optionalDependencies:
@@ -4902,6 +4839,7 @@ snapshots:
       bare-console: 6.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       bare-events: 2.9.1(bare-abort-controller@1.1.2)
       bare-structured-clone: 1.6.0
+      bare-timers: 3.2.1(bare-abort-controller@1.1.2)
       bare-url: 2.4.5
 
   blake3-wasm@2.1.5: {}
@@ -4940,30 +4878,11 @@ snapshots:
 
   clsx@2.1.1: {}
 
-  cmake-bare-bundle@2.1.5(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
-    dependencies:
-      bare-bundle: 1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-bundle-compile: 1.2.2(bare-bundle@1.10.0(bare-buffer@3.6.2)(bare-url@2.4.5))
-      bare-module-traverse: 1.8.3(bare-buffer@3.6.2)(bare-url@2.4.5)
-      bare-pack: 1.5.1(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5)
-      cmake-bare: 1.8.0
-      include-static: 1.1.0
-    transitivePeerDependencies:
-      - bare-abort-controller
-      - bare-buffer
-      - bare-events
-      - bare-url
-      - react-native-b4a
-
   cmake-bare@1.8.0:
     dependencies:
       cmake-npm: 1.1.2
 
   cmake-fetch@1.5.2: {}
-
-  cmake-java@0.1.2: {}
-
-  cmake-napi@1.2.2: {}
 
   cmake-npm@1.1.2: {}
 
@@ -5028,7 +4947,7 @@ snapshots:
       - bare-url
       - react-native-b4a
 
-  cmake-toolchains@file:vendor/cmake-toolchains(bare-url@2.4.5):
+  cmake-toolchains@file:bare/vendor/cmake-toolchains(bare-url@2.4.5):
     dependencies:
       require-asset: 1.2.2(bare-url@2.4.5)
     transitivePeerDependencies:
@@ -5476,7 +5395,7 @@ snapshots:
 
   imurmurhash@0.1.4: {}
 
-  include-static@1.1.0: {}
+  ipaddr.js@2.5.0: {}
 
   iron-webcrypto@1.2.1: {}
 
@@ -6352,7 +6271,7 @@ snapshots:
 
   smol-toml@1.7.1: {}
 
-  sodium-native@5.1.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))(bare-url@2.4.5):
+  sodium-native@5.1.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-url@2.4.5):
     dependencies:
       bare-assert: 1.2.0(bare-abort-controller@1.1.2)(bare-buffer@3.6.2)(bare-events@2.9.1(bare-abort-controller@1.1.2))
       require-addon: 1.2.0(bare-url@2.4.5)

@@ -89,7 +89,10 @@ internal class AppdGeolocationPlugin(
             PackageManager.PERMISSION_GRANTED
 
     private fun currentPosition(reply: AppdPluginReply) {
-        val provider = provider()
+        val provider = runCatching(::provider).getOrElse {
+            reply(locationFailure(it, "Location is unavailable"))
+            return
+        }
         if (provider == null) {
             reply(unavailable("No location provider is available"))
             return
@@ -103,11 +106,14 @@ internal class AppdGeolocationPlugin(
                 if (location == null) reply(unavailable("Location is unavailable"))
                 else reply(Result.success(position(location)))
             }
-        }.onFailure { reply(unavailable(it.message ?: "Location is unavailable")) }
+        }.onFailure { reply(locationFailure(it, "Location is unavailable")) }
     }
 
     private fun watchPosition(reply: AppdPluginReply): () -> Unit {
-        val provider = provider()
+        val provider = runCatching(::provider).getOrElse {
+            reply(locationFailure(it, "Location is unavailable"))
+            return {}
+        }
         if (provider == null) {
             reply(unavailable("No location provider is available"))
             return {}
@@ -127,7 +133,7 @@ internal class AppdGeolocationPlugin(
             manager.requestLocationUpdates(provider, 1000, 0F, listener, Looper.getMainLooper())
         }
         if (started.isFailure) {
-            reply(unavailable(started.exceptionOrNull()?.message ?: "Location is unavailable"))
+            reply(locationFailure(started.exceptionOrNull(), "Location is unavailable"))
             return {}
         }
         return { manager.removeUpdates(listener) }
@@ -163,6 +169,10 @@ internal class AppdGeolocationPlugin(
 
     private fun unavailable(message: String): Result<Any?> =
         Result.failure(AppdPluginError("NotReadableError", message))
+
+    private fun locationFailure(error: Throwable?, fallback: String): Result<Any?> =
+        if (error is SecurityException) permissionDenied()
+        else unavailable(error?.message ?: fallback)
 
     private companion object {
         const val LOCATION_PERMISSION_REQUEST = 0xA771

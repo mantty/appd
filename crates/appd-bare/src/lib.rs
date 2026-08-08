@@ -2,9 +2,11 @@
 
 //! Safe lifecycle wrapper for the appd Bare worklet.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
+use serde_json::Value;
 use thiserror::Error;
 
 #[cfg(all(feature = "native", not(feature = "test-stubs")))]
@@ -86,8 +88,12 @@ pub struct RuntimeConfig {
     /// Optional static asset service.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assets: Option<Assets>,
+    /// Directory containing the app-private Worker cache.
+    pub cache: PathBuf,
     /// Loopback HTTPS certificates.
     pub certificates: Certificates,
+    /// Text and JSON Worker environment bindings.
+    pub environment: BTreeMap<String, Value>,
     /// Stable HTTPS hostname used by the `WebView`.
     pub host: String,
     /// Require the `WebView` to authenticate to the local gateway when it is network-facing.
@@ -207,10 +213,12 @@ mod tests {
                 manifest: Path::new("assets.json").to_path_buf(),
                 root: Path::new("assets").to_path_buf(),
             }),
+            cache: Path::new("cache").to_path_buf(),
             certificates: Certificates {
                 ca: Path::new("ca.pem").to_path_buf(),
                 identity: Path::new("server.identity.pem").to_path_buf(),
             },
+            environment: std::collections::BTreeMap::new(),
             host: "app.appd.local".to_owned(),
             port: 0,
             require_client_certificate: true,
@@ -219,6 +227,7 @@ mod tests {
         assert_eq!(json["certificates"]["identity"], "server.identity.pem");
         assert_eq!(json["requireClientCertificate"], true);
         assert_eq!(json["assets"]["manifest"], "assets.json");
+        assert_eq!(json["cache"], "cache");
         assert_eq!(json["port"], 0);
     }
 }

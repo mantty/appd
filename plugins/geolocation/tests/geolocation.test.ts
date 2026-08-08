@@ -43,6 +43,65 @@ void test("reports unavailable web geolocation as unsupported", async () => {
   );
 });
 
+for (const [code, name] of [
+  [1, "NotAllowedError"],
+  [2, "NotReadableError"],
+  [3, "TimeoutError"],
+] as const) {
+  void test(`maps browser geolocation error ${String(code)}`, async () => {
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        geolocation: {
+          getCurrentPosition(_: PositionCallback, failure: (error: GeolocationPositionError) => void) {
+            failure({
+              code,
+              message: "Location failed",
+              PERMISSION_DENIED: 1,
+              POSITION_UNAVAILABLE: 2,
+              TIMEOUT: 3,
+            });
+          },
+        },
+      },
+    });
+
+    await assert.rejects(
+      geolocation.getCurrentPosition(),
+      (error: unknown) => error instanceof DOMException && error.name === name,
+    );
+  });
+}
+
+void test("forwards browser watch failures", () => {
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      geolocation: {
+        watchPosition(_: PositionCallback, failure: (error: GeolocationPositionError) => void) {
+          failure({
+            code: 2,
+            message: "Location unavailable",
+            PERMISSION_DENIED: 1,
+            POSITION_UNAVAILABLE: 2,
+            TIMEOUT: 3,
+          });
+          return 1;
+        },
+        clearWatch() {},
+      },
+    },
+  });
+  let received: DOMException | undefined;
+
+  geolocation.watchPosition(
+    () => assert.fail("position received"),
+    (error) => { received = error; },
+  );
+
+  assert.equal(received?.name, "NotReadableError");
+});
+
 void test("uses the native bridge and cancels watched updates", () => {
   const sent: Record<string, unknown>[] = [];
   globalThis.__appdNative = {

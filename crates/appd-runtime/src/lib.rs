@@ -35,6 +35,10 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error(transparent)]
     Bare(#[from] appd_bare::Error),
+    /// The packaged app contents are invalid.
+    #[cfg(feature = "native")]
+    #[error(transparent)]
+    Bundle(#[from] appd_bundle::Error),
     /// Certificate state is held by a thread that stopped unexpectedly.
     #[error("certificate state is unavailable")]
     CertificatesUnavailable,

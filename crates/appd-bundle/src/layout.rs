@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 const WORKER_BUNDLE: &str = "worker.bundle";
+const WORKER_ENVIRONMENT: &str = "worker-environment.json";
 const ASSET_MANIFEST: &str = "asset-manifest.json";
 const ASSETS: &str = "assets";
 
@@ -31,6 +32,12 @@ impl AppLayout {
     #[must_use]
     pub fn worker_bundle(&self) -> PathBuf {
         self.root.join(WORKER_BUNDLE)
+    }
+
+    /// The normalized Worker environment bindings.
+    #[must_use]
+    pub fn worker_environment(&self) -> PathBuf {
+        self.root.join(WORKER_ENVIRONMENT)
     }
 
     /// The static asset routing manifest.
@@ -62,6 +69,10 @@ mod tests {
         assert_eq!(
             layout.worker_bundle(),
             std::path::Path::new("/apps/example/worker.bundle")
+        );
+        assert_eq!(
+            layout.worker_environment(),
+            std::path::Path::new("/apps/example/worker-environment.json")
         );
         assert_eq!(
             layout.asset_manifest(),
