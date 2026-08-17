@@ -21,18 +21,18 @@ const LEAF_VALIDITY_DAYS: i64 = 90;
 pub(crate) const LEAF_RENEWAL_DAYS: i64 = 30;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Runtime certificate and key material needed by Bare and platform `WebViews`.
+/// Runtime certificate and key material needed by appd and platform `WebViews`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateBundle {
-    /// CA certificate PEM trusted by Bare for client authentication.
+    /// CA certificate PEM trusted by the local gateway for client authentication.
     pub ca_cert_pem: String,
     /// CA private key PEM used to issue replacement leaf certificates.
     pub ca_key_pem: String,
-    /// Server certificate PEM used by Bare's TLS server.
+    /// Server certificate PEM used by the local TLS gateway.
     pub server_cert_pem: String,
-    /// Server private key PEM used by Bare's TLS server.
+    /// Server private key PEM used by the local TLS gateway.
     pub server_key_pem: String,
-    /// Server certificate and key PEM consumed atomically by Bare.
+    /// Server certificate and key PEM consumed atomically by the local gateway.
     pub server_identity_pem: String,
     /// Client certificate PEM.
     pub client_cert_pem: String,
@@ -247,7 +247,7 @@ impl CertificateBundle {
         })
     }
 
-    /// Write all certificate files expected by Bare and platform `WebViews`.
+    /// Write all certificate files expected by appd and platform `WebViews`.
     ///
     /// # Errors
     ///

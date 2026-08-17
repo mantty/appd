@@ -1,7 +1,5 @@
 packages:
   - "."
-  - "bare"
-  - "bare/runtime"
-  - "bare/pack"
+  - "runtime"
   - "examples/*"
   - "plugins/*"

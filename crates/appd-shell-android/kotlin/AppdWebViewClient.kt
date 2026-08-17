@@ -26,7 +26,8 @@ internal class AppdWebViewClient(
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         val host = Uri.parse(error.url).host
         val authority = host?.let(runtime::serverAuthority)
-        if (authority != null && chainsTo(error, authority)) handler.proceed() else handler.cancel()
+        val trusted = authority != null && chainsTo(error, authority)
+        if (trusted) handler.proceed() else handler.cancel()
     }
 
     override fun onReceivedClientCertRequest(view: WebView, request: ClientCertRequest) {

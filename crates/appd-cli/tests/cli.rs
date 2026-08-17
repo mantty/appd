@@ -21,7 +21,7 @@ fn write_manifest(dir: &Path) -> TestResult<PathBuf> {
     write_manifest_json(
         dir,
         r#"{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "macos-arm64",
   "artifacts": [
@@ -81,7 +81,7 @@ fn inspects_target_pack_manifest_without_required_tools() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [
@@ -111,7 +111,7 @@ fn rejects_invalid_target_pack_manifest() -> TestResult {
     let manifest_path = write_manifest_json(
         temp_dir.path(),
         r#"{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime"}],

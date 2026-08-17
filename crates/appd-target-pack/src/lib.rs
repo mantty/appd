@@ -18,7 +18,7 @@ pub struct TargetPackVersion(pub u32);
 
 impl TargetPackVersion {
     /// Current manifest schema version.
-    pub const CURRENT: Self = Self(12);
+    pub const CURRENT: Self = Self(13);
 }
 
 /// Supported `appd` runtime target triples.
@@ -114,15 +114,11 @@ pub enum ArtifactKind {
     RuntimeLibrary,
     /// Precompiled native application-shell executable.
     RuntimeExecutable,
-    /// Upstream `BareKit` runtime files embedded in the native application.
-    BareRuntimeDirectory,
     /// Native application-shell sources compiled during an app build.
     NativeShellDirectory,
     /// Compiled appd JavaScript runtime modules used by the host packer.
     RuntimeJavaScriptDirectory,
-    /// Standalone host-side Bare bundle packer.
-    BarePackExecutable,
-    /// Host-side JavaScript compiler used to produce `CommonJS` worklets.
+    /// Host-side JavaScript compiler used to produce Worker bytecode.
     EsbuildExecutable,
 }
 

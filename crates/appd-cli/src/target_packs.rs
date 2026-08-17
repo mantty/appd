@@ -9,9 +9,7 @@ use appd_target_pack::{
 };
 
 use crate::BuildPlatform;
-use crate::build::support::{
-    copy_dir_contents, copy_dir_contents_preserving_symlinks, copy_file, package_manager,
-};
+use crate::build::support::{copy_dir_contents, copy_file};
 
 const TARGET_PACK_DIR_ENV: &str = "appd_target_pack_dir";
 const ANDROID_RUNTIME_LIBRARY: &str = "libappd_shell_android.so";
@@ -110,17 +108,13 @@ fn build_source_target_pack_at(workspace: &Path, target: Target) -> Result<PathB
         .join("target/appd-target-packs")
         .join(target.to_string());
     reset_dir(&pack_dir)?;
-    build_bare_sdk(workspace, target)?;
-    build_runtime_tools(workspace)?;
     let library = build_runtime_library(workspace, target, rust_target)?;
     let (runtime_kind, runtime_path) = package_runtime(workspace, target, &library, &pack_dir)?;
-    install_bare_runtime(workspace, target, &pack_dir)?;
     if target != Target::WindowsX64 {
         install_native_shell(workspace, target, &pack_dir)?;
     }
     let tools_dir = pack_dir.join("tools");
     deploy_runtime(workspace, &tools_dir.join("runtime"))?;
-    deploy_packer(workspace, &tools_dir.join("packer"))?;
     let manifest = TargetPackManifest {
         schema_version: TargetPackVersion::CURRENT,
         appd_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -161,24 +155,6 @@ fn package_runtime(
     Ok(runtime)
 }
 
-fn install_bare_runtime(workspace: &Path, target: Target, pack_dir: &Path) -> Result<()> {
-    copy_dir_contents_preserving_symlinks(
-        &workspace
-            .join("target/bare/sdk")
-            .join(target.to_string())
-            .join("runtime"),
-        &pack_dir.join("bare-runtime"),
-    )?;
-    copy_file(
-        workspace
-            .join("target/bare/sdk")
-            .join(target.to_string())
-            .join("builtins.json"),
-        pack_dir.join("bare-runtime/builtins.json"),
-    )?;
-    Ok(())
-}
-
 fn target_pack_artifacts(
     pack_dir: &Path,
     target: Target,
@@ -202,41 +178,21 @@ fn target_pack_artifacts(
         packaged_artifact(
             pack_dir,
             ArtifactKind::EsbuildExecutable,
-            esbuild_executable(target),
+            esbuild_executable(),
         )?,
-        packaged_artifact(pack_dir, ArtifactKind::BareRuntimeDirectory, "bare-runtime")?,
     ]);
-    let packer = bare_pack_executable(pack_dir)?;
-    artifacts.push(packaged_artifact(
-        pack_dir,
-        ArtifactKind::BarePackExecutable,
-        &packer,
-    )?);
     Ok(artifacts)
 }
 
-fn bare_pack_executable(pack_dir: &Path) -> Result<String> {
-    let root = fs::canonicalize(pack_dir)?;
-    let path = fs::canonicalize(root.join("tools/packer/node_modules/bare-pack/bin.js"))?;
-    let path = path
-        .strip_prefix(&root)
-        .context("Bare Pack executable is outside its target pack")?;
-    Ok(path.to_string_lossy().replace('\\', "/"))
-}
-
-fn esbuild_executable(target: Target) -> &'static str {
-    if target == Target::WindowsX64 {
-        "tools/packer/node_modules/@esbuild/win32-x64/esbuild.exe"
-    } else {
-        "tools/packer/node_modules/esbuild/bin/esbuild"
-    }
+fn esbuild_executable() -> &'static str {
+    "tools/runtime/node_modules/esbuild/bin/esbuild"
 }
 
 fn required_tools(target: Target) -> Vec<String> {
     match target {
-        Target::AndroidArm64 => vec!["node".to_owned(), "gradle".to_owned()],
-        Target::WindowsX64 => vec!["node".to_owned()],
-        _ => vec!["node".to_owned(), "xcrun".to_owned()],
+        Target::AndroidArm64 => vec!["gradle".to_owned()],
+        Target::WindowsX64 => Vec::new(),
+        _ => vec!["xcrun".to_owned()],
     }
 }
 
@@ -349,8 +305,23 @@ fn configure_android_toolchain(command: &mut Command) -> Result<()> {
     if !compiler.is_file() {
         bail!("Android NDK compiler is missing: {}", compiler.display());
     }
+    let sysroot = host.join("sysroot");
     command.env("CC_aarch64_linux_android", &compiler);
-    command.env("AR_aarch64_linux_android", host.join("bin/llvm-ar"));
+    command.env("CC_aarch64_unknown_linux_android", &compiler);
+    let ar = host.join("bin/llvm-ar");
+    let ranlib = host.join("bin/llvm-ranlib");
+    command.env("AR_aarch64_linux_android", &ar);
+    command.env("AR_aarch64_unknown_linux_android", &ar);
+    command.env("RANLIB_aarch64_linux_android", &ranlib);
+    command.env("RANLIB_aarch64_unknown_linux_android", &ranlib);
+    command.env("RANLIB", &ranlib);
+    command.env(
+        "BINDGEN_EXTRA_CLANG_ARGS",
+        format!(
+            "--target=aarch64-linux-android31 --sysroot={}",
+            sysroot.display()
+        ),
+    );
     command.env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", compiler);
     Ok(())
 }
@@ -393,275 +364,13 @@ fn packaged_artifact(root: &Path, kind: ArtifactKind, path: &str) -> Result<Arti
     })
 }
 
-fn build_bare_sdk(workspace: &Path, target: Target) -> Result<()> {
-    let sdk_target = target.to_string();
-    let output = workspace.join("target/bare/sdk").join(&sdk_target);
-    if env::var_os("APPD_BARE_SDK_DIR").is_some() && output.join("sdk-manifest.json").is_file() {
-        return Ok(());
-    }
-    let bare = workspace.join("bare");
-    let target_root = workspace.join("target/bare");
-    let modules = target_root.join("modules").join(&sdk_target);
-    let build = target_root.join("build").join(&sdk_target);
-
-    deploy_bare_modules(workspace, &modules)?;
-    generate_bare_runtime(&bare, &build, &modules, target)?;
-    run_bare_make(
-        &bare,
-        [
-            "build",
-            "--build",
-            build.to_string_lossy().as_ref(),
-            "--target",
-            "appd_bare_kit",
-        ],
-    )?;
-
-    reset_dir(&output)?;
-    let runtime = build.join("runtime");
-    if target == Target::AndroidArm64 {
-        copy_file(
-            runtime.join("libbare-kit.so"),
-            output.join("runtime/libbare-kit.so"),
-        )?;
-    } else if target == Target::WindowsX64 {
-        copy_dir_contents(&runtime, &output.join("runtime"))?;
-    } else {
-        copy_dir_contents_preserving_symlinks(
-            &runtime.join("BareKit.framework"),
-            &output.join("runtime/BareKit.framework"),
-        )?;
-    }
-    write_builtins(&modules, &output.join("builtins.json"))?;
-    fs::write(
-        output.join("sdk-manifest.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 4,
-            "target": sdk_target,
-        }))?,
-    )?;
-    Ok(())
-}
-
-fn write_builtins(modules: &Path, output: &Path) -> Result<()> {
-    let mut builtins = Vec::new();
-    for entry in fs::read_dir(modules.join("node_modules"))? {
-        let package = entry?.path().join("package.json");
-        let Ok(source) = fs::read_to_string(package) else {
-            continue;
-        };
-        let value: serde_json::Value = serde_json::from_str(&source)?;
-        if !value
-            .get("addon")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let name = value
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .context("Bare addon package is missing its name")?;
-        builtins.push(name.to_owned());
-    }
-    builtins.sort_unstable();
-    if builtins.is_empty() {
-        bail!("no Bare native modules were deployed")
-    }
-    let builtins = builtins
-        .into_iter()
-        .map(|addon| serde_json::json!({ "addon": addon }))
-        .collect::<Vec<_>>();
-    fs::write(output, serde_json::to_vec_pretty(&builtins)?)?;
-    Ok(())
-}
-
-fn deploy_bare_modules(workspace: &Path, output: &Path) -> Result<()> {
-    reset_dir(output)?;
-    let status = Command::new(package_manager("pnpm"))
-        .args([
-            "--config.node-linker=isolated",
-            "--filter",
-            "@appd/bare-runtime",
-            "deploy",
-            "--prod",
-        ])
-        .arg(output)
-        .current_dir(workspace)
-        .status()
-        .context("failed to deploy Bare runtime modules")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("Bare runtime module deployment failed with status {status}")
-    }
-}
-
-fn generate_bare_runtime(bare: &Path, build: &Path, modules: &Path, target: Target) -> Result<()> {
-    let mut arguments = vec![
-        "generate".to_owned(),
-        "--source".to_owned(),
-        bare.to_string_lossy().into_owned(),
-        "--build".to_owned(),
-        build.to_string_lossy().into_owned(),
-        "--platform".to_owned(),
-        bare_platform(target).to_owned(),
-        "--arch".to_owned(),
-        bare_arch(target).to_owned(),
-        "--with-minimal-size".to_owned(),
-        "--define".to_owned(),
-        format!("APPD_BARE_MODULES_ROOT:PATH={}", modules.display()),
-    ];
-    if is_simulator(target) {
-        arguments.push("--simulator".to_owned());
-    }
-    if matches!(
-        target,
-        Target::MacosArm64
-            | Target::MacosX64
-            | Target::IosArm64
-            | Target::IosSimulatorArm64
-            | Target::IosSimulatorX64
-    ) {
-        arguments.extend(["--define".to_owned(), "APPLE_CLANG:BOOL=ON".to_owned()]);
-    }
-    if matches!(
-        target,
-        Target::IosArm64 | Target::IosSimulatorArm64 | Target::IosSimulatorX64
-    ) {
-        arguments.extend([
-            "--define".to_owned(),
-            "CMAKE_OSX_DEPLOYMENT_TARGET:STRING=17.0".to_owned(),
-        ]);
-    }
-    if target == Target::AndroidArm64 {
-        arguments.extend([
-            "--define".to_owned(),
-            "ANDROID_PLATFORM:STRING=android-31".to_owned(),
-            "--define".to_owned(),
-            "ANDROID_STL:STRING=c++_static".to_owned(),
-        ]);
-    }
-    add_compiler_cache(&mut arguments);
-    run_bare_make(bare, arguments.iter().map(String::as_str))
-}
-
-fn run_bare_make<'a>(bare: &Path, arguments: impl IntoIterator<Item = &'a str>) -> Result<()> {
-    let status = Command::new(package_manager("pnpm"))
-        .args(["--filter", "@appd/bare-sdk", "exec", "bare-make"])
-        .args(arguments)
-        .current_dir(bare.parent().context("bare directory must have a parent")?)
-        .status()
-        .context("failed to run bare-make")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("bare-make failed with status {status}")
-    }
-}
-
-fn add_compiler_cache(arguments: &mut Vec<String>) {
-    let Some(launcher) = env::var_os("SCCACHE") else {
-        return;
-    };
-    for language in ["C", "CXX", "OBJC", "OBJCXX"] {
-        arguments.extend([
-            "--define".to_owned(),
-            format!(
-                "CMAKE_{language}_COMPILER_LAUNCHER:FILEPATH={}",
-                launcher.to_string_lossy()
-            ),
-        ]);
-    }
-}
-
-fn bare_platform(target: Target) -> &'static str {
-    if target == Target::AndroidArm64 {
-        "android"
-    } else if matches!(target, Target::MacosArm64 | Target::MacosX64) {
-        "darwin"
-    } else if target == Target::WindowsX64 {
-        "win32"
-    } else {
-        "ios"
-    }
-}
-
-fn bare_arch(target: Target) -> &'static str {
-    match target {
-        Target::MacosX64 | Target::IosSimulatorX64 | Target::WindowsX64 => "x64",
-        _ => "arm64",
-    }
-}
-
-fn is_simulator(target: Target) -> bool {
-    matches!(target, Target::IosSimulatorArm64 | Target::IosSimulatorX64)
-}
-
-fn build_runtime_tools(workspace: &Path) -> Result<()> {
-    let script = "build:runtime";
-    let status = Command::new(package_manager("pnpm"))
-        .args(["run", script])
-        .current_dir(workspace)
-        .status()
-        .with_context(|| format!("failed to run pnpm {script}"))?;
-    if !status.success() {
-        bail!("pnpm {script} failed with status {status}");
-    }
-    Ok(())
-}
-
 fn deploy_runtime(workspace: &Path, output: &Path) -> Result<()> {
-    clear_path(output)?;
-    let status = Command::new(package_manager("pnpm"))
-        .args([
-            "--config.node-linker=isolated",
-            "--filter",
-            "@appd/bare-runtime",
-            "deploy",
-            "--prod",
-        ])
-        .arg(output)
-        .current_dir(workspace)
-        .status()
-        .context("failed to deploy Bare runtime modules")?;
-    if !status.success() {
-        bail!("Bare runtime module deployment failed with status {status}")
-    }
-    remove_runtime_self_link(output)?;
+    reset_dir(output)?;
     copy_dir_contents(
-        &workspace.join("target/runtime-js"),
-        &output.join("runtime-js"),
-    )
-}
-
-fn remove_runtime_self_link(output: &Path) -> Result<()> {
-    let link = output.join("node_modules/@appd/bare-runtime");
-    if fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        fs::remove_dir_all(link)?;
-    }
-    Ok(())
-}
-
-fn deploy_packer(workspace: &Path, output: &Path) -> Result<()> {
-    clear_path(output)?;
-    let status = Command::new(package_manager("pnpm"))
-        .args([
-            "--config.node-linker=isolated",
-            "--filter",
-            "@appd/bare-pack-tool",
-            "deploy",
-            "--prod",
-        ])
-        .arg(output)
-        .current_dir(workspace)
-        .status()
-        .context("failed to deploy Bare bundle packer")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("Bare bundle packer deployment failed with status {status}")
-    }
+        &workspace.join("node_modules/esbuild"),
+        &output.join("node_modules/esbuild"),
+    )?;
+    copy_dir_contents(&workspace.join("runtime/qjs"), &output.join("runtime-js"))
 }
 
 fn shell_package(target: Target) -> &'static str {
@@ -709,112 +418,31 @@ fn clear_path(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bare_pack_executable, esbuild_executable, packaged_artifact, remove_runtime_self_link,
-        write_builtins,
-    };
-    use appd_target_pack::{ArtifactKind, Target};
-    use std::fs;
+    use super::{esbuild_executable, packaged_artifact};
+    use appd_target_pack::ArtifactKind;
 
     #[test]
-    fn writes_native_modules_as_builtins() -> anyhow::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let modules = directory.path().join("node_modules");
-        fs::create_dir_all(modules.join("native"))?;
-        fs::create_dir_all(modules.join("javascript"))?;
-        fs::write(
-            modules.join("native/package.json"),
-            r#"{"name":"native","addon":true}"#,
-        )?;
-        fs::write(
-            modules.join("javascript/package.json"),
-            r#"{"name":"javascript"}"#,
-        )?;
-
-        let output = directory.path().join("builtins.json");
-        write_builtins(directory.path(), &output)?;
-
+    fn uses_the_packaged_esbuild_script() {
         assert_eq!(
-            fs::read_to_string(output)?,
-            "[\n  {\n    \"addon\": \"native\"\n  }\n]"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn uses_the_native_windows_esbuild_binary() {
-        assert_eq!(
-            esbuild_executable(Target::WindowsX64),
-            "tools/packer/node_modules/@esbuild/win32-x64/esbuild.exe"
+            esbuild_executable(),
+            "tools/runtime/node_modules/esbuild/bin/esbuild"
         );
     }
 
     #[test]
     fn rejects_missing_pack_artifacts() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        let result =
-            packaged_artifact(directory.path(), ArtifactKind::BareRuntimeDirectory, "bare");
+        let result = packaged_artifact(
+            directory.path(),
+            ArtifactKind::RuntimeJavaScriptDirectory,
+            "runtime",
+        );
 
         assert!(result.is_err_and(|error| {
             error
                 .to_string()
                 .contains("target-pack artifact was not produced")
         }));
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn removes_the_deployed_runtime_self_link() -> anyhow::Result<()> {
-        use std::os::unix::fs::symlink;
-
-        let directory = tempfile::tempdir()?;
-        let appd = directory.path().join("node_modules/@appd");
-        let link = appd.join("bare-runtime");
-        fs::create_dir_all(appd)?;
-        symlink("../../../../bare/runtime", &link)?;
-
-        remove_runtime_self_link(directory.path())?;
-
-        assert!(!link.exists());
-        assert!(fs::symlink_metadata(link).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn keeps_a_deployed_runtime_directory() -> anyhow::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let runtime = directory.path().join("node_modules/@appd/bare-runtime");
-        fs::create_dir_all(&runtime)?;
-
-        remove_runtime_self_link(directory.path())?;
-
-        assert!(runtime.is_dir());
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolves_bare_pack_executable_through_pnpm_links() -> anyhow::Result<()> {
-        use std::os::unix::fs::symlink;
-
-        let directory = tempfile::tempdir()?;
-        let pack_dir = directory.path().join("pack");
-        let target_dir =
-            pack_dir.join("tools/packer/node_modules/.pnpm/bare-pack@1/node_modules/bare-pack");
-        fs::create_dir_all(&target_dir)?;
-        let target = target_dir.join("bin.js");
-        fs::write(&target, "#!/usr/bin/env node\n")?;
-
-        let link_dir = pack_dir.join("tools/packer/node_modules/bare-pack");
-        fs::create_dir_all(&link_dir)?;
-        let link = link_dir.join("bin.js");
-        symlink(&target, &link)?;
-
-        assert_eq!(
-            bare_pack_executable(&pack_dir)?,
-            "tools/packer/node_modules/.pnpm/bare-pack@1/node_modules/bare-pack/bin.js"
-        );
         Ok(())
     }
 }

@@ -88,8 +88,12 @@ impl Certificates {
     }
 
     /// The certificate and key the gateway serves.
-    pub(crate) fn identity_path(&self) -> PathBuf {
-        self.state_dir.join(CertificatePaths::SERVER_IDENTITY_PEM)
+    pub(crate) fn server_certificate_path(&self) -> PathBuf {
+        self.state_dir.join(CertificatePaths::SERVER_CERT_PEM)
+    }
+
+    pub(crate) fn server_key_path(&self) -> PathBuf {
+        self.state_dir.join(CertificatePaths::SERVER_KEY_PEM)
     }
 
     /// Decide how a shell should answer a platform TLS challenge.
@@ -297,7 +301,7 @@ mod tests {
     fn trusts_only_the_current_server_certificate_for_the_app_host() -> TestResult {
         let directory = tempfile::tempdir()?;
         let certificates = certificates(directory.path())?;
-        let server = std::fs::read_to_string(certificates.identity_path())?;
+        let server = std::fs::read_to_string(certificates.server_certificate_path())?;
         let certificate = server
             .split("-----END CERTIFICATE-----")
             .next()
@@ -316,9 +320,11 @@ mod tests {
         let certificates = certificates(directory.path())?;
 
         assert!(certificates.authority_path().is_file());
-        assert!(certificates.identity_path().is_file());
+        assert!(certificates.server_certificate_path().is_file());
+        assert!(certificates.server_key_path().is_file());
         certificates.refresh()?;
-        assert!(certificates.identity_path().is_file());
+        assert!(certificates.server_certificate_path().is_file());
+        assert!(certificates.server_key_path().is_file());
         Ok(())
     }
 }

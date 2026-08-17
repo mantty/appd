@@ -157,39 +157,6 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-pub(crate) fn copy_dir_contents_preserving_symlinks(from: &Path, to: &Path) -> Result<()> {
-    use std::os::unix::fs::symlink;
-
-    for entry in WalkDir::new(from).follow_links(false) {
-        let entry = entry.map_err(std::io::Error::other)?;
-        let relative = entry.path().strip_prefix(from)?;
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-        let destination = to.join(relative);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(destination)?;
-        } else if entry.file_type().is_symlink() {
-            let parent = destination
-                .parent()
-                .context("symlink destination must have a parent")?;
-            fs::create_dir_all(parent)?;
-            symlink(fs::read_link(entry.path())?, destination)?;
-        } else if entry.file_type().is_file() {
-            copy_file(entry.path(), destination)?;
-        } else {
-            bail!("unsupported file in {}", entry.path().display());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn copy_dir_contents_preserving_symlinks(from: &Path, to: &Path) -> Result<()> {
-    copy_dir_contents(from, to)
-}
-
-#[cfg(unix)]
 pub(crate) fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -206,7 +173,7 @@ pub(crate) fn make_executable(_: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_dir_contents, copy_dir_contents_preserving_symlinks, package_manager};
+    use super::{copy_dir_contents, package_manager};
 
     #[test]
     fn selects_platform_package_manager_commands() {
@@ -238,33 +205,6 @@ mod tests {
             !std::fs::symlink_metadata(destination.join("link"))?
                 .file_type()
                 .is_symlink()
-        );
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn preserves_framework_links() -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::symlink;
-        use std::path::Path;
-
-        let temporary = tempfile::tempdir()?;
-        let source = temporary.path().join("source");
-        let destination = temporary.path().join("destination");
-        std::fs::create_dir_all(source.join("Versions/A"))?;
-        std::fs::write(source.join("Versions/A/BareKit"), "runtime")?;
-        symlink("A", source.join("Versions/Current"))?;
-        symlink("Versions/Current/BareKit", source.join("BareKit"))?;
-
-        copy_dir_contents_preserving_symlinks(&source, &destination)?;
-
-        assert_eq!(
-            std::fs::read_link(destination.join("BareKit"))?,
-            Path::new("Versions/Current/BareKit")
-        );
-        assert_eq!(
-            std::fs::read_link(destination.join("Versions/Current"))?,
-            Path::new("A")
         );
         Ok(())
     }

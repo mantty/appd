@@ -28,7 +28,7 @@ impl AppLayout {
         &self.root
     }
 
-    /// The Bare worker bundle.
+    /// The `QuickJS` Worker bytecode.
     #[must_use]
     pub fn worker_bundle(&self) -> PathBuf {
         self.root.join(WORKER_BUNDLE)

@@ -8,7 +8,7 @@ use appd_target_pack::{ArtifactKind, TargetPackManifest};
 
 use super::plugins::Plugin;
 use super::support::{artifact_path, build_dir, copy_dir_contents, copy_file, reset_path};
-use super::worker::prepare_bare_app;
+use super::worker::prepare_quickjs_app;
 use super::{BuildPlatform, BuildSummary};
 
 const PACKAGE: &str = "com.appd.runtime";
@@ -33,7 +33,7 @@ pub(crate) fn build_android(
     fs::create_dir_all(&kotlin)?;
 
     install_runtime(pack_root, manifest, &native)?;
-    prepare_bare_app(&assets, pack_root, manifest, wrangler)?;
+    prepare_quickjs_app(&assets, pack_root, manifest, wrangler)?;
     install_shell_sources(pack_root, manifest, &kotlin)?;
     install_plugins(plugins, &app, &kotlin)?;
     write_project(&staging, app_name, plugins)?;
@@ -59,8 +59,6 @@ pub(crate) fn build_android(
 fn install_runtime(pack_root: &Path, manifest: &TargetPackManifest, native: &Path) -> Result<()> {
     let runtime = artifact_path(pack_root, manifest, &ArtifactKind::RuntimeLibrary)?;
     copy_file(runtime, native.join("libappd_shell_android.so"))?;
-    let bare = artifact_path(pack_root, manifest, &ArtifactKind::BareRuntimeDirectory)?;
-    copy_dir_contents(&bare, native)?;
     Ok(())
 }
 

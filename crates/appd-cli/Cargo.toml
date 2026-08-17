@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+appd-quickjs = { path = "../appd-quickjs" }
 appd-bundle = { path = "../appd-bundle" }
 appd-target-pack = { path = "../appd-target-pack" }
 clap.workspace = true

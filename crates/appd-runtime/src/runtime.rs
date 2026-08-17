@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use appd_bare::{Assets, BareRuntime, Certificates as BareCertificates, RuntimeConfig};
 use appd_bundle::AppLayout;
+use appd_bundle::decompress_worker_bundle;
 use appd_bundle::environment::load as load_environment;
+use appd_quickjs::{Assets, Certificates as QuickJsCertificates, QuickJsRuntime, RuntimeConfig};
 
 use crate::Result;
 use crate::certificates::{Certificates, Renewal};
@@ -32,7 +33,7 @@ pub struct Runtime {
     certificates: Arc<Certificates>,
     _renewal: Renewal,
     events: Events,
-    bare: BareRuntime,
+    quickjs: QuickJsRuntime,
 }
 
 impl Runtime {
@@ -43,20 +44,20 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Returns an error when certificates, the packaged bundle, or Bare
+    /// Returns an error when certificates, the packaged bundle, or `QuickJS`
     /// startup fail.
     pub fn start(config: Config, listener: impl Fn(Event) + Send + Sync + 'static) -> Result<Self> {
         let events = Events::new(listener);
         events.emit(Event::Starting);
         let state_dir = config.state_dir.clone();
         let certificates = Arc::new(Certificates::start(state_dir.clone(), config.host.clone())?);
-        let bundle = std::fs::read(config.app.worker_bundle())?;
-        let bare = BareRuntime::start(
+        let bundle = decompress_worker_bundle(&std::fs::read(config.app.worker_bundle())?)?;
+        let quickjs = QuickJsRuntime::start(
             &bundle,
-            &bare_config(&config.app, &certificates, &config.host, &state_dir)?,
+            &quickjs_config(&config.app, &certificates, &config.host, &state_dir)?,
         )?;
         let renewal = certificates.start_renewal(events.clone());
-        let port = bare.port();
+        let port = quickjs.port();
         events.emit(Event::Listening { port });
         Ok(Self {
             host: config.host,
@@ -64,7 +65,7 @@ impl Runtime {
             certificates,
             _renewal: renewal,
             events,
-            bare,
+            quickjs,
         })
     }
 
@@ -86,13 +87,13 @@ impl Runtime {
         Arc::clone(&self.certificates)
     }
 
-    /// Suspend JavaScript execution.
+    /// Stop new JavaScript dispatch and quiesce gateway connections.
     ///
     /// # Errors
     ///
-    /// Returns an error when Bare rejects the transition.
+    /// Returns an error when `QuickJS` rejects the transition.
     pub fn suspend(&self) -> Result<()> {
-        self.bare.suspend(-1)?;
+        self.quickjs.suspend(-1)?;
         self.events.emit(Event::Suspended);
         Ok(())
     }
@@ -101,16 +102,16 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Returns an error when renewal fails or Bare rejects the transition.
+    /// Returns an error when renewal fails or `QuickJS` rejects the transition.
     pub fn resume(&self) -> Result<()> {
         self.certificates.refresh()?;
-        self.bare.resume()?;
+        self.quickjs.resume()?;
         self.events.emit(Event::Resumed);
         Ok(())
     }
 }
 
-fn bare_config(
+fn quickjs_config(
     app: &AppLayout,
     certificates: &Certificates,
     host: &str,
@@ -122,9 +123,10 @@ fn bare_config(
             root: app.assets(),
         }),
         cache: state_dir.join("cache"),
-        certificates: BareCertificates {
+        certificates: QuickJsCertificates {
             ca: certificates.authority_path(),
-            identity: certificates.identity_path(),
+            certificate: certificates.server_certificate_path(),
+            private_key: certificates.server_key_path(),
         },
         environment: load_environment(app)?.vars,
         host: host.to_owned(),
@@ -140,7 +142,7 @@ mod tests {
     use appd_bundle::environment::{WorkerEnvironment, write as write_environment};
     use serde_json::json;
 
-    use super::{Config, bare_config};
+    use super::{Config, quickjs_config};
     use crate::certificates::Certificates;
     use appd_bundle::AppLayout;
 
@@ -154,7 +156,7 @@ mod tests {
         let app = AppLayout::new(directory.path());
         write_environment(&app, &WorkerEnvironment::default())?;
 
-        let config = bare_config(&app, &certificates, "app.appd.local", directory.path())?;
+        let config = quickjs_config(&app, &certificates, "app.appd.local", directory.path())?;
 
         assert!(config.require_client_certificate);
         assert_eq!(config.port, 0);
@@ -170,7 +172,7 @@ mod tests {
         write_environment(&app, &WorkerEnvironment::default())?;
 
         assert!(
-            bare_config(&app, &certificates, "app.appd.local", directory.path())?
+            quickjs_config(&app, &certificates, "app.appd.local", directory.path())?
                 .assets
                 .is_none()
         );
@@ -178,7 +180,7 @@ mod tests {
         std::fs::write(app.asset_manifest(), "{}")?;
 
         assert!(
-            bare_config(&app, &certificates, "app.appd.local", directory.path())?
+            quickjs_config(&app, &certificates, "app.appd.local", directory.path())?
                 .assets
                 .is_some()
         );
@@ -199,7 +201,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            bare_config(&app, &certificates, "app.appd.local", directory.path())?
+            quickjs_config(&app, &certificates, "app.appd.local", directory.path())?
                 .environment
                 .get("JSON"),
             Some(&json!({ "enabled": true }))

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
+use appd_bundle::decompress_worker_bundle;
+use appd_quickjs::compile_worker;
 use assert_cmd::Command;
 use predicates::str::contains;
 
@@ -96,31 +98,11 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     fs::create_dir_all(&framework)?;
     fs::create_dir_all(&shell)?;
     fs::create_dir_all(root.join("tools/runtime-js"))?;
-    fs::create_dir_all(root.join("tools/node_modules/bare-buffer"))?;
     create_test_framework(root, target)?;
-    create_test_bare_runtime(root)?;
     write_test_shell(&shell)?;
-    fs::write(root.join("tools/runtime-js/bootstrap.js"), "bootstrap")?;
-    fs::write(root.join("tools/runtime-js/cloudflare.js"), "cloudflare")?;
-    write_test_runtime_packer(&root.join("tools/runtime-js"))?;
-    fs::write(
-        root.join("tools/node_modules/bare-buffer/package.json"),
-        r#"{"name":"bare-buffer","addon":true}"#,
-    )?;
-    fs::write(
-        root.join("tools/bare-pack.cjs"),
-        r#"const fs = require("fs");
-const args = process.argv.slice(2);
-if (!args.includes("--builtins")) process.exit(1);
-const output = args[args.indexOf("--out") + 1];
-const entry = args.at(-1);
-const worklet = fs.readFileSync(entry, "utf8");
-fs.writeFileSync(output, worklet.includes("compiled-node-assert") ? "bare-bundle-node-assert" : "bare-bundle");
-"#,
-    )?;
     fs::write(
         root.join("tools/esbuild.cjs"),
-        "#!/usr/bin/env node\nprocess.exit(1);\n",
+        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outfile=')).slice('--outfile='.length);\nconst input = args.at(-1);\nfs.copyFileSync(input, output);\n",
     )?;
     #[cfg(unix)]
     {
@@ -134,39 +116,20 @@ fs.writeFileSync(output, worklet.includes("compiled-node-assert") ? "bare-bundle
         root.join("target-pack.json"),
         format!(
             r#"{{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "{target}",
   "artifacts": [
     {{"kind": "runtimeLibrary", "path": "frameworks/AppdRuntime.framework"}},
     {{"kind": "nativeShellDirectory", "path": "native-shell"}},
     {{"kind": "runtimeJavaScriptDirectory", "path": "tools/runtime-js"}},
-    {{"kind": "barePackExecutable", "path": "tools/bare-pack.cjs"}},
-    {{"kind": "esbuildExecutable", "path": "tools/esbuild.cjs"}},
-    {{"kind": "bareRuntimeDirectory", "path": "bare-runtime"}}
+    {{"kind": "esbuildExecutable", "path": "tools/esbuild.cjs"}}
   ],
   "requiredTools": ["node", "xcrun"]
 }}"#
         ),
     )?;
     Ok(root.join("target-pack.json"))
-}
-
-fn write_test_runtime_packer(runtime: &Path) -> TestResult {
-    fs::write(
-        runtime.join("pack-worker.js"),
-        r#"const fs = require("fs");
-const args = process.argv.slice(2);
-if (args.some((arg) => arg.startsWith("--alias:"))) process.exit(1);
-const option = (name) => args[args.indexOf(name) + 1];
-const worker = option("--worker");
-const output = option("--output");
-if (!worker || !output || !option("--compiler")) process.exit(1);
-const source = fs.readFileSync(worker, "utf8");
-fs.writeFileSync(output, source.includes("node:assert") ? "compiled-node-assert" : "compiled-worklet");
-"#,
-    )?;
-    Ok(())
 }
 
 fn write_test_shell(shell: &Path) -> TestResult {
@@ -236,28 +199,6 @@ fn create_test_framework(root: &Path, target: &str) -> TestResult {
     Ok(())
 }
 
-fn create_test_bare_runtime(root: &Path) -> TestResult {
-    let framework = root.join("bare-runtime/BareKit.framework");
-    fs::create_dir_all(&framework)?;
-    fs::copy(
-        root.join("frameworks/AppdRuntime.framework/AppdRuntime"),
-        framework.join("BareKit"),
-    )?;
-    fs::write(
-        framework.join("Info.plist"),
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>to.holepunch.bare.kit.test</string>
-<key>CFBundleName</key><string>BareKit</string>
-<key>CFBundleExecutable</key><string>BareKit</string>
-<key>CFBundlePackageType</key><string>FMWK</string>
-<key>CFBundleVersion</key><string>1</string>
-</dict></plist>"#,
-    )?;
-    fs::write(root.join("bare-runtime/builtins.json"), "[]")?;
-    Ok(())
-}
-
 fn create_inputs(target: &str) -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
@@ -275,31 +216,12 @@ fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
     let pack = temporary.path().join("pack");
     fs::create_dir_all(&project)?;
     fs::create_dir_all(pack.join("bin"))?;
-    fs::create_dir_all(pack.join("bare-runtime"))?;
     fs::create_dir_all(pack.join("tools/runtime-js"))?;
-    fs::create_dir_all(pack.join("tools/node_modules/bare-buffer"))?;
     create_project(&project)?;
     fs::write(pack.join("bin/appd-shell-windows.exe"), "shell")?;
-    fs::write(pack.join("bare-runtime/bare-kit.dll"), "bare")?;
-    fs::write(pack.join("bare-runtime/builtins.json"), "[]")?;
-    fs::write(pack.join("tools/runtime-js/bootstrap.js"), "bootstrap")?;
-    write_test_runtime_packer(&pack.join("tools/runtime-js"))?;
-    fs::write(
-        pack.join("tools/node_modules/bare-buffer/package.json"),
-        r#"{"name":"bare-buffer","addon":true}"#,
-    )?;
-    fs::write(
-        pack.join("tools/bare-pack.cjs"),
-        r#"const fs = require("fs");
-const args = process.argv.slice(2);
-const output = args[args.indexOf("--out") + 1];
-const entry = args.at(-1);
-const worklet = fs.readFileSync(entry, "utf8");
-fs.writeFileSync(output, worklet.includes("compiled-node-assert") ? "bare-bundle-node-assert" : "bare-bundle");"#,
-    )?;
     fs::write(
         pack.join("tools/esbuild.cjs"),
-        "#!/usr/bin/env node\nprocess.exit(1);\n",
+        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outfile=')).slice('--outfile='.length);\nconst input = args.at(-1);\nfs.copyFileSync(input, output);\n",
     )?;
     #[cfg(unix)]
     {
@@ -312,15 +234,13 @@ fs.writeFileSync(output, worklet.includes("compiled-node-assert") ? "bare-bundle
     fs::write(
         pack.join("target-pack.json"),
         r#"{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "windows-x64",
   "artifacts": [
     {"kind": "runtimeExecutable", "path": "bin/appd-shell-windows.exe"},
     {"kind": "runtimeJavaScriptDirectory", "path": "tools/runtime-js"},
-    {"kind": "barePackExecutable", "path": "tools/bare-pack.cjs"},
-    {"kind": "esbuildExecutable", "path": "tools/esbuild.cjs"},
-    {"kind": "bareRuntimeDirectory", "path": "bare-runtime"}
+    {"kind": "esbuildExecutable", "path": "tools/esbuild.cjs"}
   ],
   "requiredTools": ["node"]
 }"#,
@@ -340,7 +260,7 @@ fn build_command(platform: &str, project: &Path, manifest: &Path) -> TestResult<
 }
 
 #[test]
-fn builds_macos_app_with_bare_bundle_and_assets() -> TestResult {
+fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     build_command("macos", &project, &manifest)?
         .assert()
@@ -350,11 +270,15 @@ fn builds_macos_app_with_bare_bundle_and_assets() -> TestResult {
     let bundle = project.join("build/macos/demo-app.app");
     let app = bundle.join("Contents/Resources/app");
     assert!(bundle.join("Contents/MacOS/demo-app").is_file());
-    assert_eq!(
-        fs::read_to_string(app.join("worker.bundle"))?,
-        "bare-bundle"
+    assert!(
+        !bundle
+            .join("Contents/Frameworks/AppdRuntime.framework")
+            .exists()
     );
-    assert!(!app.join("node_modules").exists());
+    assert_eq!(
+        decompress_worker_bundle(&fs::read(app.join("worker.bundle"))?)?,
+        compile_worker(&fs::read(project.join("dist/server/entry.mjs"))?)?
+    );
     assert!(app.join("assets/index.html").is_file());
     let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))?;
     assert!(plist.contains("NSAllowsLocalNetworking"));
@@ -366,11 +290,11 @@ fn builds_macos_app_with_bare_bundle_and_assets() -> TestResult {
 }
 
 #[test]
-fn routes_node_assert_through_the_runtime_packer() -> TestResult {
+fn compiles_a_self_contained_worker() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     fs::write(
         project.join("dist/server/entry.mjs"),
-        "import assert from 'node:assert'; assert(true); export default {};",
+        "export default { fetch() { return new Response('ok'); } };",
     )?;
 
     build_command("macos", &project, &manifest)?
@@ -379,8 +303,8 @@ fn routes_node_assert_through_the_runtime_packer() -> TestResult {
 
     let bundle = project.join("build/macos/demo-app.app/Contents/Resources/app");
     assert_eq!(
-        fs::read_to_string(bundle.join("worker.bundle"))?,
-        "bare-bundle-node-assert"
+        decompress_worker_bundle(&fs::read(bundle.join("worker.bundle"))?)?,
+        compile_worker(&fs::read(project.join("dist/server/entry.mjs"))?)?
     );
     Ok(())
 }
@@ -446,7 +370,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 
     let bundle = project.join("build/windows/demo-app");
     assert!(bundle.join("demo-app.exe").is_file());
-    assert!(bundle.join("bare-kit.dll").is_file());
+    assert!(!bundle.join("appd-runtime.dll").exists());
     assert!(bundle.join("app/worker.bundle").is_file());
     let config: serde_json::Value = serde_json::from_slice(&fs::read(bundle.join("appd.json"))?)?;
     assert_eq!(config["host"], "demo-app.appd.local");
@@ -508,6 +432,7 @@ fn builds_physical_ios_app() -> TestResult {
     let bundle = project.join("build/ios/demo-app.app");
     assert!(bundle.join("demo-app").is_file());
     assert!(bundle.join("app/worker.bundle").is_file());
+    assert!(!bundle.join("Frameworks/AppdRuntime.framework").exists());
     let plist = fs::read_to_string(bundle.join("Info.plist"))?;
     assert!(plist.contains("LSRequiresIPhoneOS"));
     assert!(plist.contains("UIDeviceFamily"));
@@ -530,6 +455,7 @@ fn builds_ios_simulator_app() -> TestResult {
         let bundle = project.join("build/ios-simulator/demo-app.app");
         assert!(bundle.join("demo-app").is_file());
         assert!(bundle.join("app/worker.bundle").is_file());
+        assert!(!bundle.join("Frameworks/AppdRuntime.framework").exists());
         assert!(!bundle.join("embedded.mobileprovision").exists());
         let plist = fs::read_to_string(bundle.join("Info.plist"))?;
         assert!(plist.contains("iPhoneSimulator"));

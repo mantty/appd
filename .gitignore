@@ -1,6 +1,7 @@
 /target/
 /node_modules/
-/bare/**/node_modules/
-/bare/**/target/
 *.pyc
 __pycache__/
+
+# Local machine cruft
+.DS_Store

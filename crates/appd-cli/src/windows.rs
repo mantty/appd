@@ -7,7 +7,7 @@ use appd_target_pack::{ArtifactKind, TargetPackManifest};
 use serde::Serialize;
 
 use super::support::{artifact_path, build_dir, copy_file, reset_path};
-use super::worker::prepare_bare_app;
+use super::worker::prepare_quickjs_app;
 use super::{BuildPlatform, BuildSummary};
 
 #[derive(Serialize)]
@@ -29,15 +29,10 @@ pub(crate) fn build_windows(
     let app = output.join("app");
     fs::create_dir_all(&app)?;
 
-    prepare_bare_app(&app, pack_root, manifest, wrangler)?;
+    prepare_quickjs_app(&app, pack_root, manifest, wrangler)?;
     copy_file(
         artifact_path(pack_root, manifest, &ArtifactKind::RuntimeExecutable)?,
         output.join(format!("{app_name}.exe")),
-    )?;
-    copy_file(
-        artifact_path(pack_root, manifest, &ArtifactKind::BareRuntimeDirectory)?
-            .join("bare-kit.dll"),
-        output.join("bare-kit.dll"),
     )?;
     let config = ShellConfig {
         name: app_name,

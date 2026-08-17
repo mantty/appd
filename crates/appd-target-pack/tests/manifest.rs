@@ -172,7 +172,7 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     fs::write(
         &manifest_path,
         r#"{
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "appdVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [{"kind": "runtimeLibrary", "path": "../appd-runtime"}],

@@ -34,7 +34,7 @@ pub enum Error {
     /// The JavaScript runtime failed to start or change state.
     #[cfg(feature = "native")]
     #[error(transparent)]
-    Bare(#[from] appd_bare::Error),
+    QuickJs(#[from] appd_quickjs::Error),
     /// The packaged app contents are invalid.
     #[cfg(feature = "native")]
     #[error(transparent)]

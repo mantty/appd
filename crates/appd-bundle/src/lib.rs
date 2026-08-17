@@ -6,6 +6,7 @@
 
 pub mod assets;
 pub mod environment;
+mod worker;
 pub mod wrangler;
 
 mod layout;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub use layout::AppLayout;
+pub use worker::{compress_worker_bundle, decompress_worker_bundle};
 
 /// Result type for packaged app operations.
 pub type Result<T> = std::result::Result<T, Error>;

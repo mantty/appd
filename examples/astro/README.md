@@ -17,4 +17,5 @@ cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.j
 ```
 
 The example intentionally uses no WebAssembly. It covers server rendering,
-static assets, API routes, navigation, and WebSockets through the Bare runtime.
+static assets, API routes, navigation, and WebSockets through the QuickJS
+runtime.

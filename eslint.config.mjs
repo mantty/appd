@@ -8,7 +8,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
-    files: ["bare/runtime/**/*.ts", "plugins/**/*.ts"],
+    files: ["plugins/**/*.ts"],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -26,9 +26,5 @@ export default tseslint.config(
       "max-params": ["error", 5],
       "no-console": "off",
     },
-  },
-  {
-    files: ["bare/runtime/**/*.mjs"],
-    ...tseslint.configs.disableTypeChecked,
   },
 );

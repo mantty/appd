@@ -1,6 +1,5 @@
 [package]
 name = "appd-shell-apple"
-build = "build.rs"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -11,10 +10,10 @@ crate-type = ["staticlib"]
 
 [features]
 default = []
-test-stubs = ["appd-bare/test-stubs", "appd-runtime/test-stubs"]
+test-stubs = ["appd-quickjs/test-stubs", "appd-runtime/test-stubs"]
 
 [dependencies]
-appd-bare = { path = "../appd-bare", features = ["native"] }
+appd-quickjs = { path = "../appd-quickjs", features = ["native"] }
 appd-bundle = { path = "../appd-bundle" }
 appd-runtime = { path = "../appd-runtime", features = ["native"] }
 p256.workspace = true

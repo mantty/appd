@@ -87,6 +87,9 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     _ manager: CLLocationManager,
     didFailWithError error: Error
   ) {
+    if (error as NSError).code == CLError.Code.locationUnknown.rawValue {
+      return
+    }
     fail(locationError(error))
   }
 
@@ -124,7 +127,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
   }
 
   private func locationError(_ error: Error) -> AppdPluginError {
-    if (error as? CLError)?.code == .denied {
+    if (error as NSError).code == CLError.Code.denied.rawValue {
       return AppdPluginError(
         name: "NotAllowedError",
         message: "Location permission was denied"

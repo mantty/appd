@@ -5,10 +5,8 @@
   "packageManager": "pnpm@9.9.0",
   "type": "module",
   "scripts": {
-    "build:runtime": "pnpm --filter @appd/bare-runtime build",
-    "lint:ts": "eslint bare/runtime plugins --max-warnings 0 && pnpm --filter @appd/bare-runtime lint && tsc --project plugins/tsconfig.json",
-    "test:bare": "pnpm --filter @appd/bare-runtime test:bare",
-    "test:ts": "pnpm --filter @appd/bare-runtime test:ts && node --import tsx --test plugins/**/*.test.ts"
+    "lint:ts": "eslint plugins --max-warnings 0 && tsc --project plugins/tsconfig.json",
+    "test:ts": "node --import tsx --test plugins/**/*.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
@@ -18,12 +16,5 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.53.1"
-  },
-  "pnpm": {
-    "overrides": {
-      "cmake-toolchains": "file:bare/vendor/cmake-toolchains",
-      "bare-tls": "file:bare/vendor/bare-tls",
-      "bare-ws": "file:bare/vendor/bare-ws"
-    }
   }
 }

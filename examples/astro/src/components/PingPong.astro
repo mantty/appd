@@ -14,22 +14,19 @@
     <span id="ws-status" class="text-sm text-indigo-400">Connecting...</span>
   </div>
   <div
-    id="ws-log"
-    class="font-mono text-sm text-indigo-300 bg-indigo-950/50 rounded-lg p-4 h-40 overflow-y-auto"
-  ></div>
+    class="font-mono text-sm text-indigo-300 bg-indigo-950/50 rounded-lg p-4 space-y-2"
+    aria-live="polite"
+  >
+    <div id="ws-ping">Ping: —</div>
+    <div id="ws-pong">Pong: —</div>
+  </div>
 </div>
 
 <script>
   const btn = document.getElementById("ping-btn") as HTMLButtonElement;
   const status = document.getElementById("ws-status")!;
-  const log = document.getElementById("ws-log")!;
-
-  function appendLog(msg: string) {
-    const line = document.createElement("div");
-    line.textContent = `[${new Date().toISOString().slice(11, 23)}] ${msg}`;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-  }
+  const ping = document.getElementById("ws-ping")!;
+  const pong = document.getElementById("ws-pong")!;
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
@@ -38,21 +35,23 @@
     status.textContent = text;
     status.className = className;
     btn.disabled = !enabled;
-    appendLog(text);
   }
 
   ws.onopen = () => setStatus("Connected", "text-sm text-emerald-400", true);
-  ws.onmessage = (e) => appendLog(`Received: ${e.data}`);
+  ws.onmessage = (e) => {
+    pong.textContent = `Pong: ${e.data}`;
+  };
   ws.onclose = () => setStatus("Disconnected", "text-sm text-red-400", false);
 
   ws.onerror = () => {
-    appendLog("WebSocket error");
+    setStatus("Error", "text-sm text-red-400", false);
   };
 
   btn.disabled = true;
   btn.addEventListener("click", () => {
     const msg = `ping ${Date.now()}`;
     ws.send(msg);
-    appendLog(`Sent: ${msg}`);
+    ping.textContent = `Ping: ${msg}`;
+    pong.textContent = "Pong: waiting...";
   });
 </script>

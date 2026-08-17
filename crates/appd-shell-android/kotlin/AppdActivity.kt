@@ -129,7 +129,7 @@ class AppdActivity : Activity() {
             }
         }
 
-    /** Copy the packaged app out of the APK so Bare can read it as files. */
+    /** Copy the packaged app out of the APK so the runtime can read it as files. */
     private fun unpackApp(): File {
         val app = File(filesDir, "appd/app")
         app.deleteRecursively()

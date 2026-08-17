@@ -7,11 +7,8 @@ use appd_bundle::wrangler::WranglerConfig;
 use appd_target_pack::{Target, TargetPackManifest};
 
 use super::plugins::Plugin;
-use super::support::{
-    artifact_path, build_dir, copy_dir_contents_preserving_symlinks, copy_file, make_executable,
-    reset_path,
-};
-use super::worker::prepare_bare_app;
+use super::support::{artifact_path, build_dir, copy_file, make_executable, reset_path};
+use super::worker::prepare_quickjs_app;
 use super::{BuildPlatform, BuildSummary};
 
 pub(crate) fn build_macos(
@@ -28,12 +25,10 @@ pub(crate) fn build_macos(
     let contents = bundle.join("Contents");
     let executable_dir = contents.join("MacOS");
     let app_dir = contents.join("Resources/app");
-    let frameworks = contents.join("Frameworks");
     fs::create_dir_all(&executable_dir)?;
     fs::create_dir_all(&app_dir)?;
 
-    prepare_bare_app(&app_dir, pack_root, manifest, wrangler)?;
-    let bare = install_bare_runtime(pack_root, manifest, &frameworks)?;
+    prepare_quickjs_app(&app_dir, pack_root, manifest, wrangler)?;
     write_macos_plist(
         &contents.join("Info.plist"),
         &bundle_id(app_name),
@@ -48,7 +43,6 @@ pub(crate) fn build_macos(
         BuildPlatform::Macos,
         plugins,
     )?;
-    sign_frameworks(&bare, "-")?;
     sign(&bundle, "-", None)?;
     Ok(BuildSummary {
         platform: BuildPlatform::Macos,
@@ -71,8 +65,7 @@ pub(crate) fn build_ios(
     let app_dir = bundle.join("app");
     fs::create_dir_all(&app_dir)?;
 
-    prepare_bare_app(&app_dir, pack_root, manifest, wrangler)?;
-    let bare = install_bare_runtime(pack_root, manifest, &bundle.join("Frameworks"))?;
+    prepare_quickjs_app(&app_dir, pack_root, manifest, wrangler)?;
     write_ios_plist(
         &bundle.join("Info.plist"),
         &bundle_id(app_name),
@@ -90,30 +83,14 @@ pub(crate) fn build_ios(
         plugins,
     )?;
     if platform == BuildPlatform::IosSimulator {
-        sign_frameworks(&bare, "-")?;
         sign(&bundle, "-", None)?;
     } else {
-        sign_ios(&bundle, &bare)?;
+        sign_ios(&bundle)?;
     }
     Ok(BuildSummary {
         platform,
         bundle_dir: bundle,
     })
-}
-
-fn install_bare_runtime(
-    pack_root: &Path,
-    manifest: &TargetPackManifest,
-    destination: &Path,
-) -> Result<Vec<PathBuf>> {
-    let runtime = artifact_path(
-        pack_root,
-        manifest,
-        &appd_target_pack::ArtifactKind::BareRuntimeDirectory,
-    )?;
-    let framework = destination.join("BareKit.framework");
-    copy_dir_contents_preserving_symlinks(&runtime.join("BareKit.framework"), &framework)?;
-    Ok(vec![framework])
 }
 
 fn ios_build_platform(target: Target) -> Result<BuildPlatform> {
@@ -146,11 +123,6 @@ fn compile_shell(
     let framework_root = framework
         .parent()
         .context("runtime framework must have a parent directory")?;
-    let bare_runtime = artifact_path(
-        pack_root,
-        manifest,
-        &appd_target_pack::ArtifactKind::BareRuntimeDirectory,
-    )?;
     let registry = module_cache.join("AppdPluginRegistry.swift");
     fs::write(&registry, plugin_registry(plugins, platform))?;
     let swift_sources = swift_sources(&sources, plugins, platform)?;
@@ -171,15 +143,9 @@ fn compile_shell(
         .arg(module_cache)
         .arg("-F")
         .arg(framework_root)
-        .arg("-F")
-        .arg(&bare_runtime)
         .args([
             "-framework",
             "AppdRuntime",
-            "-framework",
-            "BareKit",
-            "-framework",
-            "JavaScriptCore",
             "-framework",
             "CoreFoundation",
             "-lc++",
@@ -187,14 +153,8 @@ fn compile_shell(
             "-Xlinker",
             "-dead_strip",
         ]);
-    command
-        .args(["-Xlinker", "-rpath", "-Xlinker"])
-        .arg(apple_framework_rpath(platform));
     for framework in plugin_frameworks(plugins, platform) {
         command.args(["-framework", &framework]);
-    }
-    if matches!(manifest.target, Target::MacosArm64 | Target::MacosX64) {
-        command.args(["-Xlinker", "-export_dynamic"]);
     }
     let status = command
         .args(["-o"])
@@ -205,16 +165,6 @@ fn compile_shell(
         bail!("Apple application shell build failed with status {status}");
     }
     make_executable(output)
-}
-
-fn apple_framework_rpath(platform: BuildPlatform) -> &'static str {
-    match platform {
-        BuildPlatform::Macos => "@executable_path/../Frameworks",
-        BuildPlatform::Ios | BuildPlatform::IosSimulator => "@executable_path/Frameworks",
-        BuildPlatform::Android | BuildPlatform::Windows => {
-            unreachable!("non-Apple platforms do not use Apple frameworks")
-        }
-    }
 }
 
 fn swift_sources(
@@ -418,29 +368,16 @@ fn macos_plist_entries() -> &'static str {
   <key>NSHighResolutionCapable</key><true/>"
 }
 
-fn sign_ios(bundle: &Path, frameworks: &[PathBuf]) -> Result<()> {
+fn sign_ios(bundle: &Path) -> Result<()> {
     let identity = std::env::var("APPD_IOS_SIGNING_IDENTITY").ok();
     let profile = std::env::var_os("APPD_IOS_PROVISIONING_PROFILE").map(PathBuf::from);
     match (identity, profile) {
-        (None, None) => {
-            sign_frameworks(frameworks, "-")?;
-            sign(bundle, "-", None)
-        }
-        (Some(identity), Some(profile)) => {
-            sign_frameworks(frameworks, &identity)?;
-            sign_ios_for_device(bundle, &identity, &profile)
-        }
+        (None, None) => sign(bundle, "-", None),
+        (Some(identity), Some(profile)) => sign_ios_for_device(bundle, &identity, &profile),
         _ => bail!(
             "physical iOS signing requires APPD_IOS_SIGNING_IDENTITY and APPD_IOS_PROVISIONING_PROFILE"
         ),
     }
-}
-
-fn sign_frameworks(frameworks: &[PathBuf], identity: &str) -> Result<()> {
-    for framework in frameworks {
-        sign(framework, identity, None)?;
-    }
-    Ok(())
 }
 
 fn sign_ios_for_device(bundle: &Path, identity: &str, profile: &Path) -> Result<()> {

@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+flate2.workspace = true
 jsonc-parser = { workspace = true, features = ["serde"] }
 mime_guess.workspace = true
 serde.workspace = true
