@@ -116,6 +116,7 @@ name = "appd-quickjs"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "libc",
  "openssl",
  "rcgen",
  "rquickjs",

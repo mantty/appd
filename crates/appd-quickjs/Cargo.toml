@@ -12,6 +12,7 @@ test-stubs = ["native"]
 
 [dependencies]
 base64.workspace = true
+libc.workspace = true
 rquickjs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

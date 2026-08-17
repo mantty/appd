@@ -3,8 +3,12 @@
 //! C ABI used by the native Apple application shell.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::ptr;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use appd_bundle::AppLayout;
 use appd_runtime::{Challenge, Config, Decision, Event, Runtime};
@@ -66,6 +70,30 @@ pub unsafe extern "C" fn appd_runtime_start(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn appd_runtime_port(handle: *const c_void) -> u16 {
     unsafe { runtime(handle) }.map_or(0, Runtime::port)
+}
+
+/// Wait for the runtime's loopback gateway and return its current port.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`appd_runtime_start`].
+/// `error` must be writable for `error_len` bytes when non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn appd_runtime_restore_gateway(
+    handle: *const c_void,
+    error: *mut c_char,
+    error_len: usize,
+) -> u16 {
+    let result = unsafe { runtime(handle) }
+        .ok_or_else(|| "runtime is unavailable".to_owned())
+        .and_then(|runtime| wait_for_gateway(|| runtime.port()));
+    match result {
+        Ok(port) => port,
+        Err(message) => {
+            write_error(error, error_len, &message);
+            0
+        }
+    }
 }
 
 /// Suspend JavaScript execution.
@@ -265,6 +293,43 @@ fn write_error(output: *mut c_char, capacity: usize, message: &str) {
     }
 }
 
+fn probe_gateway(port: u16) -> Result<(), String> {
+    let timeout = Duration::from_millis(100);
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, timeout)
+        .map_err(|error| format!("TCP connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| format!("setting read timeout failed: {error}"))?;
+    stream
+        .write_all(b"CONNECT appd-probe.invalid:443 HTTP/1.1\r\n\r\n")
+        .map_err(|error| format!("CONNECT write failed: {error}"))?;
+    let response =
+        std::io::read_to_string(stream).map_err(|error| format!("CONNECT read failed: {error}"))?;
+    if response.starts_with("HTTP/1.1 400") && response.ends_with("\r\n\r\nBad CONNECT request") {
+        Ok(())
+    } else {
+        Err(format!(
+            "unexpected CONNECT response: {}",
+            response.lines().next().unwrap_or("empty response")
+        ))
+    }
+}
+
+fn wait_for_gateway(mut port: impl FnMut() -> u16) -> Result<u16, String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let current = port();
+        match probe_gateway(current) {
+            Ok(()) => return Ok(current),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(format!("gateway did not recover: {error}"));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 fn x963_private_key(pkcs8_der: &[u8]) -> Option<Vec<u8>> {
     let secret = SecretKey::from_pkcs8_der(pkcs8_der).ok()?;
     let public = secret.public_key().to_sec1_bytes();
@@ -304,7 +369,14 @@ impl AppdIdentity {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppdBytes, write_error, x963_private_key};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::{AppdBytes, probe_gateway, wait_for_gateway, write_error, x963_private_key};
 
     #[test]
     fn writes_a_terminated_bounded_error() {
@@ -336,5 +408,72 @@ mod tests {
             [1, 2, 3]
         );
         unsafe { super::appd_bytes_free(bytes) };
+    }
+
+    #[test]
+    fn probes_a_gateway_through_connect() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line)?;
+            if !request_line.starts_with("CONNECT appd-probe.invalid:443 ") {
+                return Err(std::io::Error::other("unexpected probe request"));
+            }
+            while reader.read_line(&mut String::new())? > 2 {}
+            stream.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request",
+            )
+        });
+
+        probe_gateway(port)?;
+        server.join().map_err(|_| "probe server panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn waits_for_the_gateway_to_publish_a_new_port() -> Result<(), Box<dyn std::error::Error>> {
+        let old_listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let old_port = old_listener.local_addr()?.port();
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let new_port = listener.local_addr()?.port();
+        drop(old_listener);
+        let port = Arc::new(AtomicU16::new(old_port));
+        let server_port = Arc::clone(&port);
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            thread::sleep(Duration::from_millis(20));
+            server_port.store(new_port, Ordering::Release);
+            let (mut stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            while reader.read_line(&mut String::new())? > 2 {}
+            stream.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request",
+            )
+        });
+
+        assert_eq!(wait_for_gateway(|| port.load(Ordering::Acquire))?, new_port);
+        server.join().map_err(|_| "probe server panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn reports_an_unexpected_gateway_response() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            while reader.read_line(&mut String::new())? > 2 {}
+            stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+        });
+
+        assert_eq!(
+            probe_gateway(port),
+            Err("unexpected CONNECT response: HTTP/1.1 503 Service Unavailable".to_owned())
+        );
+        server.join().map_err(|_| "probe server panicked")??;
+        Ok(())
     }
 }

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 #[cfg(target_os = "android")]
 use std::ffi::CString;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -36,7 +36,7 @@ struct Shared {
     bundle: Arc<Vec<u8>>,
     config: RuntimeConfig,
     tokio: tokio::runtime::Handle,
-    port: u16,
+    port: AtomicU16,
     accepting: Arc<AtomicBool>,
     lifecycle: Arc<Lifecycle>,
     connections: Mutex<Vec<Arc<TcpStream>>>,
@@ -219,7 +219,7 @@ impl Runtime {
             bundle: Arc::new(bundle.to_vec()),
             config,
             tokio: tokio_runtime.handle().clone(),
-            port,
+            port: AtomicU16::new(port),
             accepting: Arc::new(AtomicBool::new(true)),
             lifecycle: Arc::new(Lifecycle::new()),
             connections: Mutex::new(Vec::new()),
@@ -227,7 +227,7 @@ impl Runtime {
         let gateway_shared = Arc::clone(&shared);
         let gateway = thread::Builder::new()
             .name("appd-gateway".to_owned())
-            .spawn(move || gateway_loop(&gateway_shared, &listener))
+            .spawn(move || gateway_loop(&gateway_shared, listener))
             .map_err(|error| Error::Startup(format!("failed to start gateway thread: {error}")))?;
         Ok(Self {
             shared,
@@ -237,7 +237,7 @@ impl Runtime {
     }
 
     pub(super) fn port(&self) -> u16 {
-        self.shared.port
+        self.shared.port.load(Ordering::Acquire)
     }
 
     pub(super) fn suspend(&self) {
@@ -255,7 +255,7 @@ impl Drop for Runtime {
         self.shared.lifecycle.stop();
         self.shared.accepting.store(false, Ordering::Release);
         close_connections(&self.shared);
-        let _ = TcpStream::connect(("127.0.0.1", self.shared.port));
+        let _ = TcpStream::connect(("127.0.0.1", self.port()));
         if let Some(thread) = self.gateway.take() {
             let _ = thread.join();
         }
@@ -265,14 +265,42 @@ impl Drop for Runtime {
     }
 }
 
-fn gateway_loop(shared: &Arc<Shared>, listener: &TcpListener) {
+fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
     let mut connection_threads = Vec::new();
-    for stream in listener.incoming() {
+    let mut listener_error_reported = false;
+    loop {
         reap_finished_connections(&mut connection_threads);
         if !shared.accepting.load(Ordering::Acquire) {
             break;
         }
-        let Ok(stream) = stream else { continue };
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if listener_was_closed(&error) => {
+                let port = shared.port.load(Ordering::Acquire);
+                eprintln!("gateway listener closed: {error}");
+                match replace_closed_listener(listener, port) {
+                    Ok((replacement, replacement_port)) => {
+                        listener = replacement;
+                        shared.port.store(replacement_port, Ordering::Release);
+                        listener_error_reported = false;
+                        eprintln!("appd gateway listening on 127.0.0.1:{replacement_port}");
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!("gateway listener could not recover: {error}");
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                if !listener_error_reported {
+                    eprintln!("gateway listener failed: {error}");
+                    listener_error_reported = true;
+                }
+                continue;
+            }
+        };
+        listener_error_reported = false;
         if !shared.lifecycle.wait_until_running(&shared.accepting) {
             break;
         }
@@ -292,6 +320,31 @@ fn gateway_loop(shared: &Arc<Shared>, listener: &TcpListener) {
     for thread in connection_threads {
         let _ = thread.join();
     }
+}
+
+fn listener_was_closed(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    return error.raw_os_error() == Some(libc::EBADF);
+
+    #[cfg(not(unix))]
+    false
+}
+
+fn replace_closed_listener(listener: TcpListener, port: u16) -> io::Result<(TcpListener, u16)> {
+    std::mem::forget(listener);
+    let replacement = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(port_error) => TcpListener::bind(("127.0.0.1", 0)).map_err(|random_error| {
+            io::Error::new(
+                random_error.kind(),
+                format!(
+                    "port {port} is unavailable ({port_error}); random port failed: {random_error}"
+                ),
+            )
+        })?,
+    };
+    let replacement_port = replacement.local_addr()?.port();
+    Ok((replacement, replacement_port))
 }
 
 struct ConnectionGuard {
@@ -786,14 +839,16 @@ mod tests {
     use super::{
         AssetManifest, HttpRequest, HttpResponse, Job, JobResponse, Lifecycle, Shared,
         WebSocketBridge, WebSocketInbound, WebSocketJob, WebSocketOutbound, asset_response,
-        close_connections, execute_request, lock_connections, queue_websocket_message,
-        serve_connection,
+        close_connections, execute_request, listener_was_closed, lock_connections,
+        queue_websocket_message, replace_closed_listener, serve_connection,
     };
     use crate::{Assets, Certificates, RuntimeConfig};
     use std::collections::BTreeMap;
     use std::net::{TcpListener, TcpStream};
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -1050,7 +1105,7 @@ export default {
                 port: 0,
             },
             tokio: tokio.handle().clone(),
-            port: 0,
+            port: AtomicU16::new(0),
             accepting: Arc::new(AtomicBool::new(true)),
             lifecycle: Arc::new(Lifecycle::new()),
             connections: Mutex::new(Vec::new()),
@@ -1071,6 +1126,36 @@ export default {
             .map_err(|_| "connection thread panicked")?;
         assert!(lock_connections(&shared).is_empty());
         drop(client);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn closed_listener_reclaims_its_port() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        unsafe { libc::close(listener.as_raw_fd()) };
+        let error = listener.accept().expect_err("closed listener accepted");
+        assert!(listener_was_closed(&error));
+
+        let (_listener, replacement_port) = replace_closed_listener(listener, port)?;
+
+        assert_eq!(replacement_port, port);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn closed_listener_uses_a_random_port_when_its_port_was_taken()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        unsafe { libc::close(listener.as_raw_fd()) };
+        let _occupied = TcpListener::bind(("127.0.0.1", port))?;
+
+        let (_listener, replacement_port) = replace_closed_listener(listener, port)?;
+
+        assert_ne!(replacement_port, port);
         Ok(())
     }
 

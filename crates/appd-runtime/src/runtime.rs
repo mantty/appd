@@ -29,7 +29,6 @@ pub struct Config {
 #[derive(Debug)]
 pub struct Runtime {
     host: String,
-    port: u16,
     certificates: Arc<Certificates>,
     _renewal: Renewal,
     events: Events,
@@ -57,11 +56,11 @@ impl Runtime {
             &quickjs_config(&config.app, &certificates, &config.host, &state_dir)?,
         )?;
         let renewal = certificates.start_renewal(events.clone());
-        let port = quickjs.port();
-        events.emit(Event::Listening { port });
+        events.emit(Event::Listening {
+            port: quickjs.port(),
+        });
         Ok(Self {
             host: config.host,
-            port,
             certificates,
             _renewal: renewal,
             events,
@@ -78,7 +77,7 @@ impl Runtime {
     /// The loopback port the gateway bound.
     #[must_use]
     pub fn port(&self) -> u16 {
-        self.port
+        self.quickjs.port()
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.

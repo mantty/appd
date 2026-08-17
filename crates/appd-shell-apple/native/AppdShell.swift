@@ -96,6 +96,21 @@ private final class RuntimeHost {
     }
   }
 
+  func restoreGateway() throws -> UInt16 {
+    var error = [CChar](repeating: 0, count: 512)
+    let port = error.withUnsafeMutableBufferPointer { error in
+      appd_runtime_restore_gateway(
+        handle,
+        error.baseAddress,
+        error.count
+      )
+    }
+    guard port != 0 else {
+      throw ShellError.runtime(String(cString: error))
+    }
+    return port
+  }
+
   func serverAuthority(
     host: String
   ) -> AuthenticationMaterial<Data> {
@@ -347,6 +362,8 @@ private final class AppdController {
   private var runtime: RuntimeHost?
   private var navigation: NavigationDelegate?
   private var pluginBridge: AppdPluginBridge?
+  private var dataStore: WKWebsiteDataStore?
+  private var proxyPort: UInt16?
   private var suspended = false
 
   func start(
@@ -379,18 +396,25 @@ private final class AppdController {
     }
   }
 
+  func restoreGateway() {
+    guard let runtime, let dataStore else { return }
+    do {
+      let port = try runtime.restoreGateway()
+      guard port != proxyPort else { return }
+      setProxy(port: port, host: runtime.host, dataStore: dataStore)
+      proxyPort = port
+    } catch {
+      print("appd gateway could not recover: \(error)")
+    }
+  }
+
   private func webView(frame: CGRect, runtime: RuntimeHost) -> WKWebView {
     let configuration = WKWebViewConfiguration()
     let dataStore = WKWebsiteDataStore.default()
-    var proxy = ProxyConfiguration(
-      httpCONNECTProxy: .hostPort(
-        host: "127.0.0.1",
-        port: NWEndpoint.Port(rawValue: runtime.port)!
-      )
-    )
-    proxy.matchDomains = [runtime.host]
-    proxy.allowFailover = false
-    dataStore.proxyConfigurations = [proxy]
+    let port = runtime.port
+    setProxy(port: port, host: runtime.host, dataStore: dataStore)
+    self.dataStore = dataStore
+    self.proxyPort = port
     configuration.websiteDataStore = dataStore
 
     let pluginBridge = AppdPluginBridge(
@@ -409,6 +433,22 @@ private final class AppdController {
     webView.navigationDelegate = navigation
     webView.load(URLRequest(url: URL(string: "https://\(runtime.host)/")!))
     return webView
+  }
+
+  private func setProxy(
+    port: UInt16,
+    host: String,
+    dataStore: WKWebsiteDataStore
+  ) {
+    var proxy = ProxyConfiguration(
+      httpCONNECTProxy: .hostPort(
+        host: "127.0.0.1",
+        port: NWEndpoint.Port(rawValue: port)!
+      )
+    )
+    proxy.matchDomains = [host]
+    proxy.allowFailover = false
+    dataStore.proxyConfigurations = [proxy]
   }
 
   private func failureWebView(frame: CGRect) -> WKWebView {
@@ -501,13 +541,10 @@ private final class AppdController {
       return true
     }
 
-    func applicationDidEnterBackground(_ application: UIApplication) {
-      controller.setSuspended(true)
+    func applicationWillEnterForeground(_ application: UIApplication) {
+      controller.restoreGateway()
     }
 
-    func applicationWillEnterForeground(_ application: UIApplication) {
-      controller.setSuspended(false)
-    }
   }
 
   @main

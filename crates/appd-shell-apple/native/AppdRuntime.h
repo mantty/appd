@@ -24,6 +24,8 @@ typedef struct {
 void *appd_runtime_start(const char *packaged_dir, const char *state_dir,
                          const char *host, char *error, size_t error_len);
 uint16_t appd_runtime_port(const void *runtime);
+uint16_t appd_runtime_restore_gateway(const void *runtime, char *error,
+                                      size_t error_len);
 bool appd_runtime_suspend(const void *runtime);
 bool appd_runtime_resume(const void *runtime);
 void appd_runtime_stop(void *runtime);
