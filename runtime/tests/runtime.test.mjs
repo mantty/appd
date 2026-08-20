@@ -1,42 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const fsModule = new URL("../qjs/fs.mjs", import.meta.url);
-
-async function freshFs(name) {
-  globalThis.__appd_tmp = new Map();
-  globalThis.__appd_tmp_directories = new Set(["/tmp"]);
-  return import(`${fsModule.href}?${name}`);
-}
-
-test("fs keeps files inside one request-owned /tmp", async () => {
-  const first = await freshFs("first");
-  first.mkdirSync("/tmp/data", { recursive: true });
-  first.writeFileSync("/tmp/data/value.txt", "hello");
-  first.appendFileSync("/tmp/data/value.txt", " world");
-
-  assert.equal(first.readFileSync("/tmp/data/value.txt", "utf8"), "hello world");
-  assert.deepEqual(first.readdirSync("/tmp/data"), ["value.txt"]);
-  assert.equal(first.statSync("/tmp/data/value.txt").isFile(), true);
-  assert.throws(() => first.readFileSync("/bundle/worker.mjs"), /ENOENT/);
-  assert.throws(() => first.readFileSync("/tmp/../bundle"), /ENOENT/);
-
-  const second = await freshFs("second");
-  assert.equal(second.existsSync("/tmp/data/value.txt"), false);
-});
-
-test("fs callback and promise forms use the synchronous core", async () => {
-  const fs = await freshFs("async");
-  await new Promise((resolve, reject) => {
-    fs.writeFile("/tmp/value.txt", "one", (error) => error ? reject(error) : resolve());
-  });
-  await fs.promises.appendFile("/tmp/value.txt", " two");
-  assert.equal(await fs.promises.readFile("/tmp/value.txt", "utf8"), "one two");
-  await fs.promises.rename("/tmp/value.txt", "/tmp/renamed.txt");
-  assert.equal(fs.existsSync("/tmp/value.txt"), false);
-  assert.equal(fs.realpathSync("/tmp/renamed.txt"), "/tmp/renamed.txt");
-});
-
 test("web shims preserve the Worker request and response shapes", async () => {
   const { Headers, Request, Response, ReadableStream, URL } = await import("../qjs/web.mjs");
   const headers = new Headers([["X-Test", "one"], ["x-test", "two"]]);
@@ -60,12 +24,38 @@ test("web shims preserve the Worker request and response shapes", async () => {
   assert.equal(new URL("/next", request.url).href, "https://example.test/next");
 });
 
-test("Workers builtin registration exposes the fs facade", async () => {
+test("Workers builtin registration preserves the Worker environment", async () => {
   globalThis.__appd_env = { FLAG: "enabled" };
   const workers = await import("../qjs/cloudflare-workers.mjs?registry");
   assert.equal(workers.env.FLAG, "enabled");
-  assert.equal(typeof globalThis.process.getBuiltinModule("node:fs").writeFileSync, "function");
+  assert.equal(typeof globalThis.process.getBuiltinModule("node:events").EventEmitter, "function");
   assert.equal(typeof workers.WebSocketPair, "function");
+});
+
+test("Readable emits end after pushed data", async () => {
+  const { Readable } = await import("../qjs/stream.mjs?end-event");
+  const events = [];
+  const stream = new Readable();
+  stream.on("data", (value) => events.push(`data:${value}`));
+  stream.on("end", () => events.push("end"));
+  stream.push("value");
+  stream.push(null);
+  assert.deepEqual(events, ["data:value", "end"]);
+
+  const bufferedEvents = [];
+  const buffered = new Readable();
+  buffered.push("buffered");
+  buffered.push(null);
+  buffered.on("end", () => bufferedEvents.push("end"));
+  buffered.on("data", (value) => bufferedEvents.push(`data:${value}`));
+  assert.deepEqual(bufferedEvents, ["data:buffered", "end"]);
+
+  const ended = new Readable();
+  const lateValues = [];
+  ended.on("data", (value) => lateValues.push(value));
+  ended.push(null);
+  assert.equal(ended.push("late"), false);
+  assert.deepEqual(lateValues, []);
 });
 
 test("WebSocketPair delivers Worker messages to the native bridge", async () => {

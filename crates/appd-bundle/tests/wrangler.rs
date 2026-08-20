@@ -3,7 +3,9 @@ use std::path::Path;
 
 use appd_bundle::{
     Error,
-    wrangler::{HtmlHandling, NotFoundHandling, load_config, resolve_config_path},
+    wrangler::{
+        HtmlHandling, NotFoundHandling, WranglerModuleType, load_config, resolve_config_path,
+    },
 };
 use serde_json::json;
 
@@ -245,5 +247,34 @@ not_found_handling = "404-page"
 fn parses_exact_asset_paths() -> TestResult {
     assert_eq!(HtmlHandling::parse("none")?, HtmlHandling::None);
     assert_eq!(HtmlHandling::None.as_str(), "none");
+    Ok(())
+}
+
+#[test]
+fn parses_additional_module_rules_and_base_directory() -> TestResult {
+    let temp_dir = tempfile::tempdir()?;
+    let root = temp_dir.path();
+    let config_path = root.join("wrangler.jsonc");
+    fs::write(
+        &config_path,
+        r#"{
+  "main": "worker/entry.mjs",
+  "base_dir": "worker",
+  "find_additional_modules": true,
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"] },
+    { "type": "Data", "globs": ["**/*.bin"], "fallthrough": true }
+  ]
+}"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.base_dir, root.join("worker"));
+    assert!(config.find_additional_modules);
+    assert_eq!(config.rules.len(), 2);
+    assert_eq!(config.rules[0].module_type, WranglerModuleType::Text);
+    assert_eq!(config.rules[0].globs, ["**/*.md"]);
+    assert!(config.rules[1].fallthrough);
     Ok(())
 }

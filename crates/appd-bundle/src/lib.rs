@@ -16,7 +16,10 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub use layout::AppLayout;
-pub use worker::{compress_worker_bundle, decompress_worker_bundle};
+pub use worker::{
+    WorkerManifest, compress_worker_bundle, compress_worker_module, decompress_worker_bundle,
+    decompress_worker_module, read_worker_manifest, write_worker_manifest,
+};
 
 /// Result type for packaged app operations.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -36,6 +39,9 @@ pub enum Error {
     /// Static asset routing configuration is not valid.
     #[error("invalid asset configuration: {0}")]
     InvalidAssetConfig(String),
+    /// A Wrangler module rule is not valid.
+    #[error("invalid module rule: {0}")]
+    InvalidModuleRule(String),
     /// No Wrangler configuration file could be found.
     #[error("wrangler config not found starting from {0}")]
     ConfigNotFound(PathBuf),

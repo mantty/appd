@@ -4,7 +4,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use appd_vfs::Bundle as VfsBundle;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -15,6 +17,29 @@ mod worker;
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+fn resolve_module_name(base: &str, name: &str) -> String {
+    if !name.starts_with('.') {
+        return name.to_owned();
+    }
+    let directory = base.rsplit_once('/').map_or("", |(directory, _)| directory);
+    let mut parts = Vec::new();
+    let combined = format!("{directory}/{name}");
+    for part in combined.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|part| *part != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..");
+                }
+            }
+            part => parts.push(part),
+        }
+    }
+    parts.join("/")
+}
 
 /// `QuickJS` runtime failures.
 #[derive(Debug, Error)]
@@ -58,6 +83,46 @@ pub struct Assets {
     pub root: PathBuf,
 }
 
+/// A packaged Worker whose modules are loaded independently by `QuickJS`.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+pub struct WorkerBundle {
+    pub(crate) entry: String,
+    pub(crate) modules: PathBuf,
+    pub(crate) vfs_bundle: VfsBundle,
+    pub(crate) legacy: Option<Arc<Vec<u8>>>,
+}
+
+impl WorkerBundle {
+    /// Describe a split Worker module directory and its read-only `/bundle`.
+    #[must_use]
+    pub fn from_modules(
+        entry: impl Into<String>,
+        modules: impl Into<PathBuf>,
+        bundle: impl Into<PathBuf>,
+    ) -> Self {
+        let bundle = bundle.into();
+        Self {
+            entry: entry.into(),
+            modules: modules.into(),
+            vfs_bundle: VfsBundle::new(bundle),
+            legacy: None,
+        }
+    }
+
+    /// Describe a legacy single-bytecode Worker and its read-only `/bundle`.
+    #[must_use]
+    pub fn from_bytecode(bytecode: Vec<u8>, bundle: impl Into<PathBuf>) -> Self {
+        let bundle = bundle.into();
+        Self {
+            entry: "appd-worker.mjs".to_owned(),
+            modules: PathBuf::new(),
+            vfs_bundle: VfsBundle::new(bundle),
+            legacy: Some(Arc::new(bytecode)),
+        }
+    }
+}
+
 /// Configuration passed to the `QuickJS` runtime.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +155,18 @@ pub fn compile_worker(source: &[u8]) -> Result<Vec<u8>> {
     worker::compile(source)
 }
 
+/// Compile one named Worker module to `QuickJS` bytecode.
+///
+/// The name is retained in the bytecode and is used to resolve its relative
+/// imports when the module is loaded.
+///
+/// # Errors
+///
+/// Returns an error when `QuickJS` cannot compile or serialize the module.
+pub fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
+    worker::compile_module(name, source)
+}
+
 /// A running `QuickJS` application.
 #[cfg(feature = "native")]
 pub struct QuickJsRuntime {
@@ -104,9 +181,23 @@ impl QuickJsRuntime {
     ///
     /// Returns an error when configuration, certificates, or the gateway is
     /// invalid.
-    pub fn start(bundle: &[u8], config: &RuntimeConfig) -> Result<Self> {
-        if bundle.is_empty() {
-            return Err(Error::Startup("Worker bytecode is empty".to_owned()));
+    pub fn start(bundle: WorkerBundle, config: &RuntimeConfig) -> Result<Self> {
+        if bundle.entry.is_empty() {
+            return Err(Error::Startup("Worker entry module is empty".to_owned()));
+        }
+        if let Some(bytecode) = &bundle.legacy {
+            if bytecode.is_empty() {
+                return Err(Error::Startup("Worker bytecode is empty".to_owned()));
+            }
+        } else if !bundle
+            .modules
+            .join(format!("{}.qjs", bundle.entry))
+            .is_file()
+        {
+            return Err(Error::Startup(format!(
+                "Worker entry module is missing: {}",
+                bundle.entry
+            )));
         }
         Ok(Self {
             runtime: native::Runtime::start(bundle, config.clone())?,
@@ -180,7 +271,7 @@ mod native_tests {
     use std::net::TcpStream;
     use std::time::Duration;
 
-    use super::{Certificates, QuickJsRuntime, RuntimeConfig, compile_worker};
+    use super::{Certificates, QuickJsRuntime, RuntimeConfig, WorkerBundle, compile_worker};
 
     #[test]
     fn suspends_and_resumes_the_public_runtime() -> Result<(), Box<dyn std::error::Error>> {
@@ -188,7 +279,7 @@ mod native_tests {
         let bundle =
             compile_worker(br"export default { async fetch() { return new Response('ok'); } };")?;
         let runtime = QuickJsRuntime::start(
-            &bundle,
+            WorkerBundle::from_bytecode(bundle, directory.path()),
             &RuntimeConfig {
                 assets: None,
                 cache: directory.path().join("cache"),

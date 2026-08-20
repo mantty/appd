@@ -23,6 +23,64 @@ pub struct WranglerConfig {
     pub assets: Option<WranglerAssets>,
     /// Text and JSON environment bindings declared in `vars`.
     pub vars: BTreeMap<String, Value>,
+    /// Additional module rules declared in `rules`.
+    pub rules: Vec<WranglerRule>,
+    /// Whether Wrangler should traverse `base_dir` for additional modules.
+    pub find_additional_modules: bool,
+    /// Directory against which additional-module globs are evaluated.
+    pub base_dir: PathBuf,
+}
+
+/// The module type declared by a Wrangler rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WranglerModuleType {
+    /// JavaScript ES module source.
+    EsModule,
+    /// `CommonJS` JavaScript source.
+    CommonJs,
+    /// Compiled WebAssembly binary.
+    CompiledWasm,
+    /// Text data.
+    Text,
+    /// Arbitrary binary data.
+    Data,
+}
+
+impl WranglerModuleType {
+    /// Parse a Wrangler module rule type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported module type.
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "ESModule" => Ok(Self::EsModule),
+            "CommonJS" => Ok(Self::CommonJs),
+            "CompiledWasm" => Ok(Self::CompiledWasm),
+            "Text" => Ok(Self::Text),
+            "Data" => Ok(Self::Data),
+            _ => Err(Error::InvalidModuleRule(format!(
+                "unsupported module type '{value}'"
+            ))),
+        }
+    }
+
+    /// Whether this module type is a non-code file for `/bundle`.
+    #[must_use]
+    pub const fn is_bundle_file(self) -> bool {
+        matches!(self, Self::CompiledWasm | Self::Text | Self::Data)
+    }
+}
+
+/// A Wrangler rule selecting additional Worker modules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WranglerRule {
+    /// Module type applied to matching files.
+    pub module_type: WranglerModuleType,
+    /// POSIX glob patterns evaluated relative to [`WranglerConfig::base_dir`].
+    pub globs: Vec<String>,
+    /// Whether later matching rules may also apply.
+    pub fallthrough: bool,
 }
 
 /// Static asset subset of a Wrangler config that appd consumes.
@@ -172,6 +230,20 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
             .map(|assets| resolve_assets(&config_path, &config_dir, assets))
             .transpose()?,
         vars: raw.vars,
+        rules: raw
+            .rules
+            .into_iter()
+            .map(resolve_rule)
+            .collect::<Result<Vec<_>>>()?,
+        find_additional_modules: raw.find_additional_modules,
+        base_dir: resolve_path(
+            &config_dir,
+            raw.base_dir
+                .as_deref()
+                .map(Path::new)
+                .or_else(|| Path::new(&main).parent())
+                .unwrap_or(Path::new(".")),
+        ),
     })
 }
 
@@ -181,6 +253,20 @@ struct RawWranglerConfig {
     assets: Option<RawWranglerAssets>,
     #[serde(default)]
     vars: BTreeMap<String, Value>,
+    #[serde(default)]
+    rules: Vec<RawWranglerRule>,
+    #[serde(default)]
+    find_additional_modules: bool,
+    base_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWranglerRule {
+    #[serde(rename = "type")]
+    module_type: String,
+    globs: Vec<String>,
+    #[serde(default)]
+    fallthrough: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +308,19 @@ fn resolve_assets(
             .map(NotFoundHandling::parse)
             .transpose()?
             .unwrap_or(NotFoundHandling::None),
+    })
+}
+
+fn resolve_rule(rule: RawWranglerRule) -> Result<WranglerRule> {
+    if rule.globs.is_empty() {
+        return Err(Error::InvalidModuleRule(
+            "rules.globs must not be empty".to_owned(),
+        ));
+    }
+    Ok(WranglerRule {
+        module_type: WranglerModuleType::parse(&rule.module_type)?,
+        globs: rule.globs,
+        fallthrough: rule.fallthrough,
     })
 }
 

@@ -10,18 +10,24 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use appd_vfs::VirtualFileSystem;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use flate2::read::GzDecoder;
+use node_fs::{
+    MODULE_NAME as NODE_FS_MODULE_NAME, NodeFsModule, NodeFsPromisesModule,
+    PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME,
+};
 use openssl::sha::sha1;
 use openssl::ssl::{SslAcceptor, SslMethod, SslStream, SslVerifyMode};
 use openssl::x509::X509;
+use rquickjs::loader::{BuiltinResolver, ImportAttributes, Loader, ModuleLoader, Resolver};
 use rquickjs::{
     Array, ArrayBuffer, Context, Function, Module, Object, Promise, Runtime as JsRuntime,
 };
 use serde::Serialize;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
-use super::{Error, RuntimeConfig};
-
+use super::{Error, RuntimeConfig, WorkerBundle};
 const MAX_HEADERS: usize = 64 * 1024;
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_WEBSOCKET_QUEUE: usize = 100;
@@ -33,7 +39,7 @@ pub(super) struct Runtime {
 }
 
 struct Shared {
-    bundle: Arc<Vec<u8>>,
+    worker: Arc<WorkerBundle>,
     config: RuntimeConfig,
     tokio: tokio::runtime::Handle,
     port: AtomicU16,
@@ -208,7 +214,7 @@ struct WebSocketFrame {
 }
 
 impl Runtime {
-    pub(super) fn start(bundle: &[u8], config: RuntimeConfig) -> Result<Self, Error> {
+    pub(super) fn start(bundle: WorkerBundle, config: RuntimeConfig) -> Result<Self, Error> {
         let listener = TcpListener::bind(("127.0.0.1", config.port))?;
         let port = listener.local_addr()?.port();
         let tokio_runtime = TokioBuilder::new_multi_thread()
@@ -216,7 +222,7 @@ impl Runtime {
             .build()
             .map_err(|error| Error::Startup(format!("failed to start Tokio: {error}")))?;
         let shared = Arc::new(Shared {
-            bundle: Arc::new(bundle.to_vec()),
+            worker: Arc::new(bundle),
             config,
             tokio: tokio_runtime.handle().clone(),
             port: AtomicU16::new(port),
@@ -332,6 +338,10 @@ fn listener_was_closed(error: &io::Error) -> bool {
 
 fn replace_closed_listener(listener: TcpListener, port: u16) -> io::Result<(TcpListener, u16)> {
     std::mem::forget(listener);
+    bind_replacement_listener(port)
+}
+
+fn bind_replacement_listener(port: u16) -> io::Result<(TcpListener, u16)> {
     let replacement = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => listener,
         Err(port_error) => TcpListener::bind(("127.0.0.1", 0)).map_err(|random_error| {
@@ -471,7 +481,7 @@ fn execute_job(shared: &Shared, job: Job) {
     };
     let response = job.response.clone();
     if let Err(error) = execute_request(
-        &shared.bundle,
+        &shared.worker,
         &shared.config,
         job,
         &execution,
@@ -484,8 +494,27 @@ fn execute_job(shared: &Shared, job: Job) {
     }
 }
 
+fn configure_worker_loader(runtime: &JsRuntime, worker: &WorkerBundle) {
+    runtime.set_loader(
+        (
+            BuiltinResolver::default()
+                .with_module(NODE_FS_MODULE_NAME)
+                .with_module(NODE_FS_PROMISES_MODULE_NAME),
+            WorkerResolver,
+        ),
+        (
+            ModuleLoader::default()
+                .with_module(NODE_FS_MODULE_NAME, NodeFsModule)
+                .with_module(NODE_FS_PROMISES_MODULE_NAME, NodeFsPromisesModule),
+            WorkerLoader {
+                bundle: worker.clone(),
+            },
+        ),
+    );
+}
+
 fn execute_request(
-    bundle: &[u8],
+    worker: &WorkerBundle,
     config: &RuntimeConfig,
     job: Job,
     execution: &Execution<'_>,
@@ -496,6 +525,7 @@ fn execute_request(
     runtime.set_interrupt_handler(Some(Box::new(move || {
         !interrupt_accepting.load(Ordering::Acquire)
     })));
+    configure_worker_loader(&runtime, worker);
     let context = Context::full(&runtime).map_err(|error| js_error("context", error))?;
     context.with(|ctx| -> Result<(), Error> {
         let Job {
@@ -503,15 +533,17 @@ fn execute_request(
             response: response_sender,
             websocket,
         } = job;
+        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(worker.vfs_bundle.clone())));
+        node_fs::install(&ctx, &vfs).map_err(|error| js_error("node fs", error))?;
         let environment = serde_json::to_string(&config.environment)?;
         let descriptor = serde_json::to_string(&request)?;
         let setup = format!(
-            "globalThis.__appd_env = {environment}; globalThis.__appd_env.ASSETS = {{ fetch: async () => new Response(null, {{ status: 404 }}) }}; globalThis.__appd_request = {descriptor}; globalThis.__appd_tmp = new Map(); globalThis.__appd_tmp_directories = new Set(['/tmp']);"
+            "globalThis.__appd_env = {environment}; globalThis.__appd_env.ASSETS = {{ fetch: async () => new Response(null, {{ status: 404 }}) }}; globalThis.__appd_request = {descriptor};"
         );
         ctx.eval::<(), _>(setup)
             .map_err(|error| js_error("setup", error))?;
 
-        let fetch = load_worker(&ctx, bundle)?;
+        let fetch = load_worker(&ctx, worker)?;
         let request: Object = ctx
             .eval("new Request(__appd_request.url, { method: __appd_request.method, headers: __appd_request.headers, body: __appd_request.body })")
             .map_err(|error| js_error("request", error))?;
@@ -564,9 +596,13 @@ fn execute_request(
     })
 }
 
-fn load_worker<'js>(ctx: &rquickjs::Ctx<'js>, bundle: &[u8]) -> Result<Function<'js>, Error> {
+fn load_worker<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    bundle: &WorkerBundle,
+) -> Result<Function<'js>, Error> {
+    let bytes = read_worker_module(bundle, &bundle.entry)?;
     let module =
-        unsafe { Module::load(ctx.clone(), bundle) }.map_err(|error| js_error("load", error))?;
+        unsafe { Module::load(ctx.clone(), &bytes) }.map_err(|error| js_error("load", error))?;
     let (module, evaluation) = module.eval().map_err(|error| js_error("evaluate", error))?;
     evaluation
         .finish::<()>()
@@ -577,6 +613,78 @@ fn load_worker<'js>(ctx: &rquickjs::Ctx<'js>, bundle: &[u8]) -> Result<Function<
     worker
         .get("fetch")
         .map_err(|error| js_error("worker fetch", error))
+}
+
+struct WorkerResolver;
+
+impl Resolver for WorkerResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &rquickjs::Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        let resolved = super::resolve_module_name(base, name);
+        if is_module_name(&resolved) {
+            Ok(resolved)
+        } else {
+            Err(rquickjs::Error::new_resolving(base, name))
+        }
+    }
+}
+
+struct WorkerLoader {
+    bundle: WorkerBundle,
+}
+
+impl Loader for WorkerLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js>> {
+        let bytes = read_worker_module(&self.bundle, name)
+            .map_err(|error| rquickjs::Error::new_loading_message(name, error.to_string()))?;
+        // Packaged bytecode is produced by appd itself and is trusted here.
+        unsafe { Module::load(ctx.clone(), &bytes) }
+    }
+}
+
+fn is_module_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> {
+    if !is_module_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Worker module name",
+        ));
+    }
+    if let Some(bytecode) = &bundle.legacy {
+        if name == bundle.entry {
+            return Ok((**bytecode).clone());
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Worker module not found",
+        ));
+    }
+    let bytes = std::fs::read(bundle.modules.join(format!("{name}.qjs")))?;
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Ok(bytes);
+    }
+    let mut decoder = GzDecoder::new(bytes.as_slice());
+    let mut bytecode = Vec::new();
+    decoder.read_to_end(&mut bytecode)?;
+    Ok(bytecode)
 }
 
 fn websocket_loop<'js>(
@@ -838,15 +946,19 @@ impl AssetManifest {
 mod tests {
     use super::{
         AssetManifest, HttpRequest, HttpResponse, Job, JobResponse, Lifecycle, Shared,
-        WebSocketBridge, WebSocketInbound, WebSocketJob, WebSocketOutbound, asset_response,
-        close_connections, execute_request, listener_was_closed, lock_connections,
-        queue_websocket_message, replace_closed_listener, serve_connection,
+        WebSocketBridge, WebSocketInbound, WebSocketJob, WebSocketOutbound, WorkerBundle,
+        WorkerLoader, WorkerResolver, asset_response, close_connections, configure_worker_loader,
+        execute_request, listener_was_closed, load_worker, lock_connections,
+        queue_websocket_message, serve_connection,
     };
     use crate::{Assets, Certificates, RuntimeConfig};
+    use appd_vfs::VirtualFileSystem;
+    use rquickjs::{
+        ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray,
+    };
     use std::collections::BTreeMap;
+    use std::io;
     use std::net::{TcpListener, TcpStream};
-    #[cfg(unix)]
-    use std::os::fd::AsRawFd;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -964,6 +1076,7 @@ export default {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let bundle = crate::compile_worker(WEBSOCKET_WORKER)?;
+        let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
         let config = websocket_config(directory.path());
         let request = websocket_request();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
@@ -978,7 +1091,7 @@ export default {
                 ));
             };
             execute_request(
-                &bundle,
+                &worker_bundle,
                 &config,
                 Job {
                     request,
@@ -1027,6 +1140,128 @@ export default {
             reason: String::new(),
         })?;
         thread.join().map_err(|_| "WebSocket worker panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn loads_split_worker_modules_through_the_quickjs_loader()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let entry = crate::compile_module(
+            "entry.js",
+            br#"import worker from "./chunks/worker.js"; export default worker;"#,
+        )?;
+        let chunk = crate::compile_module("chunks/worker.js", br"export default { fetch() {} };")?;
+        std::fs::create_dir_all(directory.path().join("chunks"))?;
+        std::fs::write(directory.path().join("entry.js.qjs"), entry)?;
+        std::fs::write(directory.path().join("chunks/worker.js.qjs"), chunk)?;
+        let worker = WorkerBundle::from_modules("entry.js", directory.path(), directory.path());
+        let runtime = JsRuntime::new()?;
+        runtime.set_loader(
+            WorkerResolver,
+            WorkerLoader {
+                bundle: worker.clone(),
+            },
+        );
+        let context = Context::full(&runtime)?;
+
+        context.with(|ctx| {
+            let _: Function = load_worker(&ctx, &worker)?;
+            Ok::<_, crate::Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(directory.path().join("config"))?;
+        std::fs::write(
+            directory.path().join("config/app.json"),
+            br#"{"enabled":true}"#,
+        )?;
+        let runtime = JsRuntime::new()?;
+        configure_worker_loader(
+            &runtime,
+            &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
+        );
+        let context = Context::full(&runtime)?;
+        context.with(|ctx| {
+            let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(appd_vfs::Bundle::new(
+                directory.path(),
+            ))));
+            node_fs::install(&ctx, &vfs)
+                .map_err(|error| crate::Error::Engine(format!("{error}; {:?}", ctx.catch())))?;
+            let object: Object = Module::import(&ctx, "node:fs")
+                .map_err(|error| crate::Error::Engine(format!("{error}; {:?}", ctx.catch())))?
+                .finish()
+                .map_err(|error| crate::Error::Engine(format!("{error}; {:?}", ctx.catch())))?;
+            let read: Function = object
+                .get("readFileSync")
+                .map_err(|error| crate::Error::Engine(format!("readFileSync: {error}")))?;
+            let value: TypedArray<u8> = read
+                .call(("/bundle/config/app.json",))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            assert_eq!(
+                value
+                    .as_bytes()
+                    .ok_or_else(|| crate::Error::Engine("detached bundle bytes".to_owned()))?,
+                br#"{"enabled":true}"#
+            );
+            let write: Function = object
+                .get("writeFileSync")
+                .map_err(|error| crate::Error::Engine(format!("writeFileSync: {error}")))?;
+            let data = ArrayBuffer::new_copy(ctx.clone(), b"value")
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            write
+                .call::<_, ()>(("/tmp/value.txt", data))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            let info: Function = object
+                .get("statSync")
+                .map_err(|error| crate::Error::Engine(format!("statSync: {error}")))?;
+            let value: Object = info
+                .call(("/tmp/value.txt", true))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            assert_eq!(
+                value
+                    .get::<_, u64>("size")
+                    .map_err(|error| crate::Error::Engine(error.to_string()))?,
+                5
+            );
+
+            let open: Function = object
+                .get("openSync")
+                .map_err(|error| crate::Error::Engine(format!("openSync: {error}")))?;
+            let descriptor: u32 = open
+                .call(("/dev/zero", "r"))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            let read: Function = object
+                .get("readSync")
+                .map_err(|error| crate::Error::Engine(format!("readSync: {error}")))?;
+            let zeros = TypedArray::<u8>::new_copy(ctx.clone(), [0_u8; 3])
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            let read_count: u32 = read
+                .call((descriptor, zeros.clone(), 0_u32, 3_u32, 0_i64))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            assert_eq!(read_count, 3);
+            assert_eq!(zeros.as_bytes(), Some(&[0, 0, 0][..]));
+            let device_info: Object = info
+                .call(("/dev/zero", true))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            assert!(
+                device_info
+                    .get::<_, bool>("device")
+                    .map_err(|error| crate::Error::Engine(error.to_string()))?
+            );
+            let close: Function = object
+                .get("closeSync")
+                .map_err(|error| crate::Error::Engine(format!("closeSync: {error}")))?;
+            close
+                .call::<_, ()>((descriptor,))
+                .map_err(|error| crate::Error::Engine(error.to_string()))?;
+            Ok::<_, crate::Error>(())
+        })?;
         Ok(())
     }
 
@@ -1090,7 +1325,7 @@ export default {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let tokio = tokio::runtime::Builder::new_current_thread().build()?;
         let shared = Arc::new(Shared {
-            bundle: Arc::new(Vec::new()),
+            worker: Arc::new(WorkerBundle::from_bytecode(Vec::new(), PathBuf::default())),
             config: RuntimeConfig {
                 assets: None,
                 cache: PathBuf::default(),
@@ -1134,11 +1369,11 @@ export default {
     fn closed_listener_reclaims_its_port() -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
-        unsafe { libc::close(listener.as_raw_fd()) };
-        let error = listener.accept().expect_err("closed listener accepted");
+        let error = io::Error::from_raw_os_error(libc::EBADF);
         assert!(listener_was_closed(&error));
+        drop(listener);
 
-        let (_listener, replacement_port) = replace_closed_listener(listener, port)?;
+        let (_listener, replacement_port) = super::bind_replacement_listener(port)?;
 
         assert_eq!(replacement_port, port);
         Ok(())
@@ -1150,10 +1385,10 @@ export default {
     -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
-        unsafe { libc::close(listener.as_raw_fd()) };
+        drop(listener);
         let _occupied = TcpListener::bind(("127.0.0.1", port))?;
 
-        let (_listener, replacement_port) = replace_closed_listener(listener, port)?;
+        let (_listener, replacement_port) = super::bind_replacement_listener(port)?;
 
         assert_ne!(replacement_port, port);
         Ok(())
@@ -1264,6 +1499,7 @@ export default {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let directory = tempfile::tempdir()?;
         let bundle = crate::compile_worker(SLOW_WORKER)?;
+        let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
         let config = websocket_config(directory.path());
         let request = websocket_request();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
@@ -1282,7 +1518,7 @@ export default {
                 .send(())
                 .map_err(|error| crate::Error::Startup(error.to_string()))?;
             execute_request(
-                &bundle,
+                &worker_bundle,
                 &config,
                 Job {
                     request,

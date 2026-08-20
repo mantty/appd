@@ -3,9 +3,12 @@
 use std::path::{Path, PathBuf};
 
 const WORKER_BUNDLE: &str = "worker.bundle";
+const WORKER_MANIFEST: &str = "worker-manifest.json";
+const WORKER_MODULES: &str = "worker-modules";
 const WORKER_ENVIRONMENT: &str = "worker-environment.json";
 const ASSET_MANIFEST: &str = "asset-manifest.json";
 const ASSETS: &str = "assets";
+const BUNDLE: &str = "bundle";
 
 /// The packaged contents of an appd application.
 ///
@@ -34,6 +37,18 @@ impl AppLayout {
         self.root.join(WORKER_BUNDLE)
     }
 
+    /// The manifest describing the split `QuickJS` Worker modules.
+    #[must_use]
+    pub fn worker_manifest(&self) -> PathBuf {
+        self.root.join(WORKER_MANIFEST)
+    }
+
+    /// The directory containing split `QuickJS` Worker modules.
+    #[must_use]
+    pub fn worker_modules(&self) -> PathBuf {
+        self.root.join(WORKER_MODULES)
+    }
+
     /// The normalized Worker environment bindings.
     #[must_use]
     pub fn worker_environment(&self) -> PathBuf {
@@ -50,6 +65,12 @@ impl AppLayout {
     #[must_use]
     pub fn assets(&self) -> PathBuf {
         self.root.join(ASSETS)
+    }
+
+    /// The read-only Worker `/bundle` directory.
+    #[must_use]
+    pub fn bundle(&self) -> PathBuf {
+        self.root.join(BUNDLE)
     }
 
     /// Whether the packaged app serves static assets.
@@ -71,6 +92,14 @@ mod tests {
             std::path::Path::new("/apps/example/worker.bundle")
         );
         assert_eq!(
+            layout.worker_manifest(),
+            std::path::Path::new("/apps/example/worker-manifest.json")
+        );
+        assert_eq!(
+            layout.worker_modules(),
+            std::path::Path::new("/apps/example/worker-modules")
+        );
+        assert_eq!(
             layout.worker_environment(),
             std::path::Path::new("/apps/example/worker-environment.json")
         );
@@ -81,6 +110,10 @@ mod tests {
         assert_eq!(
             layout.assets(),
             std::path::Path::new("/apps/example/assets")
+        );
+        assert_eq!(
+            layout.bundle(),
+            std::path::Path::new("/apps/example/bundle")
         );
     }
 

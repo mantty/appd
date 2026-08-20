@@ -1,7 +1,6 @@
 import { installWebGlobals, Headers, Request, Response, URL, URLSearchParams, TextEncoder, TextDecoder, ReadableStream, Blob, DOMException } from "./web.mjs";
 import { EventEmitter } from "./events.mjs";
 import { Writable, Readable, Duplex, Transform, PassThrough, Stream } from "./stream.mjs";
-import fs, { promises as fsPromises } from "./fs.mjs";
 
 installWebGlobals();
 
@@ -9,18 +8,17 @@ const builtinModules = {
   "node:events": { EventEmitter, default: EventEmitter },
   "node:stream": { Writable, Readable, Duplex, Transform, PassThrough, Stream, default: { Writable, Readable, Duplex, Transform, PassThrough, Stream } },
   "node:process": globalThis.process ?? {},
-  "node:fs": fs,
-  "node:fs/promises": fsPromises,
 };
 
+const nativeGetBuiltinModule = globalThis.process?.getBuiltinModule;
 globalThis.process ??= {};
 globalThis.process.env ??= {};
 globalThis.process.nextTick ??= (callback, ...args) => queueMicrotask(() => callback(...args));
-globalThis.process.getBuiltinModule ??= (name) => builtinModules[name];
+globalThis.process.getBuiltinModule = (name) => builtinModules[name] ?? nativeGetBuiltinModule?.(name);
 globalThis.process.platform ??= "appd";
 globalThis.process.arch ??= "unknown";
 globalThis.process.versions ??= { node: "22.14.0" };
-globalThis.process.cwd ??= () => "/";
+globalThis.process.cwd ??= () => "/bundle";
 globalThis.process.hrtime ??= (start) => {
   const now = Date.now();
   const value = [Math.floor(now / 1000), (now % 1000) * 1e6];

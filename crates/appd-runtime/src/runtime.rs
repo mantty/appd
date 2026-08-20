@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use appd_bundle::AppLayout;
-use appd_bundle::decompress_worker_bundle;
 use appd_bundle::environment::load as load_environment;
-use appd_quickjs::{Assets, Certificates as QuickJsCertificates, QuickJsRuntime, RuntimeConfig};
+use appd_bundle::{decompress_worker_bundle, read_worker_manifest};
+use appd_quickjs::{
+    Assets, Certificates as QuickJsCertificates, QuickJsRuntime, RuntimeConfig, WorkerBundle,
+};
 
 use crate::Result;
 use crate::certificates::{Certificates, Renewal};
@@ -50,9 +52,9 @@ impl Runtime {
         events.emit(Event::Starting);
         let state_dir = config.state_dir.clone();
         let certificates = Arc::new(Certificates::start(state_dir.clone(), config.host.clone())?);
-        let bundle = decompress_worker_bundle(&std::fs::read(config.app.worker_bundle())?)?;
+        let worker = packaged_worker(&config.app)?;
         let quickjs = QuickJsRuntime::start(
-            &bundle,
+            worker,
             &quickjs_config(&config.app, &certificates, &config.host, &state_dir)?,
         )?;
         let renewal = certificates.start_renewal(events.clone());
@@ -107,6 +109,20 @@ impl Runtime {
         self.quickjs.resume()?;
         self.events.emit(Event::Resumed);
         Ok(())
+    }
+}
+
+fn packaged_worker(app: &AppLayout) -> Result<WorkerBundle> {
+    if app.worker_manifest().is_file() {
+        let manifest = read_worker_manifest(app)?;
+        Ok(WorkerBundle::from_modules(
+            manifest.entry,
+            app.worker_modules(),
+            app.bundle(),
+        ))
+    } else {
+        let bytecode = decompress_worker_bundle(&std::fs::read(app.worker_bundle())?)?;
+        Ok(WorkerBundle::from_bytecode(bytecode, app.bundle()))
     }
 }
 

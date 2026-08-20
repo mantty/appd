@@ -7,8 +7,38 @@ export class Writable extends EventEmitter {
 }
 
 export class Readable extends EventEmitter {
-  constructor(options = {}) { super(); this.readable = true; this.__chunks = []; this.__read = options.read; }
-  push(chunk) { if (chunk === null) this.emit("end"); else this.__chunks.push(chunk); return true; }
+  constructor(options = {}) {
+    super();
+    this.readable = true;
+    this.__chunks = [];
+    this.__read = options.read;
+    this.__ended = false;
+    this.__endEmitted = false;
+  }
+  on(name, listener) {
+    super.on(name, listener);
+    if (name === "data") {
+      while (this.__chunks.length) this.emit("data", this.__chunks.shift());
+      this.__emitEndIfReady();
+    }
+    if (name === "end" && this.__endEmitted) listener();
+    return this;
+  }
+  push(chunk) {
+    if (this.__ended) return false;
+    if (chunk === null) {
+      this.__ended = true;
+      this.__emitEndIfReady();
+    } else if (this.listenerCount("data")) this.emit("data", chunk);
+    else this.__chunks.push(chunk);
+    return true;
+  }
+  __emitEndIfReady() {
+    if (this.__ended && !this.__endEmitted && this.__chunks.length === 0) {
+      this.__endEmitted = true;
+      this.emit("end");
+    }
+  }
   read() { return this.__chunks.shift() ?? null; }
   pipe(destination) { this.on("data", (chunk) => destination.write(chunk)); this.once("end", () => destination.end()); return destination; }
   destroy(error) { if (error) this.emit("error", error); this.emit("close"); return this; }

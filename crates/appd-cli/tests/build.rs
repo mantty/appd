@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use appd_bundle::decompress_worker_bundle;
-use appd_quickjs::compile_worker;
+use appd_bundle::{AppLayout, decompress_worker_module, read_worker_manifest};
+use appd_quickjs::compile_module;
 use assert_cmd::Command;
 use predicates::str::contains;
 
@@ -92,6 +92,22 @@ fs.writeFileSync("dist/server/wrangler.json", JSON.stringify({
     Ok(())
 }
 
+fn write_test_esbuild(root: &Path) -> TestResult {
+    let path = root.join("tools/esbuild.cjs");
+    fs::write(
+        &path,
+        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outdir=')).slice('--outdir='.length);\nconst metafile = args.find((arg) => arg.startsWith('--metafile='));\nconst input = args.at(-1);\nfs.mkdirSync(output, { recursive: true });\nfs.copyFileSync(input, path.join(output, 'entry.js'));\nif (metafile) fs.writeFileSync(metafile.slice('--metafile='.length), JSON.stringify({ inputs: { [input]: {} } }));\n",
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
 fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     let framework = root.join("frameworks/AppdRuntime.framework");
     let shell = root.join("native-shell");
@@ -100,18 +116,7 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     fs::create_dir_all(root.join("tools/runtime-js"))?;
     create_test_framework(root, target)?;
     write_test_shell(&shell)?;
-    fs::write(
-        root.join("tools/esbuild.cjs"),
-        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outfile=')).slice('--outfile='.length);\nconst input = args.at(-1);\nfs.copyFileSync(input, output);\n",
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = root.join("tools/esbuild.cjs");
-        let mut permissions = fs::metadata(&path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
-    }
+    write_test_esbuild(root)?;
     fs::write(
         root.join("target-pack.json"),
         format!(
@@ -219,18 +224,7 @@ fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
     fs::create_dir_all(pack.join("tools/runtime-js"))?;
     create_project(&project)?;
     fs::write(pack.join("bin/appd-shell-windows.exe"), "shell")?;
-    fs::write(
-        pack.join("tools/esbuild.cjs"),
-        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outfile=')).slice('--outfile='.length);\nconst input = args.at(-1);\nfs.copyFileSync(input, output);\n",
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = pack.join("tools/esbuild.cjs");
-        let mut permissions = fs::metadata(&path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
-    }
+    write_test_esbuild(&pack)?;
     fs::write(
         pack.join("target-pack.json"),
         r#"{
@@ -275,9 +269,14 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
             .join("Contents/Frameworks/AppdRuntime.framework")
             .exists()
     );
+    let manifest = read_worker_manifest(&AppLayout::new(&app))?;
+    assert_eq!(manifest.entry, "entry.js");
     assert_eq!(
-        decompress_worker_bundle(&fs::read(app.join("worker.bundle"))?)?,
-        compile_worker(&fs::read(project.join("dist/server/entry.mjs"))?)?
+        decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
+        compile_module(
+            "entry.js",
+            &fs::read(project.join("dist/server/entry.mjs"))?
+        )?
     );
     assert!(app.join("assets/index.html").is_file());
     let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))?;
@@ -302,9 +301,14 @@ fn compiles_a_self_contained_worker() -> TestResult {
         .success();
 
     let bundle = project.join("build/macos/demo-app.app/Contents/Resources/app");
+    let manifest = read_worker_manifest(&AppLayout::new(&bundle))?;
+    assert_eq!(manifest.entry, "entry.js");
     assert_eq!(
-        decompress_worker_bundle(&fs::read(bundle.join("worker.bundle"))?)?,
-        compile_worker(&fs::read(project.join("dist/server/entry.mjs"))?)?
+        decompress_worker_module(&fs::read(bundle.join("worker-modules/entry.js.qjs"))?)?,
+        compile_module(
+            "entry.js",
+            &fs::read(project.join("dist/server/entry.mjs"))?
+        )?
     );
     Ok(())
 }
@@ -371,7 +375,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
     let bundle = project.join("build/windows/demo-app");
     assert!(bundle.join("demo-app.exe").is_file());
     assert!(!bundle.join("appd-runtime.dll").exists());
-    assert!(bundle.join("app/worker.bundle").is_file());
+    assert!(bundle.join("app/worker-manifest.json").is_file());
     let config: serde_json::Value = serde_json::from_slice(&fs::read(bundle.join("appd.json"))?)?;
     assert_eq!(config["host"], "demo-app.appd.local");
     Ok(())
@@ -431,7 +435,7 @@ fn builds_physical_ios_app() -> TestResult {
 
     let bundle = project.join("build/ios/demo-app.app");
     assert!(bundle.join("demo-app").is_file());
-    assert!(bundle.join("app/worker.bundle").is_file());
+    assert!(bundle.join("app/worker-manifest.json").is_file());
     assert!(!bundle.join("Frameworks/AppdRuntime.framework").exists());
     let plist = fs::read_to_string(bundle.join("Info.plist"))?;
     assert!(plist.contains("LSRequiresIPhoneOS"));
@@ -454,7 +458,7 @@ fn builds_ios_simulator_app() -> TestResult {
 
         let bundle = project.join("build/ios-simulator/demo-app.app");
         assert!(bundle.join("demo-app").is_file());
-        assert!(bundle.join("app/worker.bundle").is_file());
+        assert!(bundle.join("app/worker-manifest.json").is_file());
         assert!(!bundle.join("Frameworks/AppdRuntime.framework").exists());
         assert!(!bundle.join("embedded.mobileprovision").exists());
         let plist = fs::read_to_string(bundle.join("Info.plist"))?;
@@ -490,26 +494,60 @@ fn writes_configured_asset_routing_modes() -> TestResult {
 }
 
 #[test]
-fn rejects_webassembly_modules() -> TestResult {
+fn packages_declared_non_code_modules_under_bundle() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::create_dir_all(project.join("dist/server/config"))?;
+    fs::write(
+        project.join("dist/server/config/runtime.json"),
+        br#"{"feature":true}"#,
+    )?;
+    fs::write(project.join("dist/server/not-included.txt"), "private")?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{
+  "main": "dist/server/entry.mjs",
+  "base_dir": "dist/server",
+  "find_additional_modules": true,
+  "rules": [{ "type": "Data", "globs": ["**/*.json"] }]
+}"#,
+    )?;
+
+    build_command("macos", &project, &manifest)?
+        .assert()
+        .success();
+
+    let app = project.join("build/macos/demo-app.app/Contents/Resources/app");
+    assert_eq!(
+        fs::read(app.join("bundle/config/runtime.json"))?,
+        br#"{"feature":true}"#
+    );
+    assert!(!app.join("bundle/not-included.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn ignores_unreferenced_webassembly_modules() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     fs::write(project.join("dist/server/module.wasm"), b"wasm")?;
 
     build_command("macos", &project, &manifest)?
         .assert()
-        .failure()
-        .stderr(contains("WebAssembly files are not supported"));
+        .success();
+    let app = project.join("build/macos/demo-app.app/Contents/Resources/app");
+    assert!(!app.join("bundle/module.wasm").exists());
     Ok(())
 }
 
 #[test]
-fn rejects_webassembly_assets() -> TestResult {
+fn packages_webassembly_assets_as_static_files() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     fs::write(project.join("dist/client/module.wasm"), b"wasm")?;
 
     build_command("macos", &project, &manifest)?
         .assert()
-        .failure()
-        .stderr(contains("WebAssembly files are not supported"));
+        .success();
+    let app = project.join("build/macos/demo-app.app/Contents/Resources/app");
+    assert!(app.join("assets/module.wasm").is_file());
     Ok(())
 }
 

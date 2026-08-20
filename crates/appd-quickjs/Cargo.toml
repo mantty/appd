@@ -11,7 +11,10 @@ native = ["dep:openssl", "dep:tokio"]
 test-stubs = ["native"]
 
 [dependencies]
+appd-vfs = { path = "../appd-vfs" }
+node-fs = { path = "../node-fs" }
 base64.workspace = true
+flate2.workspace = true
 libc.workspace = true
 rquickjs.workspace = true
 serde.workspace = true

@@ -274,9 +274,25 @@ export class ReadableStream {
 }
 
 export class Blob {
-  constructor(parts = [], options = {}) { this.__bytes = new TextEncoder().encode(parts.map((part) => part instanceof Uint8Array ? new TextDecoder().decode(part) : String(part)).join("")); this.type = options.type ?? ""; this.size = this.__bytes.length; }
+  constructor(parts = [], options = {}) {
+    const chunks = parts.map((part) => {
+      if (part instanceof Uint8Array) return new Uint8Array(part);
+      if (part instanceof ArrayBuffer) return new Uint8Array(part);
+      if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+      return new TextEncoder().encode(String(part));
+    });
+    const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+    this.__bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      this.__bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.type = options.type ?? "";
+    this.size = this.__bytes.length;
+  }
   async text() { return new TextDecoder().decode(this.__bytes); }
-  async arrayBuffer() { return this.__bytes.buffer; }
+  async arrayBuffer() { return this.__bytes.slice().buffer; }
 }
 
 export class DOMException extends Error {
