@@ -22,7 +22,7 @@ contract.
 
 ## Current QuickJS implementation
 
-`appd-quickjs` creates a QuickJS runtime and context for each request and
+`appd/src/quickjs` creates a QuickJS runtime and context for each request and
 loads the shared packaged Worker bytecode into it. The packaged bytecode is
 owned by an immutable app-wide Worker image. The current JavaScript runtime
 contains small `events`, `stream`, `fs`, `cloudflare:workers`, and Web API
@@ -51,7 +51,7 @@ Worker-visible semantics and their differential fixtures.
   module cache, JavaScript heap, native resource table, and mutable `/tmp`
   belong to one request lifetime. Rust owns the lifetime explicitly; cleanup
   must not depend on QuickJS garbage collection.
-- `appd-quickjs` schedules each request-owned QuickJS runtime independently
+- `appd/src/quickjs` schedules each request-owned QuickJS runtime independently
   through Tokio. Compatibility must not depend on scheduling details: no
   request may observe another request's globals, module state, environment,
   handles, timers, response body, or VFS.

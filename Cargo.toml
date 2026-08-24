@@ -1,16 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/appd-quickjs",
-    "crates/node-fs",
-    "crates/appd-bundle",
-    "crates/appd-vfs",
-    "crates/appd-cli",
-    "crates/appd-runtime",
-    "crates/appd-shell-android",
-    "crates/appd-shell-apple",
-    "crates/appd-shell-windows",
-    "crates/appd-target-pack",
+    "appd",
+    "cli",
+    "target_pack_format",
+    "platforms/windows",
+    "tools/xtask",
 ]
 
 [workspace.package]

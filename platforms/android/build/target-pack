@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 4 || "$1" != build ]]; then
+  echo "usage: target-pack build TARGET RUST_TARGET OUTPUT" >&2
+  exit 2
+fi
+
+target=$2
+rust_target=$3
+output=$4
+workspace=$PWD
+
+if [[ "$target" != android-arm64 || "$rust_target" != aarch64-linux-android ]]; then
+  echo "unsupported Android target: $target" >&2
+  exit 1
+fi
+
+ndk=$(printenv ANDROID_NDK_HOME 2>/dev/null || true)
+if [[ ! -d "$ndk" ]]; then
+  sdk_root=$(printenv ANDROID_HOME 2>/dev/null || printenv ANDROID_SDK_ROOT 2>/dev/null || true)
+  if [[ -z "$sdk_root" ]]; then
+    echo "set ANDROID_NDK_HOME or ANDROID_HOME to build Android target packs" >&2
+    exit 1
+  fi
+  ndk=$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d -print | sort | tail -n 1)
+fi
+if [[ ! -d "$ndk" ]]; then
+  echo "Android NDK is missing: $ndk" >&2
+  exit 1
+fi
+
+host=$(find "$ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print | head -n 1)
+compiler="$host/bin/aarch64-linux-android31-clang"
+sysroot="$host/sysroot"
+if [[ ! -x "$compiler" ]]; then
+  echo "Android NDK compiler is missing: $compiler" >&2
+  exit 1
+fi
+
+rm -rf "$output"
+mkdir -p "$output/bin" "$output/build" "$output/native-shell"
+
+CC_aarch64_linux_android="$compiler" \
+AR_aarch64_linux_android="$host/bin/llvm-ar" \
+RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$sysroot" \
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$compiler" \
+cargo build \
+  --package appd \
+  --release \
+  --target "$rust_target" \
+  --features native \
+  --lib
+
+library="$workspace/target/$rust_target/release/libappd.so"
+if [[ ! -f "$library" ]]; then
+  echo "appd runtime library was not produced: $library" >&2
+  exit 1
+fi
+
+cp "$library" "$output/bin/libappd.so"
+cp "$workspace/platforms/android/source/"* "$output/native-shell/"
+cp "$workspace/platforms/android/build/entrypoint" \
+  "$output/build/entrypoint"

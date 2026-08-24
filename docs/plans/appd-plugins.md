@@ -36,8 +36,9 @@ without an implementation throw `NotSupportedError`.
 
 ## Native build
 
-The appd runtime remains prebuilt. `appd build` compiles only the native shell
-and plugin sources:
+The appd runtime remains prebuilt. `appd build` stages plugin metadata and
+sources, then the target-pack entrypoint compiles only the native shell and
+plugin sources:
 
 - macOS, iOS, and iOS Simulator compile Swift sources into the application
   executable and link declared system frameworks.

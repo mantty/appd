@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+target-pack-format = { path = "../../target_pack_format" }
+clap.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

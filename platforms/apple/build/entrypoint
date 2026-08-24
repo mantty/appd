@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 3 || $1 != build ]]; then
+  echo "usage: entrypoint build INPUT OUTPUT" >&2
+  exit 2
+fi
+
+input=$2
+output=$3
+metadata=$input/metadata
+native_shell=$input/native-shell
+framework_root=$input/runtime/frameworks
+app_name=$(cat "$metadata/app-name")
+bundle_id=$(cat "$metadata/bundle-id")
+host=$(cat "$metadata/host")
+platform=$(cat "$metadata/platform")
+target=$(cat "$metadata/target")
+output_parent=$(dirname "$output")
+module_cache=$output_parent/.appd/module-cache
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/appd-apple.XXXXXX")
+trap 'rm -rf "$temporary"' EXIT
+
+case "$target" in
+  macos-arm64)
+    sdk=macosx
+    triple=arm64-apple-macos14.0
+    ;;
+  macos-x64)
+    sdk=macosx
+    triple=x86_64-apple-macos14.0
+    ;;
+  ios-arm64)
+    sdk=iphoneos
+    triple=arm64-apple-ios17.0
+    ;;
+  ios-simulator-arm64)
+    sdk=iphonesimulator
+    triple=arm64-apple-ios17.0-simulator
+    ;;
+  ios-simulator-x64)
+    sdk=iphonesimulator
+    triple=x86_64-apple-ios17.0-simulator
+    ;;
+  *)
+    echo "unsupported Apple target: $target" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$platform" == macos ]]; then
+  bundle=$output
+  contents=$bundle/Contents
+  executable_dir=$contents/MacOS
+  app_dir=$contents/Resources/app
+else
+  bundle=$output
+  contents=$bundle
+  executable_dir=$bundle
+  app_dir=$bundle/app
+fi
+
+rm -rf "$bundle"
+mkdir -p "$executable_dir" "$app_dir" "$module_cache"
+cp -R "$input/app/." "$app_dir/"
+
+shopt -s nullglob
+swift_sources=()
+for source in "$native_shell"/*.swift; do
+  [[ -f "$source" ]] || continue
+  swift_sources+=("$source")
+done
+
+has_shell=false
+for source in "${swift_sources[@]}"; do
+  if [[ $(basename "$source") == AppdShell.swift ]]; then
+    has_shell=true
+  fi
+done
+if [[ "$has_shell" != true ]]; then
+  echo "Apple native shell source is missing: $native_shell/AppdShell.swift" >&2
+  exit 1
+fi
+
+for plugin in "$input/plugins"/*; do
+  [[ -d "$plugin" ]] || continue
+  for source in "$plugin/sources"/*; do
+    [[ -f "$source" ]] || continue
+    case "$source" in
+      *.swift) swift_sources+=("$source") ;;
+      *)
+        echo "Apple plugin source must be Swift: $source" >&2
+        exit 1
+        ;;
+    esac
+  done
+done
+
+registry=$temporary/AppdPluginRegistry.swift
+{
+  printf '%s\n\n' 'import Foundation'
+  printf '%s\n' 'func appdPlugins() -> [any AppdPlugin] {'
+  printf '%s\n' '  ['
+  for plugin in "$input/plugins"/*; do
+    [[ -d "$plugin" ]] || continue
+    printf '    %s(),\n' "$(cat "$plugin/class")"
+  done
+  printf '%s\n' '  ]'
+  printf '%s\n' '}'
+} > "$registry"
+
+swift_args=(
+  "${swift_sources[@]}"
+  "$registry"
+  -target "$triple"
+  -swift-version 5
+  -Osize
+  -whole-module-optimization
+  -module-cache-path "$module_cache"
+  -F "$framework_root"
+  -framework AppdRuntime
+  -framework CoreFoundation
+  -lc++
+  -lresolv
+  -Xlinker -dead_strip
+)
+for plugin in "$input/plugins"/*; do
+  [[ -d "$plugin" ]] || continue
+  for framework_file in "$plugin/frameworks"/*; do
+    [[ -f "$framework_file" ]] || continue
+    swift_args+=(-framework "$(cat "$framework_file")")
+  done
+done
+
+xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_name"
+
+xml_escape() {
+  printf '%s' "$1" |
+    sed -e 's/&/\&amp;/g' \
+      -e 's/</\&lt;/g' \
+      -e 's/>/\&gt;/g' \
+      -e 's/"/\&quot;/g' \
+      -e "s/'/\&apos;/g"
+}
+
+write_plugin_plist() {
+  for plugin in "$input/plugins"/*; do
+    [[ -d "$plugin" ]] || continue
+    for entry in "$plugin/plist"/*; do
+      [[ -d "$entry" ]] || continue
+      key=$(cat "$entry/key")
+      value=$(cat "$entry/value")
+      printf '  <key>%s</key><string>%s</string>\n' \
+        "$(xml_escape "$key")" "$(xml_escape "$value")"
+    done
+  done
+}
+
+write_plist() {
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+    printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    printf '%s\n' '<plist version="1.0"><dict>'
+    printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$(xml_escape "$bundle_id")"
+    printf '  <key>CFBundleName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
+    printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$(xml_escape "$app_name")"
+    printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
+    printf '%s\n' '  <key>CFBundleVersion</key><string>1</string>'
+    printf '%s\n' '  <key>CFBundleShortVersionString</key><string>1.0</string>'
+    printf '  <key>AppdHost</key><string>%s</string>\n' "$(xml_escape "$host")"
+    write_plugin_plist
+    if [[ "$platform" == macos ]]; then
+      printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
+      printf '%s\n' '  <key>NSHighResolutionCapable</key><true/>'
+    else
+      if [[ "$platform" == ios-simulator ]]; then
+        supported_platform=iPhoneSimulator
+      else
+        supported_platform=iPhoneOS
+      fi
+      printf '  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n' "$supported_platform"
+      printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
+      printf '%s\n' '  <key>MinimumOSVersion</key><string>17.0</string>'
+      printf '%s\n' '  <key>LSRequiresIPhoneOS</key><true/>'
+      printf '%s\n' '  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>'
+      printf '%s\n' '  <key>UILaunchScreen</key><dict/>'
+      printf '%s\n' '  <key>UISupportedInterfaceOrientations</key><array>'
+      printf '%s\n' '    <string>UIInterfaceOrientationPortrait</string>'
+      printf '%s\n' '    <string>UIInterfaceOrientationLandscapeLeft</string>'
+      printf '%s\n' '    <string>UIInterfaceOrientationLandscapeRight</string>'
+      printf '%s\n' '  </array>'
+    fi
+    printf '%s\n' '</dict></plist>'
+  } > "$contents/Info.plist"
+}
+
+write_plist
+
+sign_bundle() {
+  if [[ "$platform" == ios ]]; then
+    identity=${APPD_IOS_SIGNING_IDENTITY-}
+    profile=${APPD_IOS_PROVISIONING_PROFILE-}
+    if [[ -n "$identity" && -n "$profile" ]]; then
+      cp "$profile" "$bundle/embedded.mobileprovision"
+      decoded=$temporary/profile.plist
+      entitlements=$temporary/entitlements.plist
+      if ! security cms -D -i "$profile" > "$decoded"; then
+        openssl smime -inform der -verify -noverify -in "$profile" > "$decoded"
+      fi
+      plutil -extract Entitlements xml1 -o "$entitlements" "$decoded"
+      codesign --force --timestamp=none --sign "$identity" \
+        --generate-entitlement-der --entitlements "$entitlements" "$bundle"
+    elif [[ -z "$identity" && -z "$profile" ]]; then
+      codesign --force --timestamp=none --sign - "$bundle"
+    else
+      echo "physical iOS signing requires APPD_IOS_SIGNING_IDENTITY and APPD_IOS_PROVISIONING_PROFILE" >&2
+      exit 1
+    fi
+  else
+    codesign --force --timestamp=none --sign - "$bundle"
+  fi
+}
+
+sign_bundle

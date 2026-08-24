@@ -80,47 +80,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "appd-bundle"
+name = "appd"
 version = "0.1.0"
 dependencies = [
- "flate2",
- "jsonc-parser",
- "mime_guess",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
- "walkdir",
-]
-
-[[package]]
-name = "appd-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "appd-bundle",
- "appd-quickjs",
- "appd-target-pack",
- "assert_cmd",
- "clap",
- "predicates",
- "serde",
- "serde_json",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
-name = "appd-quickjs"
-version = "0.1.0"
-dependencies = [
- "appd-vfs",
  "base64",
  "flate2",
+ "getrandom 0.4.2",
+ "jni",
+ "jsonc-parser",
  "libc",
- "node-fs",
+ "mime_guess",
  "openssl",
+ "p256",
  "rcgen",
  "rquickjs",
  "serde",
@@ -129,79 +100,9 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
-]
-
-[[package]]
-name = "appd-runtime"
-version = "0.1.0"
-dependencies = [
- "appd-bundle",
- "appd-quickjs",
- "openssl",
- "rcgen",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "time",
+ "toml 1.1.2+spec-1.1.0",
+ "walkdir",
  "x509-parser",
-]
-
-[[package]]
-name = "appd-shell-android"
-version = "0.1.0"
-dependencies = [
- "appd-bundle",
- "appd-quickjs",
- "appd-runtime",
- "jni",
-]
-
-[[package]]
-name = "appd-shell-apple"
-version = "0.1.0"
-dependencies = [
- "appd-bundle",
- "appd-quickjs",
- "appd-runtime",
- "p256",
- "rcgen",
- "tempfile",
-]
-
-[[package]]
-name = "appd-shell-windows"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "appd-bundle",
- "appd-quickjs",
- "appd-runtime",
- "base64",
- "openssl",
- "serde",
- "serde_json",
- "tao",
- "webview2-com",
- "windows",
- "wry",
-]
-
-[[package]]
-name = "appd-target-pack"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "appd-vfs"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.4.2",
- "tempfile",
 ]
 
 [[package]]
@@ -506,6 +407,22 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "appd",
+ "assert_cmd",
+ "clap",
+ "predicates",
+ "serde",
+ "serde_json",
+ "target-pack-format",
+ "tempfile",
+ "walkdir",
+]
 
 [[package]]
 name = "colorchoice"
@@ -1773,15 +1690,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "node-fs"
-version = "0.1.0"
-dependencies = [
- "appd-vfs",
- "rquickjs",
- "tempfile",
-]
-
-[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2982,6 +2890,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "target-pack-format"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3529,6 +3447,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "appd",
+ "base64",
+ "openssl",
+ "serde",
+ "serde_json",
+ "tao",
+ "webview2-com",
+ "windows",
+ "wry",
+]
+
+[[package]]
 name = "windows-strings"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3874,6 +3808,17 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.18",
  "time",
+]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "target-pack-format",
+ "tempfile",
+ "walkdir",
 ]
 
 [[package]]

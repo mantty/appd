@@ -7,50 +7,68 @@ same JavaScript runtime and compatibility layer.
 
 ## Structure
 
-- `crates/appd-quickjs/` owns QuickJS-NG embedding, the Rust gateway, request
-  runtimes, and native lifecycle.
+- `appd/` owns the runtime library. Its modules are organised under
+  `appd/src/worker_package/`, `appd/src/quickjs/`, `appd/src/runtime/`,
+  `appd/src/vfs/`, and `appd/src/node_fs/`.
+- `appd/src/worker_package/` owns the on-disk Worker contract: layout, Wrangler
+  config, and the asset manifest. The CLI writes it and the runtime reads it.
+- `appd/src/quickjs/` owns the QuickJS-NG engine integration and gateway.
+- `appd/src/runtime/` owns certificates, lifecycle, and runtime startup.
+- `appd/src/vfs/` and `appd/src/node_fs/` own the Workers filesystem contract
+  and native Node filesystem bindings.
 - `runtime/qjs/` owns the engine-neutral Web, Node, and Workers compatibility
   modules bundled into each Worker.
-- `crates/appd-runtime/` is the runtime library: certificates, lifecycle, and
-  events. A shell drives it; it owns no application object or event loop.
-- `crates/appd-shell-apple/` provides the precompiled Apple runtime library and
-  the Swift application shell compiled by `appd build`.
-- `crates/appd-shell-android/` provides the precompiled Android runtime library
-  and the Kotlin application shell compiled by `appd build`.
-- `crates/appd-shell-windows/` provides the precompiled Windows runtime
-  executable.
-- `crates/appd-bundle/` owns the on-disk app contract: layout, Wrangler
-  config, and the asset manifest. The CLI writes it and the runtime reads it.
-- `crates/appd-cli/` builds web projects and packages native application
+- `cli/` builds web projects and packages native application
   bundles.
-- `crates/appd-target-pack/` defines the versioned CLI/runtime artifact
-  contract.
+- `tools/xtask/` contains maintainer-only target-pack generation. Target packs
+  are CI/build artifacts, not a user-facing CLI operation.
+- `appd/src/platform/` owns the target-specific runtime bridges, including the
+  Apple C ABI and Android JNI ABI.
+- `platforms/apple/source/` contains the Swift application shell and Apple ABI
+  headers. `platforms/apple/build/entrypoint` owns the Apple bundle build.
+- `platforms/android/source/` contains the Kotlin application shell compiled
+  by `platforms/android/build/entrypoint`.
+- `platforms/windows/source/` contains the Rust application shell, and
+  `platforms/windows/build/entrypoint.ps1` owns Windows app assembly around
+  the precompiled shell.
 - `plugins/` contains the frontend plugin bridge and plugin packages. Plugin
   Swift and Kotlin sources compile with the application shell.
 
 The native shell is the application: it owns the process entry point, window,
-`WebView`, and operating-system lifecycle, and drives a precompiled appd
-runtime library through a narrow native API. Target packs contain that library
-and the shell sources for one target. `appd build` compiles the shell and links
-the library; it never compiles Rust. The QuickJS runtime owns HTTPS gateway
-handling, HTTP routing, Worker execution, static assets, and request-scoped
-storage. Client-certificate verification remains required for the loopback
-gateway.
+`WebView`, and operating-system lifecycle, and drives the appd runtime through
+a narrow native API. The appd package owns the shared runtime and its
+target-specific runtime bridges; each platform directory owns its shell and
+build entrypoint. Target packs contain the compiled appd artifact, native shell
+sources where the platform compiles them during app assembly, or a precompiled
+shell executable for Windows, plus a `build/entrypoint` (or
+`build/entrypoint.ps1` for Windows) for one target. `appd build`
+prepares the Worker package and native plugin inputs, then invokes that
+entrypoint as `build INPUT_DIRECTORY OUTPUT_PATH`. The CLI does not generate
+platform projects; each entrypoint owns its platform toolchain, bundle layout,
+signing, and project files. The QuickJS runtime owns HTTPS gateway handling,
+HTTP routing, Worker execution, static assets, and request-scoped storage.
+Client-certificate verification remains required for the loopback gateway.
+
+The entrypoint input directory contains the prepared app under `app/`, the
+selected runtime and native shell artifacts under `runtime/` and
+`native-shell/`, one-value build metadata under `metadata/`, and normalized
+native plugin data under `plugins/`.
 
 ## Commands
 
 ```sh
 cargo fmt --all --check
-xcrun swift-format lint --strict crates/appd-shell-apple/native/*.swift plugins/*/apple/*.swift
+xcrun swift-format lint --strict platforms/apple/source/*.swift plugins/*/apple/*.swift
 pnpm lint:ts
 pnpm test:ts
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p appd-runtime --all-targets --features test-stubs -- -D warnings
-cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target aarch64-apple-ios -- -D warnings
-cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target aarch64-apple-ios-sim -- -D warnings
-cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target x86_64-apple-ios -- -D warnings
-cargo clippy -p appd-shell-apple --all-targets --features test-stubs --target x86_64-apple-darwin -- -D warnings
-cargo clippy -p appd-shell-android --all-targets --features test-stubs --target aarch64-linux-android -- -D warnings
+cargo clippy -p appd --all-targets --features test-stubs -- -D warnings
+cargo clippy -p appd --lib --features test-stubs --target aarch64-apple-ios -- -D warnings
+cargo clippy -p appd --lib --features test-stubs --target aarch64-apple-ios-sim -- -D warnings
+cargo clippy -p appd --lib --features test-stubs --target x86_64-apple-ios -- -D warnings
+cargo clippy -p appd --lib --features test-stubs --target x86_64-apple-darwin -- -D warnings
+cargo clippy -p appd --lib --features test-stubs --target aarch64-linux-android -- -D warnings
+cargo test -p appd --features native --test packaged_worker
 cargo test --workspace
 ```
 
@@ -58,13 +76,13 @@ Build a target pack with:
 
 ```sh
 pnpm install
-appd pack build --target macos-arm64
+cargo run -p xtask -- target-pack --target macos-arm64
 ```
 
 The following command builds the example and creates a native app:
 
 ```sh
-appd pack build --target macos-arm64
+cargo run -p xtask -- target-pack --target macos-arm64
 appd build macos --project examples/astro \
   --target-pack target/appd-target-packs/macos-arm64/target-pack.json \
   --config examples/astro/dist/server/wrangler.json

@@ -1,0 +1,55 @@
+[package]
+name = "appd"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+default = []
+native = [
+    "dep:base64",
+    "dep:getrandom",
+    "dep:libc",
+    "dep:openssl",
+    "dep:rcgen",
+    "dep:time",
+    "dep:tokio",
+    "dep:x509-parser",
+]
+test-stubs = ["native"]
+
+[dependencies]
+base64 = { workspace = true, optional = true }
+flate2.workspace = true
+getrandom = { workspace = true, optional = true }
+jsonc-parser = { workspace = true, features = ["serde"] }
+libc = { workspace = true, optional = true }
+mime_guess.workspace = true
+openssl = { workspace = true, optional = true }
+rcgen = { workspace = true, features = ["pem", "x509-parser"], optional = true }
+rquickjs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+time = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+walkdir.workspace = true
+x509-parser = { workspace = true, features = ["verify"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+p256.workspace = true
+
+[lints]
+workspace = true

@@ -42,7 +42,7 @@ features deferred by the compatibility contract.
 - Use one `JSRuntime` and one `JSContext` per request.
 - Compile the Worker to QuickJS bytecode during `appd build` and load that
   bytecode per request.
-- Use the same pinned `rquickjs` and QuickJS-NG revision in `appd-cli` and the
+- Use the same pinned `rquickjs` and QuickJS-NG revision in `cli` and the
   target runtime. Reject target packs from a different appd release.
 - Schedule each request on the shared Tokio runtime. Keep its QuickJS runtime,
   context, and JavaScript execution on one Tokio blocking task.
@@ -78,10 +78,10 @@ WebView
              `- shared immutable WorkerImage and /bundle
 ```
 
-`appd-runtime` continues to own certificates, application lifecycle, events,
+`appd` continues to own certificates, application lifecycle, events,
 and the shell-facing API.
 
-A new `appd-quickjs` crate owns the engine, runtime threads, gateway, Worker
+The `appd/src/quickjs` module owns the engine, runtime threads, gateway, Worker
 image, request lifecycle, native modules, VFS, and asynchronous host I/O. It
 replaces `appd-bare` directly; no backend trait is added.
 
@@ -131,8 +131,8 @@ The packaged app contains:
 - a manifest and files for read-only `/bundle`; and
 - the existing static asset manifest and files.
 
-`appd-cli` statically links QuickJS-NG through `rquickjs`. After esbuild emits
-the bundled ESM, `appd-cli` uses `Module::declare()` and `Module::write()` to
+`cli` statically links QuickJS-NG through `rquickjs`. After esbuild emits
+the bundled ESM, `cli` uses `Module::declare()` and `Module::write()` to
 compile and serialize it without evaluation. Bytecode endianness follows the
 target; all current targets are little-endian. `qjsc` is not packaged or
 invoked; `rquickjs` provides its compile-and-serialize operation in-process.
@@ -271,7 +271,7 @@ Use maintained Rust protocol and TLS libraries with bounded queues. Preserve
 backpressure, cancellation, repeated `Set-Cookie` headers, HEAD responses, and
 disconnect handling. Do not implement general protocol parsers.
 
-`appd-runtime` remains the certificate authority. It gives the gateway each
+`appd` remains the certificate authority. It gives the gateway each
 renewed TLS configuration before another handshake is accepted.
 
 Outbound fetch, Node HTTP clients, `cloudflare:sockets`, DNS, WebSockets, and
@@ -314,14 +314,14 @@ ownership does not depend on it because each runtime has one `RequestState`.
 | Area | Change |
 | --- | --- |
 | Top-level `bare/` | Delete it; do not add a corresponding `quickjs/` directory because Cargo builds QuickJS-NG through `rquickjs`. |
-| `crates/appd-bare` | Replace it directly with `crates/appd-quickjs`. |
-| `appd-runtime` | Depend on `appd-quickjs` without changing its public API. |
-| `appd-cli` | Statically link QuickJS-NG through `rquickjs` and compile bundled ESM to bytecode. |
-| `appd-bundle` | Package Worker bytecode, source map, environment, and `/bundle` manifest. |
+| `appd/src/quickjs` | Keep the QuickJS engine and gateway as an `appd` module. |
+| `appd` | Own the runtime, QuickJS, VFS, and native Node APIs in modules. |
+| `cli` | Compile bundled ESM to bytecode and package native apps. |
+| `appd/src/worker_package` | Package Worker bytecode, source map, environment, and `/bundle` manifest. |
 | Runtime JavaScript | Remove all `bare-*` dependencies as features move. |
 | Worker packer | Emit bundled ESM; remove the CommonJS worklet and `bare-pack`. |
-| Target packs | Link QuickJS-NG and ICU4X data; remove BareKit and Bare runtime artifacts; bump the manifest schema. |
-| Native shells | Keep the existing appd ABI and shell build commands. |
+| `tools/xtask` | Build target packs and keep the versioned manifest schema out of the user CLI. |
+| Native shells | Keep the ABI and co-locate each platform build entrypoint with its shell. The CLI invokes the fixed target-pack entrypoint convention. |
 | CI | Build the pinned engine for every target and package only prebuilt artifacts for users. |
 
 ## Implementation sequence
@@ -339,7 +339,7 @@ ownership does not depend on it because each runtime has one `RequestState`.
 
 ### 2. Prove QuickJS before migration
 
-1. Add `appd-quickjs` with pinned published `rquickjs` and ICU4X releases.
+1. Add `appd/src/quickjs` with pinned published `rquickjs` and ICU4X releases.
 2. Prove native functions and classes, async promises, ESM, top-level await,
    compile-without-evaluation, bytecode reuse, source-mapped errors, pending
    jobs, rejection tracking, interrupts, charging-allocation failure,
@@ -400,7 +400,7 @@ dependency at the same time.
    macOS, iOS Simulator, and Android emulator.
 3. Build physical iOS, both simulator architectures, both macOS
    architectures, Android arm64, and Windows x64 target packs.
-4. Switch `appd-runtime` directly to `appd-quickjs`.
+4. Switch `appd` directly to `appd/src/quickjs`.
 5. Delete the top-level `bare/` directory, `appd-bare`, BareKit, `bare-pack`,
    Bare packaging, and unused `bare-*` dependencies. Do not add a top-level
    QuickJS build directory.

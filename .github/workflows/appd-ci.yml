@@ -37,6 +37,8 @@ jobs:
           {
             echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android31-clang"
             echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android31 --sysroot=${toolchain}/sysroot"
             echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/bin/aarch64-linux-android31-clang"
           } >> "${GITHUB_ENV}"
 
@@ -59,39 +61,30 @@ jobs:
         run: |
           pnpm lint:ts
           pnpm test:ts
-          pnpm test:bare
-          pnpm build:runtime
-          pnpm --config.node-linker=isolated --filter @appd/bare-runtime deploy --prod "${RUNNER_TEMP}/appd-runtime"
-          pnpm --config.node-linker=isolated --filter @appd/bare-pack-tool deploy --prod "${RUNNER_TEMP}/appd-packer"
-          test -f target/runtime-js/bootstrap.js
-          test -d "${RUNNER_TEMP}/appd-runtime/node_modules/bare-https"
-          test -f "${RUNNER_TEMP}/appd-packer/node_modules/bare-pack/bin.js"
-          test -f "${RUNNER_TEMP}/appd-packer/node_modules/esbuild/bin/esbuild"
 
       - name: Check native shells
-        run: xcrun swift-format lint --strict crates/appd-shell-apple/native/*.swift plugins/*/apple/*.swift
+        run: xcrun swift-format lint --strict platforms/apple/native/*.swift plugins/*/apple/*.swift
 
-      - name: Build host Bare SDK
+      - name: Build host target pack
         run: |
           case "$(uname -m)" in
             arm64) target=macos-arm64 ;;
             x86_64) target=macos-x64 ;;
             *) echo "unsupported runner architecture" >&2; exit 1 ;;
           esac
-          cargo run -p appd-cli -- pack build --target "${target}"
+          cargo run -p xtask -- target-pack --target "${target}"
 
       - name: Check Rust
         run: |
           cargo fmt --all --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p appd-runtime --all-targets --features test-stubs -- -D warnings
-          cargo clippy -p appd-shell-apple --all-targets --target aarch64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p appd-shell-apple --all-targets --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
-          cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p appd-shell-apple --all-targets --target x86_64-apple-darwin --features test-stubs -- -D warnings
-          cargo clippy -p appd-shell-android --all-targets --target aarch64-linux-android --features test-stubs -- -D warnings
-          cargo test -p appd-bare --features native
-          cargo test -p appd-runtime --features native --test packaged_worker
+          cargo clippy -p appd --all-targets --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-linux-android --features test-stubs -- -D warnings
+          cargo test -p appd --features native
           cargo test --workspace
 
   check-windows:
@@ -138,10 +131,9 @@ jobs:
         run: |
           pnpm lint:ts
           pnpm test:ts
-          pnpm test:bare
 
       - name: Build Windows target pack
-        run: cargo run -p appd-cli -- pack build --target windows-x64
+        run: cargo run -p xtask -- target-pack --target windows-x64
 
       - name: Check Rust
         run: |

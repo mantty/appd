@@ -1,0 +1,524 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+use anyhow::{Context, Result, bail};
+use appd::worker_package::{AppLayout, app_host};
+use appd::{Certificates, Config, Event, Runtime, frontend_url};
+use base64::Engine;
+use openssl::pkcs12::Pkcs12;
+use openssl::pkey::PKey;
+use openssl::x509::X509;
+use serde::Deserialize;
+use tao::event::{Event as TaoEvent, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::platform::run_return::EventLoopExtRunReturn;
+use tao::window::WindowBuilder;
+use webview2_com::{
+    ClientCertificateRequestedEventHandler, PermissionRequestedEventHandler,
+    ServerCertificateErrorDetectedEventHandler,
+};
+use webview2_com::{Microsoft::Web::WebView2::Win32::*, take_pwstr};
+use windows::Win32::Security::Cryptography::{
+    CERT_CONTEXT, CERT_STORE_ADD_REPLACE_EXISTING_INHERIT_PROPERTIES, CRYPT_INTEGER_BLOB,
+    CertAddCertificateContextToStore, CertCloseStore, CertDeleteCertificateFromStore,
+    CertEnumCertificatesInStore, CertOpenSystemStoreW, HCERTSTORE, PFXImportCertStore,
+    PKCS12_PREFER_CNG_KSP,
+};
+use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
+use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellConfig {
+    name: String,
+    host: String,
+}
+
+pub(crate) fn run() -> Result<()> {
+    let mut event_loop = EventLoopBuilder::<Event>::with_user_event().build();
+    let events = event_loop.create_proxy();
+    let root = executable_dir()?;
+    let config = read_config(&root)?;
+    let state = state_dir(&config.name)?;
+    let runtime = Runtime::start(
+        Config {
+            app: AppLayout::new(root.join("app")),
+            state_dir: state.join("runtime"),
+            host: config.host.clone(),
+        },
+        move |event| {
+            report(&event);
+            let _ = events.send_event(event);
+        },
+    )?;
+    let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
+    let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
+    let window = WindowBuilder::new()
+        .with_title(&config.name)
+        .build(&event_loop)
+        .context("create app window")?;
+    let mut context = WebContext::new(Some(state.join("webview")));
+    let webview = WebViewBuilder::new_with_web_context(&mut context)
+        .with_additional_browser_args(browser_arguments(&config.host, runtime.port()))
+        .build(&window)
+        .context("create WebView2")?;
+    let handlers = Handlers::install(
+        &webview,
+        runtime.certificates(),
+        &config.host,
+        &config.name,
+        Arc::clone(&client_certificate),
+    )?;
+    webview
+        .load_url(&frontend_url(&config.host))
+        .context("load app URL")?;
+
+    let certificates = runtime.certificates();
+    let host = config.host.clone();
+    let mut identity = identity;
+    event_loop.run_return(move |event, _, flow| {
+        *flow = ControlFlow::Wait;
+        match event {
+            TaoEvent::UserEvent(Event::CertificatesRenewed) => {
+                if let Err(error) = identity.replace(&certificates, &host, &client_certificate) {
+                    eprintln!("appd client certificate renewal failed: {error:#}");
+                }
+            }
+            TaoEvent::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *flow = ControlFlow::Exit,
+            _ => {}
+        }
+    });
+    drop(handlers);
+    drop(webview);
+    drop(runtime);
+    Ok(())
+}
+
+fn executable_dir() -> Result<PathBuf> {
+    env::current_exe()?
+        .parent()
+        .map(Path::to_path_buf)
+        .context("app executable has no parent directory")
+}
+
+fn read_config(root: &Path) -> Result<ShellConfig> {
+    let config: ShellConfig =
+        serde_json::from_slice(&fs::read(root.join("appd.json")).context("read appd.json")?)?;
+    let expected = app_host(&config.name).context("appd.json name is not a DNS label")?;
+    if config.host == expected {
+        Ok(config)
+    } else {
+        bail!("appd.json host does not match its app name")
+    }
+}
+
+fn state_dir(name: &str) -> Result<PathBuf> {
+    let root = env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is unavailable")?;
+    let path = PathBuf::from(root).join(name).join("appd");
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+fn browser_arguments(host: &str, port: u16) -> String {
+    let pac = format!(
+        "function FindProxyForURL(url, host){{return host.toLowerCase()==='{host}'?'PROXY 127.0.0.1:{port}':'DIRECT';}}"
+    );
+    let pac = base64::engine::general_purpose::STANDARD.encode(pac);
+    format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,{pac}"
+    )
+}
+
+fn report(event: &Event) {
+    eprintln!("appd runtime: {event:?}");
+}
+
+struct ClientIdentity {
+    store: HCERTSTORE,
+    certificate: *const CERT_CONTEXT,
+    der: Vec<u8>,
+}
+
+impl ClientIdentity {
+    fn install(certificates: &Certificates, host: &str) -> Result<Self> {
+        let appd::Decision::PresentIdentity {
+            certificate,
+            private_key,
+        } = certificates.decide(&appd::Challenge::ClientCertificate {
+            host,
+            previous_failures: 0,
+        })
+        else {
+            bail!("appd client certificate is unavailable")
+        };
+        let pfx = pfx(&certificate, &private_key)?;
+        let imported = import_pfx(&pfx)?;
+        let result = add_to_personal_store(imported, &certificate);
+        unsafe {
+            let _ = CertCloseStore(Some(imported), 0);
+        }
+        result
+    }
+
+    fn certificate(&self) -> &[u8] {
+        &self.der
+    }
+
+    fn replace(
+        &mut self,
+        certificates: &Certificates,
+        host: &str,
+        current: &RwLock<Vec<u8>>,
+    ) -> Result<()> {
+        let replacement = Self::install(certificates, host)?;
+        let mut held = current
+            .write()
+            .map_err(|_| anyhow::anyhow!("client certificate state is unavailable"))?;
+        *held = replacement.der.clone();
+        drop(held);
+        drop(std::mem::replace(self, replacement));
+        Ok(())
+    }
+}
+
+impl Drop for ClientIdentity {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CertDeleteCertificateFromStore(self.certificate);
+            let _ = CertCloseStore(Some(self.store), 0);
+        }
+    }
+}
+
+fn pfx(certificate: &[u8], private_key: &[u8]) -> Result<Vec<u8>> {
+    let certificate = X509::from_der(certificate)?;
+    let private_key = PKey::private_key_from_der(private_key)?;
+    Ok(Pkcs12::builder()
+        .name("appd")
+        .pkey(&private_key)
+        .cert(&certificate)
+        .build2("")?
+        .to_der()?)
+}
+
+fn import_pfx(data: &[u8]) -> Result<HCERTSTORE> {
+    let blob = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(data.len()).context("client identity is too large")?,
+        pbData: data.as_ptr().cast_mut(),
+    };
+    unsafe {
+        PFXImportCertStore(&blob, PCWSTR::null(), PKCS12_PREFER_CNG_KSP)
+            .context("import appd client identity")
+    }
+}
+
+fn add_to_personal_store(imported: HCERTSTORE, der: &[u8]) -> Result<ClientIdentity> {
+    let certificate = unsafe { CertEnumCertificatesInStore(imported, None) };
+    if certificate.is_null() {
+        bail!("imported appd client identity contains no certificate")
+    }
+    let store = unsafe { CertOpenSystemStoreW(None, w!("MY")) }
+        .context("open personal certificate store")?;
+    let mut added = std::ptr::null_mut();
+    let result = unsafe {
+        CertAddCertificateContextToStore(
+            Some(store),
+            certificate,
+            CERT_STORE_ADD_REPLACE_EXISTING_INHERIT_PROPERTIES,
+            Some(&mut added),
+        )
+    };
+    if let Err(error) = result {
+        unsafe {
+            let _ = CertCloseStore(Some(store), 0);
+        }
+        return Err(error).context("install appd client identity");
+    }
+    if added.is_null() {
+        unsafe {
+            let _ = CertCloseStore(Some(store), 0);
+        }
+        bail!("Windows did not return the installed appd client identity")
+    }
+    Ok(ClientIdentity {
+        store,
+        certificate: added,
+        der: der.to_vec(),
+    })
+}
+
+struct Handlers {
+    client: ICoreWebView2_5,
+    client_token: i64,
+    permissions: ICoreWebView2,
+    permission_token: i64,
+    server: ICoreWebView2_14,
+    server_token: i64,
+}
+
+impl Handlers {
+    fn install(
+        webview: &wry::WebView,
+        certificates: std::sync::Arc<Certificates>,
+        host: &str,
+        name: &str,
+        client: Arc<RwLock<Vec<u8>>>,
+    ) -> Result<Self> {
+        let raw = webview.webview();
+        let client_view: ICoreWebView2_5 = raw.cast()?;
+        let permissions = raw.clone();
+        let server_view: ICoreWebView2_14 = raw.cast()?;
+        let mut client_token = 0;
+        let mut permission_token = 0;
+        let mut server_token = 0;
+        unsafe {
+            client_view.add_ClientCertificateRequested(
+                &ClientCertificateRequestedEventHandler::create(Box::new(client_challenge(
+                    host.to_owned(),
+                    client,
+                ))),
+                &mut client_token,
+            )?;
+            permissions.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(permission_challenge(
+                    host.to_owned(),
+                    name.to_owned(),
+                ))),
+                &mut permission_token,
+            )?;
+            server_view.add_ServerCertificateErrorDetected(
+                &ServerCertificateErrorDetectedEventHandler::create(Box::new(server_challenge(
+                    certificates,
+                    host.to_owned(),
+                ))),
+                &mut server_token,
+            )?;
+        }
+        Ok(Self {
+            client: client_view,
+            client_token,
+            permissions,
+            permission_token,
+            server: server_view,
+            server_token,
+        })
+    }
+}
+
+impl Drop for Handlers {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self
+                .client
+                .remove_ClientCertificateRequested(self.client_token);
+            let _ = self
+                .permissions
+                .remove_PermissionRequested(self.permission_token);
+            let _ = self
+                .server
+                .remove_ServerCertificateErrorDetected(self.server_token);
+        }
+    }
+}
+
+fn client_challenge(
+    host: String,
+    client: Arc<RwLock<Vec<u8>>>,
+) -> impl FnMut(
+    Option<ICoreWebView2>,
+    Option<ICoreWebView2ClientCertificateRequestedEventArgs>,
+) -> windows::core::Result<()> {
+    move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        if webview_string(|value| unsafe { args.Host(value) })? != host {
+            return Ok(());
+        }
+        let client = client
+            .read()
+            .map_err(|_| windows::core::Error::from_win32())?;
+        let certificates = unsafe { args.MutuallyTrustedCertificates() }?;
+        let mut count = 0;
+        unsafe { certificates.Count(&mut count) }?;
+        for index in 0..count {
+            let candidate = unsafe { certificates.GetValueAtIndex(index)? };
+            if certificate_matches(&candidate, &client)? {
+                unsafe {
+                    args.SetSelectedCertificate(&candidate)?;
+                    args.SetHandled(true)?;
+                }
+                return Ok(());
+            }
+        }
+        unsafe { args.SetCancel(true) }
+    }
+}
+
+fn permission_challenge(
+    host: String,
+    name: String,
+) -> impl FnMut(
+    Option<ICoreWebView2>,
+    Option<ICoreWebView2PermissionRequestedEventArgs>,
+) -> windows::core::Result<()> {
+    move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        let uri = webview_string(|value| unsafe { args.Uri(value) })?;
+        let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+        unsafe { args.PermissionKind(&mut kind) }?;
+        if !is_app_geolocation_request(kind, &uri, &host) {
+            return Ok(());
+        }
+        let message = HSTRING::from(format!("{name} wants to access your location."));
+        let caption = HSTRING::from("Location access");
+        let state = if unsafe { MessageBoxW(None, &message, &caption, MB_YESNO | MB_ICONQUESTION) }
+            == IDYES
+        {
+            COREWEBVIEW2_PERMISSION_STATE_ALLOW
+        } else {
+            COREWEBVIEW2_PERMISSION_STATE_DENY
+        };
+        unsafe { args.SetState(state) }
+    }
+}
+
+fn is_app_geolocation_request(kind: COREWEBVIEW2_PERMISSION_KIND, uri: &str, host: &str) -> bool {
+    kind == COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION && is_app_origin(uri, host)
+}
+
+fn is_app_origin(uri: &str, host: &str) -> bool {
+    request_authority(uri).is_some_and(|authority| {
+        authority
+            .strip_prefix(host)
+            .is_some_and(|suffix| suffix.is_empty() || suffix == ":443")
+    })
+}
+
+fn server_challenge(
+    certificates: std::sync::Arc<Certificates>,
+    host: String,
+) -> impl FnMut(
+    Option<ICoreWebView2>,
+    Option<ICoreWebView2ServerCertificateErrorDetectedEventArgs>,
+) -> windows::core::Result<()> {
+    move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        let certificate = unsafe { args.ServerCertificate()? };
+        let pem = certificate_pem(&certificate)?;
+        let action = if request_host(&webview_string(|value| unsafe { args.RequestUri(value) })?)
+            == Some(host.as_str())
+            && certificates.trusts_server_certificate(&host, &pem)
+        {
+            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW
+        } else {
+            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL
+        };
+        unsafe { args.SetAction(action) }
+    }
+}
+
+fn request_host(url: &str) -> Option<&str> {
+    request_authority(url)?.split(':').next()
+}
+
+fn request_authority(url: &str) -> Option<&str> {
+    url.strip_prefix("https://")?.split(['/', '?', '#']).next()
+}
+
+fn certificate_matches(
+    certificate: &ICoreWebView2ClientCertificate,
+    expected: &[u8],
+) -> windows::core::Result<bool> {
+    Ok(X509::from_pem(certificate_pem(certificate)?.as_bytes())
+        .ok()
+        .and_then(|certificate| certificate.to_der().ok())
+        .is_some_and(|der| der == expected))
+}
+
+fn certificate_pem(certificate: &impl PemCertificate) -> windows::core::Result<String> {
+    let mut value = PWSTR::null();
+    unsafe { certificate.pem(&mut value)? };
+    Ok(take_pwstr(value))
+}
+
+trait PemCertificate {
+    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()>;
+}
+
+impl PemCertificate for ICoreWebView2Certificate {
+    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()> {
+        unsafe { self.ToPemEncoding(value) }
+    }
+}
+
+impl PemCertificate for ICoreWebView2ClientCertificate {
+    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()> {
+        unsafe { self.ToPemEncoding(value) }
+    }
+}
+
+fn webview_string(
+    read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>,
+) -> windows::core::Result<String> {
+    let mut value = PWSTR::null();
+    read(&mut value)?;
+    Ok(take_pwstr(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+        browser_arguments, is_app_geolocation_request, request_host,
+    };
+
+    #[test]
+    fn routes_only_the_app_host_through_the_local_proxy() {
+        let arguments = browser_arguments("app.appd.local", 1234);
+        assert!(
+            arguments.contains("--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,")
+        );
+    }
+
+    #[test]
+    fn extracts_a_request_host() {
+        assert_eq!(
+            request_host("https://app.appd.local/path"),
+            Some("app.appd.local")
+        );
+        assert_eq!(
+            request_host("https://app.appd.local:443/path"),
+            Some("app.appd.local")
+        );
+        assert_eq!(request_host("http://app.appd.local/"), None);
+    }
+
+    #[test]
+    fn permits_only_the_app_origin_to_request_location() {
+        assert!(is_app_geolocation_request(
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            "https://app.appd.local/",
+            "app.appd.local",
+        ));
+        assert!(!is_app_geolocation_request(
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            "https://other.appd.local/",
+            "app.appd.local",
+        ));
+        assert!(!is_app_geolocation_request(
+            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+            "https://app.appd.local:444/",
+            "app.appd.local",
+        ));
+        assert!(!is_app_geolocation_request(
+            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+            "https://app.appd.local/",
+            "app.appd.local",
+        ));
+    }
+}

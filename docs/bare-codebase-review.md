@@ -5,6 +5,9 @@ native/TypeScript/Rust split is directionally good, and the example app does
 not require app-specific runtime boilerplate. The following issues are the
 main risks to address before expanding the feature surface.
 
+> Historical review of the removed Bare runtime. The current QuickJS
+> architecture is documented in [the QuickJS runtime plan](plans/appd-quickjs-runtime.md).
+
 ## Findings
 
 ### 1. Vendored WebSocket protocol code — completed
@@ -121,7 +124,7 @@ The deployment target appears in the toolchain, build script, plist, and Rust
 configuration. This is a product compatibility decision hidden in build
 plumbing and blocks older devices.
 
-### 10. `appd-cli/src/build.rs` responsibilities — completed
+### 10. `cli/src/build/mod.rs` responsibilities — completed
 
 Build orchestration, worker compilation, target-pack handling, shared helpers,
 and Apple bundle/signing code now live in separate focused modules.
@@ -136,8 +139,8 @@ appd's native addons no longer depend on the repository's root `node_modules`.
 ### 12. Missing target packs no longer trigger a source build — completed
 
 The app build path requires a bundled or explicitly supplied target pack. Source
-target-pack generation is available only through the explicit `appd pack build`
-developer command.
+target-pack generation is available only through the maintainer-only
+`cargo run -p xtask -- target-pack` command.
 
 ### 13. Vendored dependencies lack synchronization metadata
 

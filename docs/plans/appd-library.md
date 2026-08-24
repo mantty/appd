@@ -1,7 +1,7 @@
 # appd as a library
 
-Status: implemented for macOS, iOS, and Android. Windows and Linux land with
-their platform support.
+Status: implemented for macOS, iOS, Android, and Windows. Linux remains a
+future platform.
 
 First of three: this, then `appd-api-testing.md`, then `appd-plugins.md`.
 
@@ -13,29 +13,36 @@ application and drives appd through a public API.
 
 appd is pre-release. Backwards compatibility is not a goal.
 
-## Crates
+## Rust structure
 
-| Crate | Owns |
+| Directory | Owns |
 |---|---|
-| `appd-runtime` | the library: certificates, runtime, events |
-| `appd-bare` | Bare integration |
-| `appd-bundle` | the on-disk app contract and source preparation |
-| `appd-shell-apple` | precompiled Apple runtime ABI and Swift shell |
-| `appd-shell-android` | precompiled Android runtime ABI and Kotlin shell |
-| `appd-cli` | compiling native shells and packaging apps |
+| `appd/src/worker_package` | the on-disk Worker contract and source preparation |
+| `appd/src/quickjs` | QuickJS embedding and the gateway |
+| `appd/src/runtime` | certificates, lifecycle, and runtime startup |
+| `appd/src/vfs` | the Workers virtual filesystem |
+| `appd/src/node_fs` | native `node:fs` bindings |
+| `appd/src/platform` | target-specific runtime bridges |
+| `cli` | user-facing native app packaging |
+| `platforms/apple/source` | Swift shell, C ABI header, and module map |
+| `platforms/apple/build` | Apple target-pack recipe and app build entrypoint |
+| `platforms/android/source` | Kotlin shell sources |
+| `platforms/android/build` | Android target-pack recipe and app build entrypoint |
+| `platforms/windows/source` | Rust Windows application shell |
+| `platforms/windows/build` | Windows target-pack recipe and app build entrypoint |
+| `tools/xtask` | maintainer-only target-pack generation |
+| `target_pack_format` | target-pack manifest format and target metadata |
 
-`appd-bundle` is new. `wrangler_config` and `assets` move there out of
-`appd-runtime`. It owns the app layout and resolves every path within it, so
-neither `appd-cli` nor `appd-runtime` names a file. `appd-cli` writes the
-contract, `appd-runtime` reads it, and both depend on `appd-bundle`.
+`appd/src/worker_package` owns the Worker layout and resolves every path within it,
+so neither `cli` nor the runtime names a file. `cli` writes the contract and
+the runtime reads it.
 
-`appd-bare` holds Bare-specific code only. Supporting a different backend
-means writing one new crate beside it, with no appd logic to move.
-
-Platform shell crates contain two distinct parts: a precompiled Rust runtime
-library and the native shell sources that `appd build` compiles and links
-against it. Components inside `appd-runtime` depend on each other through
-narrow interfaces.
+The `appd` package contains the shared runtime and its Apple C and Android JNI
+bridges. Every platform shell remains under `platforms/`, regardless of its
+implementation language. The CLI stages app-specific inputs and invokes the
+uniform target-pack entrypoint; it does not own platform project generation or
+signing. Components inside `appd` depend on each other through narrow
+interfaces.
 
 ## Certificates
 
@@ -48,13 +55,14 @@ narrow interfaces.
 
 ## Runtime
 
-- Starts and stops Bare through `appd-bare`, and owns the runtime handle.
-- Builds Bare's config from paths `appd-bundle` resolves and the certificates.
-- Loads app code, already prepared by `appd-cli`.
+- Starts and stops QuickJS, and owns the runtime handle.
+- Builds the runtime config from paths resolved by `appd/src/worker_package` and the
+  certificates.
+- Loads app code, already prepared by `cli`.
 - Suspends and resumes when the shell reports an OS lifecycle change.
 - Emits lifecycle events — starting, listening, suspended, resumed, failed —
   for shells and, later, plugins.
-- Learns Bare's port when its listener binds. Startup does not poll.
+- Learns the gateway's port when its listener binds. Startup does not poll.
 
 ## Shell
 
@@ -64,22 +72,12 @@ and resumes appd, and answers platform callbacks using the certificate
 component.
 
 macOS and iOS use the same Swift shell and C runtime ABI. Android uses a Kotlin
-shell and JNI runtime ABI. All target packs have the same boundary:
-precompiled Rust runtime library plus native shell sources. Developers need
-the native platform toolchain to build and sign an app, but never a Rust
-toolchain.
-
-## Steps
-
-1. Extract `appd-bundle`; repoint `appd-cli` and `appd-runtime` at it.
-2. Define the library API: start, stop, suspend, resume, config, events,
-   certificate challenges.
-3. Replace the Bare startup handshake so the port arrives when the listener
-   binds.
-4. Move the entry point, application object, and event loop into the shared
-   Swift shell for macOS and iOS.
-5. Do the same for Android in Kotlin.
-6. Do the same for Windows and Linux alongside their platform support.
+shell and JNI runtime ABI. Windows uses the Rust shell under
+`platforms/windows`. All target packs have the same boundary: a compiled appd
+artifact, native shell sources where the platform compiles the shell during app
+assembly, or a precompiled shell executable, and `build/entrypoint`.
+Developers need the native platform toolchain to build and sign an app; the
+Windows target pack additionally contains the precompiled Rust shell.
 
 ## Done when
 

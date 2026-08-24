@@ -10,10 +10,12 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-Package it from the appd workspace:
+Build a target pack from the appd workspace, then package it:
 
 ```sh
-cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.json
+cargo run -p xtask -- target-pack --target macos-arm64
+target_pack_dir=../../target/appd-target-packs \
+  cargo run -p cli -- build macos --project . --config dist/server/wrangler.json
 ```
 
 The example intentionally uses no WebAssembly. It covers server rendering,
