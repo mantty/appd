@@ -36,7 +36,7 @@ does not replace the framework CLI.
 |---|---|
 | Client module or style | The framework's normal Vite HMR updates the WebView through the appd gateway. |
 | Worker or SSR module | The host framework server reloads its Worker environment; subsequent requests use the new code. The framework decides whether a client reload is needed. |
-| Wrangler vars or binding configuration | appd validates the configuration before startup. A supported change restarts or reloads the host dev server; an unsupported binding stops the session with an actionable error. |
+| Wrangler vars or binding configuration | appd validates the configuration before startup. A supported change restarts or reloads the host dev server; one prominent warning block lists unsupported bindings while the session continues. |
 | Public asset | The framework dev server serves the new asset and performs its normal invalidation or reload. |
 | Native shell, appd runtime, or native plugin | The development app rebuilds, reinstalls, and restarts. |
 
@@ -153,22 +153,33 @@ Startup validation is ordered as follows:
 2. Select the requested Cloudflare environment when the project uses
    environment-specific bindings.
 3. Validate all declared binding kinds and names against appd's supported set.
-4. Print the binding name, kind, and reason when a binding is unsupported.
-5. Exit before launching the framework command.
+4. Print one prominent warning block explaining that unsupported bindings may
+   still be conditionally unused, followed by every unsupported binding's name,
+   kind, and reason.
+5. Continue launching the framework command after the warning block is emitted.
 
 For example:
 
 ~~~
-appd dev cannot start:
-  unsupported Wrangler binding DB of type d1_databases
-  appd development does not provide D1
+WARNING: this app declares bindings that appd dev does not provide.
+
+The host development server will continue. Avoid these bindings when running
+on appd, or guard their use with the appropriate platform or feature flag.
+
+Unsupported bindings:
+
+  - DB (d1_databases): appd development does not provide D1
+  - CACHE (kv_namespaces): appd development does not provide KV
+
 ~~~
 
 The Wrangler file is the appd development contract for bindings. Bindings
 added only through framework-specific programmatic configuration are not
 silently treated as supported; they must either be represented in the resolved
-Wrangler configuration or fail clearly when the Worker starts. This avoids
-requiring appd to understand each framework's configuration language.
+Wrangler configuration or appear in the same warning block when the Worker
+starts. The warning is informational, because application code may intentionally
+gate the binding behind a platform or feature check. This avoids requiring appd
+to understand each framework's configuration language.
 
 The appd validator must never reject ordinary Cloudflare bindings merely
 because they are not native. The support profile distinguishes bindings that
@@ -304,8 +315,9 @@ framework process reports its own Vite/framework configuration changes.
 - A supported code or asset edit is handled by the host framework server.
 - A supported vars or binding change restarts or reloads that host server using
   its normal mechanism.
-- An unsupported binding change stops the session with the binding validator's
-  message.
+- An unsupported binding declaration or change re-emits one warning block with
+  the current unsupported-binding list; the session remains usable for code
+  paths that do not use those bindings.
 - A change to the app name, bundle identifier, native permission, native
   plugin, or shell requires a native rebuild and reinstall.
 - Host disconnect keeps the native app installed but marks the WebView's
@@ -347,8 +359,10 @@ behavior must not be used as an implicit development API.
    behavior.
 3. Add environment selection for the same Wrangler environment used by the
    host framework command.
-4. Add clear diagnostics for each unsupported binding.
-5. Test that validation fails before the framework child process starts.
+4. Add one prominent warning block explaining unsupported bindings and listing
+   each binding's name, kind, and reason.
+5. Test that the warning block is emitted before the framework child process
+   starts and that the child still launches.
 
 ### 2. Add the generic development supervisor
 
@@ -389,8 +403,8 @@ behavior must not be used as an implicit development API.
 
 - Wrangler parser tests cover JSON, JSONC, TOML, explicit paths, parent search,
   selected environments, and every supported/unsupported binding category.
-- Unsupported bindings produce a deterministic diagnostic and no child process
-  is launched.
+- Unsupported bindings produce one deterministic warning block with a list of
+  every unsupported binding, while the child process still launches.
 - Supervisor tests cover inherited output, signals, exit status, readiness,
   reconnect, cancellation, and shutdown.
 - HTTP proxy tests cover navigation, assets, API/SSR requests, headers,
@@ -419,7 +433,8 @@ behavior must not be used as an implicit development API.
 - A Worker/SSR edit is handled by the host Cloudflare development runtime and
   reaches subsequent device requests without a device-side generation or
   ModuleRunner.
-- An unsupported Wrangler binding stops startup with a specific diagnostic.
+- Unsupported Wrangler bindings produce one prominent warning block with a
+  specific list while development continues.
 - Backend native plugin calls reach the device through a scoped authenticated
   binding/RPC channel.
 - The WebView remains on the stable appd HTTPS origin and never connects
