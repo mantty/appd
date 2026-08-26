@@ -14,18 +14,24 @@ Related plans:
 
 ## Objective
 
-appd dev <platform> builds, installs, and launches one development app while
+appd dev <target> builds, installs, and launches one development app while
 running the developer's existing Cloudflare-compatible framework command on the
 host. The running app uses the framework's normal development server, Worker
 runtime, HMR, overlays, source maps, and debugging tools.
+
+The target is a single selector. It may be an appd-managed alias such as
+`ios-sim` or `android-emulator`, the native identifier of an existing simulator,
+emulator, or physical device, or `host` for the local desktop target. Dev mode
+does not accept a separate platform argument and device flag; the selected
+target determines the platform and native target pack.
 
 The command may be supplied explicitly so appd does not need to know which
 framework is being used:
 
 ~~~
-appd dev ios-simulator -- astro dev
-appd dev android -- vite dev
-appd dev macos -- vinext dev
+appd dev ios-sim -- astro dev
+appd dev android-emulator -- vite dev
+appd dev <simulator-or-device-id> -- vinext dev
 ~~~
 
 The project may also define the command and host development-server endpoint in
@@ -132,6 +138,91 @@ Appd must not parse framework log output to implement HMR or backend execution.
 The host URL and port are explicit configuration or are reported through a
 small generic readiness contract. The framework process remains the process
 developers interact with.
+
+## Target discovery and selection
+
+Dev mode accepts one target selector, not a platform plus a separate device
+option:
+
+~~~
+appd dev host
+appd dev ios-sim
+appd dev android-emulator
+appd dev <simulator-or-device-id>
+~~~
+
+The selector is resolved against an inventory assembled by the platform
+adapters. It may identify:
+
+- `host`, the local desktop target;
+- an appd-managed virtual-target alias such as `ios-sim` or
+  `android-emulator`;
+- an existing iOS Simulator UUID, Android AVD name, Android ADB serial, or
+  physical-device identifier; or
+- another concrete identifier returned by a supported platform adapter.
+
+The platform is metadata on the resolved target. It is never repeated in the
+command, and native identifiers are not required to carry a platform prefix.
+If an identifier matches more than one target, appd reports the ambiguity and
+prints the matching rows; it never chooses at random.
+
+`appd devices` lists both concrete targets and provisionable virtual-target
+aliases in the same table. The output keeps the user-facing columns to an ID,
+the target type, and a short status. The default status vocabulary is
+deliberately small:
+
+~~~
+ID                    Type                              Status
+host                  macOS desktop                     available
+ios-sim               managed iOS Simulator              available
+A1B2C3D4-...          iPhone 15 / iOS Simulator          available
+Pixel_8_API_35        Android emulator (AVD)              available
+emulator-5554         Android emulator                   available
+00008110-...          physical iPhone                    blocked: trust device
+~~~
+
+`available` includes targets that are already running, can be booted, or can
+be provisioned automatically. A `blocked` row includes one short actionable
+reason, such as a missing runtime or system image, an unsupported host, an
+unauthorized physical device, or an incompatible architecture. Low-level
+transitions such as `booting` are progress messages from `appd dev`, not
+additional user-facing states.
+
+### Managed virtual targets
+
+`ios-sim` and `android-emulator` are requests for an appd-managed default
+target, not claims that a particular instance is already running. The adapter
+does the following when the alias is selected:
+
+1. Verify that the host toolchain and a compatible simulator runtime or Android
+   system image are installed.
+2. Reuse the project’s persisted managed target when it still exists.
+3. Create a deterministic default profile when no managed target exists, then
+   persist the native identifier returned by the platform tooling.
+4. Boot the profile if it is stopped, wait for readiness, and return its
+   concrete running identifier to the session.
+
+Managed profiles are local development resources. They persist after appd exits
+and are reused by later sessions; appd stops the app, not the simulator or
+emulator, unless the user explicitly asks it to clean up. If a managed profile
+is deleted outside appd, the next alias invocation recreates it. The project
+mapping is local state and is not required to be committed to the repository.
+
+Creating a profile must not silently download a large platform runtime or
+system image. If the required image is absent, the alias is `blocked` with an
+instruction to install it. The profile defaults (device model, runtime, and
+ABI) must be deterministic, and a project may override them in appd
+configuration when it needs a specific device shape.
+
+Selecting a concrete identifier uses that existing target exactly. Appd may
+boot a stopped simulator or emulator, but it does not replace, rename, or
+delete the user’s profile. Physical devices are discovered and connected, not
+provisioned.
+
+The target resolver and adapters own host capability checks, profile creation,
+boot, installation, launch, and forwarding. The Rust supervisor only consumes
+the resolved target record and keeps the development session bound to that
+target. A disconnect never silently switches the session to another target.
 
 ## Wrangler configuration and binding validation
 
@@ -285,23 +376,35 @@ not execute stale downloaded Worker source on the device.
 
 ## Platform launch
 
-The user command mirrors appd build platform selection:
+The user selects one target. Platform selection is inferred from the resolved
+target rather than repeated in a separate argument:
 
 ~~~
-appd dev macos
-appd dev windows
-appd dev ios-simulator
-appd dev ios
-appd dev android
+appd dev host
+appd dev ios-sim
+appd dev android-emulator
+appd dev <simulator-or-device-id>
 ~~~
 
-Target-pack entrypoints own platform-specific build, install, launch, and
-port-forwarding commands. The Rust CLI owns common session and project logic;
-it does not acquire Xcode, Android, or Windows implementation details.
+`host` selects the local desktop target. `ios-sim` and `android-emulator`
+select the project’s managed virtual targets, creating them when the required
+host runtime or system image is already installed. A concrete identifier
+selects an existing simulator, emulator, or physical device.
+
+Platform adapters expose a common inventory and lifecycle contract: enumerate
+capabilities and target profiles, resolve a selector, create or boot a managed
+profile when requested, install and launch the native bundle, and establish
+port forwarding. Target-pack entrypoints own the platform-specific commands;
+the Rust CLI owns common session and project logic and does not acquire Xcode,
+Android, or Windows implementation details.
+
+The adapter checks host and target compatibility before building or installing.
+Unsupported host/toolchain combinations appear as a `blocked` target with a
+short reason. A physical iOS device and any device without reverse port
+forwarding use an explicit authenticated LAN endpoint.
 
 Desktop and iOS Simulator sessions use host loopback. Android uses adb reverse
-when available. A physical iOS device and any device without reverse
-port forwarding use an explicit authenticated LAN endpoint.
+when available.
 
 Native shell or plugin changes invalidate the installed app and invoke the
 entrypoint's native rebuild path. JavaScript, styles, assets, and supported
@@ -366,11 +469,15 @@ behavior must not be used as an implicit development API.
 
 ### 2. Add the generic development supervisor
 
-1. Add appd dev and the explicit child-command/host-endpoint contract.
-2. Create the session descriptor and secure host/device transport.
-3. Launch the developer's command with inherited terminal behavior.
-4. Forward signals, child exit status, and clean shutdown.
-5. Add readiness and reconnect handling without parsing framework log output.
+1. Add `appd dev <target>` and `appd devices` with one target-selector
+   contract.
+2. Add platform-adapter discovery, host capability checks, and concrete target
+   resolution.
+3. Add managed simulator/emulator creation, persistence, reuse, and boot.
+4. Create the session descriptor and secure host/device transport.
+5. Launch the developer's command with inherited terminal behavior.
+6. Forward signals, child exit status, and clean shutdown.
+7. Add readiness and reconnect handling without parsing framework log output.
 
 ### 3. Add the device gateway
 
@@ -405,6 +512,15 @@ behavior must not be used as an implicit development API.
   selected environments, and every supported/unsupported binding category.
 - Unsupported bindings produce one deterministic warning block with a list of
   every unsupported binding, while the child process still launches.
+- Device discovery tests list managed aliases, installed simulator/emulator
+  profiles, running instances, and physical devices with an ID, type, and
+  `available` or `blocked` status.
+- Target-selection tests resolve aliases and concrete identifiers without a
+  separate platform argument, reject ambiguous identifiers, and never select a
+  target at random.
+- Managed-target tests create a missing compatible simulator/emulator profile,
+  persist and reuse it, boot it when stopped, and report a short blocked reason
+  when the required host runtime or system image is absent.
 - Supervisor tests cover inherited output, signals, exit status, readiness,
   reconnect, cancellation, and shutdown.
 - HTTP proxy tests cover navigation, assets, API/SSR requests, headers,
@@ -428,6 +544,13 @@ behavior must not be used as an implicit development API.
 
 - appd dev launches the developer's normal framework command without
   framework-specific appd request handlers.
+- `appd dev <target>` accepts a managed target alias or concrete device
+  identifier; the target determines the platform and native target pack.
+- `appd devices` lists target IDs and types with only `available` or
+  `blocked: reason` as the default status vocabulary.
+- Selecting a managed virtual-target alias provisions and boots a missing or
+  stopped compatible target without choosing randomly among the developer's
+  other profiles.
 - A client style or module edit updates the device WebView through the
   framework's normal HMR path without reinstalling the app.
 - A Worker/SSR edit is handled by the host Cloudflare development runtime and
