@@ -8,7 +8,7 @@ mod build;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use target_pack_format::{Platform, Target};
 
@@ -21,13 +21,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Build a native app bundle for a platform.
+    /// Build native app bundles for one or more platforms.
     Build {
-        /// Platform family to build.
-        platform: Option<Platform>,
-        /// Comma-separated platforms to build.
-        #[arg(long, value_delimiter = ',')]
-        platforms: Vec<Platform>,
+        /// Comma-separated platform families to build.
+        platforms: String,
         /// App project directory.
         #[arg(long, default_value = ".")]
         project: PathBuf,
@@ -60,14 +57,13 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Build {
-            platform,
             platforms,
             project,
             target_pack,
             config,
             skip_web_build,
         } => {
-            let platforms = selected_build_platforms(platform, platforms)?;
+            let platforms = parse_platforms(&platforms)?;
             let summaries = build::run(&build::BuildRequest {
                 platforms,
                 project_dir: project,
@@ -91,18 +87,11 @@ fn run() -> Result<()> {
     }
 }
 
-fn selected_build_platforms(
-    platform: Option<Platform>,
-    platforms: Vec<Platform>,
-) -> Result<Vec<Platform>> {
-    match (platform, platforms.is_empty()) {
-        (Some(platform), true) => Ok(vec![platform]),
-        (None, false) => Ok(platforms),
-        (Some(_), false) => bail!("pass either a positional platform or --platforms, not both"),
-        (None, true) => {
-            bail!("build requires a platform; use appd build macos or --platforms=macos")
-        }
-    }
+fn parse_platforms(value: &str) -> Result<Vec<Platform>> {
+    value
+        .split(',')
+        .map(|platform| platform.parse().map_err(anyhow::Error::from))
+        .collect()
 }
 
 fn list_targets() {
@@ -113,18 +102,34 @@ fn list_targets() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Platform, selected_build_platforms};
+    use clap::Parser;
+
+    use super::{Cli, Command, Platform, parse_platforms};
 
     #[test]
-    fn selects_a_positional_platform() {
+    fn parses_comma_separated_platforms() {
         assert!(matches!(
-            selected_build_platforms(Some(Platform::Macos), Vec::new()),
-            Ok(platforms) if platforms == vec![Platform::Macos]
+            parse_platforms("macos,android"),
+            Ok(platforms) if platforms == vec![Platform::Macos, Platform::Android]
         ));
     }
 
     #[test]
-    fn rejects_mixed_platform_argument_forms() {
-        assert!(selected_build_platforms(Some(Platform::Macos), vec![Platform::Ios]).is_err());
+    fn accepts_one_comma_separated_platform_argument() {
+        assert!(matches!(
+            Cli::try_parse_from(["appd", "build", "macos,android"]),
+            Ok(Cli { command: Command::Build { platforms, .. } })
+                if platforms == "macos,android"
+        ));
+    }
+
+    #[test]
+    fn rejects_multiple_positional_platform_arguments() {
+        assert!(Cli::try_parse_from(["appd", "build", "macos", "android"]).is_err());
+    }
+
+    #[test]
+    fn rejects_the_removed_platforms_flag() {
+        assert!(Cli::try_parse_from(["appd", "build", "--platforms=macos"]).is_err());
     }
 }
