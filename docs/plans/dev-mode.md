@@ -8,405 +8,449 @@ evaluation.
 
 Related plans:
 
-- [appd QuickJS runtime](appd-quickjs-runtime.md)
-- [Workers and Node compatibility](appd-workers-node-compat.md)
+- appd QuickJS runtime (appd-quickjs-runtime.md)
+- Workers and Node compatibility (appd-workers-node-compat.md)
+- appd plugins (appd-plugins.md)
 
 ## Objective
 
-`appd dev <platform>` builds, installs, and launches one development app. Code
-and configuration edits then reach that running app without another native
-build or install.
+appd dev <platform> builds, installs, and launches one development app while
+running the developer's existing Cloudflare-compatible framework command on the
+host. The running app uses the framework's normal development server, Worker
+runtime, HMR, overlays, source maps, and debugging tools.
+
+The command may be supplied explicitly so appd does not need to know which
+framework is being used:
+
+~~~
+appd dev ios-simulator -- astro dev
+appd dev android -- vite dev
+appd dev macos -- vinext dev
+~~~
+
+The project may also define the command and host development-server endpoint in
+appd project configuration. appd dev is a supervisor and device adapter; it
+does not replace the framework CLI.
 
 | Edit | Result |
 |---|---|
-| Client module or style | Vite HMR updates the WebView in place where the framework supports it. |
-| Worker module | New requests use a new Worker generation; the page reloads after the runtime accepts it. |
-| Wrangler vars or supported bindings | New requests use the new configuration generation. |
-| Public asset | Vite serves the new asset and reloads or invalidates the client as required. |
+| Client module or style | The framework's normal Vite HMR updates the WebView through the appd gateway. |
+| Worker or SSR module | The host framework server reloads its Worker environment; subsequent requests use the new code. The framework decides whether a client reload is needed. |
+| Wrangler vars or binding configuration | appd validates the configuration before startup. A supported change restarts or reloads the host dev server; an unsupported binding stops the session with an actionable error. |
+| Public asset | The framework dev server serves the new asset and performs its normal invalidation or reload. |
 | Native shell, appd runtime, or native plugin | The development app rebuilds, reinstalls, and restarts. |
 
-The initial target is a sub-second client update and a sub-second Worker
-generation update for the Astro example on a local simulator or desktop.
+The target is the same responsive client experience provided by the framework
+when it is run locally in a browser, including near-instant style and client
+module updates.
 
 ## Runtime model
 
-The QuickJS runtime creates one `JSRuntime` and `JSContext` per request. Each
-request evaluates its own Worker modules and owns its module state, native
-resources, and `/tmp`. A WebSocket keeps its request runtime alive until the
-socket closes.
+Development backend execution deliberately happens in Cloudflare's local
+workerd runtime through the framework's Cloudflare/Vite setup. This is the
+normative development environment for Worker-compatible code.
 
-Development mode preserves that model. It does not keep one shared Worker
-realm or patch live QuickJS module instances. Frontend updates use HMR;
-backend updates replace an immutable Worker generation.
+The appd QuickJS runtime is not on the development request path. It remains the
+production runtime and is exercised by appd preview and compatibility tests.
+QuickJS-only globals, appd-only backend internals, and other code that is not
+valid in workerd should fail during development rather than being silently
+accepted and discovered later on another platform.
 
-Each request clones the current generation before creating QuickJS. An update
-atomically replaces the current `Arc`; existing HTTP requests and
-`waitUntil()` work retain the previous generation until they finish. Worker
-WebSockets from an older generation close with code `1012` so reconnecting
-clients enter the current generation.
+This makes development particularly useful for applications that target
+Cloudflare as well as appd: the backend is running in the same class of runtime
+and using the same framework integration as the Cloudflare deployment.
 
 ## Architecture
 
-```text
+~~~
 project files
     |
     v
-Vite dev server + @appd/vite
-    |- client environment ---- client modules and HMR
-    `- Worker environment ---- immutable DevGeneration
-                |                         |
-                `------ pinned HTTPS ----'
-                                          v
-                                  development app
-                                  |- appd HTTPS gateway
-WebView <---- stable appd origin ---------|- dev asset/HMR proxy
-                                  `- QuickJS runtime per request
-                                       `- request-local ModuleRunner
-```
+developer's normal framework command on the host
+(astro dev, vite dev, vinext dev, ...)
+    |
+    +-- Vite client environment ----- browser modules and HMR
+    |
+    +-- Cloudflare Worker environment
+          |
+          +-- local workerd / Miniflare
+                |
+                +-- appd capability binding (when used)
+                       |
+                       authenticated host-to-device tunnel
+                       |
+device appd gateway ---------------- WebView
+    |                                  |
+    |                                  +-- frontend plugin bridge -> native plugin
+    +-- HTTP, SSR, API, asset, and HMR proxy -> host dev server
 
-`appd dev` owns the session, native app lifecycle, and platform tooling. A
-small `@appd/vite` package owns Vite integration. The target runtime owns the
-development connection, generation swap, request execution, and WebView
-proxy.
+device native plugins
+    +-- backend capability requests from the host Worker
+~~~
 
-`@appd/vite` is configured in the project's Vite or framework configuration.
-appd framework integrations and templates add it; `appd dev` fails if the
-plugin does not join the session.
+The host framework server is the complete development application server. It
+handles frontend assets, SSR, API routes, Worker requests, and HMR. The device
+does not receive transformed module payloads and does not run a development
+ModuleRunner.
 
-### Vite environments
+### Responsibilities
 
-One Vite server owns:
+appd dev owns:
 
-- the normal `client` environment; and
-- an appd Worker environment, normally the framework's `ssr` environment for
-  a full-stack application.
+- project and target-pack lifecycle;
+- Wrangler configuration discovery and appd binding validation;
+- the authenticated development session and host/device tunnel;
+- the device gateway and stable WebView origin;
+- native plugin dispatch and platform launch tooling; and
+- child-process supervision, signal forwarding, and clean shutdown.
 
-The Worker environment uses the Vite Environment API for resolution,
-transforms, watching, its module graph, and source maps. The appd plugin
-receives the runtime's build profile from the selected target pack. That
-profile contains the same export conditions, builtin registry, compatibility
-module aliases, externals, and non-JavaScript loaders used by `appd build`.
+The developer's framework command owns:
 
-The CLI supplies normalized Wrangler bindings and asset configuration. The
-framework integration supplies its development Worker entry and SSR
-environment. The Astro integration executes that environment only in the
-device QuickJS runtime; the host Vite process never dispatches application
-requests.
+- Vite and framework configuration;
+- module resolution and transformation;
+- the client and Worker module graphs;
+- HMR, browser overlays, source maps, and framework debugging; and
+- execution of the backend in local workerd.
 
-The Worker environment must not externalize ordinary packages or host file
-URLs. Runtime-owned native modules are the only external modules, and their
-names must exist in the runtime builtin registry. An unsupported import is a
-transform error before a generation is published.
+Appd does not add Astro-, Next-, React-, or other framework-specific request
+handlers. A single optional appd Cloudflare/Vite adapter may be used to expose
+the native capability binding to the host Worker; it is not a framework
+adapter.
 
-The Vite version and ModuleRunner protocol are pinned per appd release. The
-plugin rejects an unsupported Vite version instead of relying on compatible
-internal behaviour.
+### Framework command wrapper
 
-### Development generations
+The appd supervisor starts the developer's command as a normal child process:
 
-The appd plugin materializes the Worker environment into one immutable
-generation:
+- inherit the terminal and preserve stdout/stderr;
+- forward interrupt, terminate, and platform-specific shutdown signals;
+- preserve the framework's exit status and debugger support;
+- provide the appd session descriptor and device bridge endpoint through the
+  environment or a temporary session file; and
+- connect the device gateway to the configured host development-server URL.
 
-```text
-DevGeneration
-  id
-  Worker entry URL
-  transformed ModuleRunner payloads
-  source maps
-  normalized Worker environment
-  read-only /bundle files
-  builtin registry version
-  Vite ModuleRunner protocol version
-```
+Appd must not parse framework log output to implement HMR or backend execution.
+The host URL and port are explicit configuration or are reported through a
+small generic readiness contract. The framework process remains the process
+developers interact with.
 
-A generation contains UTF-8 transformed source, never QuickJS bytecode or
-serialized QuickJS objects. Only bytecode shipped by the selected target pack
-uses QuickJS's trusted bytecode loader.
+## Wrangler configuration and binding validation
 
-The plugin warms the Worker entry and walks the environment module graph,
-including statically known dynamic imports. It obtains full `fetchModule`
-payloads without evaluating application code. Publication succeeds only when
-every reachable module transforms and every external import validates.
+The appd repository already resolves and parses Wrangler JSON, JSONC, and TOML
+files in appd/src/worker_package/wrangler.rs. Development mode reuses
+resolve_config_path() and load_config() rather than adding another config
+parser.
 
-The host sends each generation as one complete compressed payload. The app
-validates size limits, module names, protocol versions, and the builtin
-registry version before acknowledging it.
+The current normalized WranglerConfig intentionally retains only the fields
+needed by packaging (main, assets, vars, and rules). Extend that model with the
+binding declarations needed for development validation. Each declaration
+records its binding kind and name; the validator compares it with the appd
+development support profile.
 
-The runtime stores development state as a standard-library lock around an
-immutable value:
+Startup validation is ordered as follows:
 
-```text
-DevelopmentWorker {
-  current: RwLock<Arc<DevGeneration>>
-}
-```
+1. Resolve the explicit --config path or the project Wrangler file using the
+   existing resolver.
+2. Select the requested Cloudflare environment when the project uses
+   environment-specific bindings.
+3. Validate all declared binding kinds and names against appd's supported set.
+4. Print the binding name, kind, and reason when a binding is unsupported.
+5. Exit before launching the framework command.
 
-The write lock is held only while replacing the `Arc`. No request can observe
-a partially updated graph or configuration. Previous generations are freed
-when their final request or WebSocket releases them.
+For example:
 
-### QuickJS ModuleRunner
+~~~
+appd dev cannot start:
+  unsupported Wrangler binding DB of type d1_databases
+  appd development does not provide D1
+~~~
 
-The development target pack contains a precompiled, pinned
-`vite/module-runner` and a small appd bootstrap. Distribution target packs do
-not contain either.
+The Wrangler file is the appd development contract for bindings. Bindings
+added only through framework-specific programmatic configuration are not
+silently treated as supported; they must either be represented in the resolved
+Wrangler configuration or fail clearly when the Worker starts. This avoids
+requiring appd to understand each framework's configuration language.
 
-Every request:
+The appd validator must never reject ordinary Cloudflare bindings merely
+because they are not native. The support profile distinguishes bindings that
+the host Cloudflare runtime can provide from bindings that require a device
+capability bridge or are unavailable for appd deployment.
 
-1. clones the current `DevGeneration`;
-2. creates the normal request-owned QuickJS runtime, context, host bindings,
-   VFS, and compatibility globals;
-3. creates a request-local Vite `ModuleRunner` with HMR disabled;
-4. imports the generation's Worker entry through an in-memory transport; and
-5. dispatches `fetch` using the generation's environment.
+## Backend and frontend plugins
 
-The in-memory transport implements Vite's `fetchModule` RPC by looking up the
-serialized payload in the pinned generation. Worker JavaScript never opens a
-development socket and a request never fetches modules from the host.
+### Frontend plugins
 
-An appd evaluator uses `AsyncFunction` for transformed modules and resolves
-external modules only through QuickJS's runtime-owned builtin loader. It adds
-stable module URLs and inline source maps so QuickJS errors can be mapped by
-the host Vite environment.
+Frontend plugin JavaScript executes in the WebView exactly as it does in a
+normal browser. Existing appd WebView bridges continue to dispatch native
+calls to Swift, Kotlin, or another platform implementation on the device.
+Client HMR does not change this path.
 
-Development requests parse their transformed modules in their request-owned
-QuickJS runtime. The runtime-boundary proof measures that cost before the
-architecture is accepted.
+### Backend plugins
 
-### Generation commit
+Backend JavaScript executes in host workerd. A backend native capability is
+exposed as a Worker-compatible appd binding or service. The host-side binding
+turns the call into an authenticated RPC over the appd tunnel; the device
+dispatches it to the native plugin and returns the result.
 
-A Worker edit follows one ordered commit:
+~~~
+Worker request in host workerd
+    +-- appd Worker binding/service
+    +-- host bridge
+    +-- authenticated tunnel
+    +-- device appd plugin dispatcher
+    +-- Swift/Kotlin/native implementation
+~~~
 
-1. Vite invalidates and transforms the affected Worker graph.
-2. The appd plugin creates a complete candidate generation.
-3. The development app validates and atomically installs it.
-4. The app acknowledges the generation ID.
-5. Vite sends one client full-reload event.
+The application-facing plugin API remains the same between development and
+production. The JavaScript facade must itself be valid Worker code. Backend
+plugin JavaScript that depends on QuickJS-only behavior is intentionally not
+supported in this development mode; it should fail on the host instead of
+creating a second device-side JavaScript execution path.
 
-The acknowledgement prevents the WebView from reloading before the new
-Worker is ready. A client-only edit remains on Vite's normal HMR path and does
-not create a Worker generation unless the changed module is also in the
-Worker graph.
+The capability bridge must support:
 
-A transform or configuration error leaves the last accepted generation
-running. The plugin reports the error in the terminal and through Vite's
-browser overlay. On initial startup, the shell waits for the first valid
-generation before loading the app origin.
+- request and session authentication;
+- JSON-compatible values and binary payloads where a plugin requires them;
+- streaming and long-running calls where the API requires them;
+- cancellation, timeout, and device disconnect errors;
+- request/session identity; and
+- the same unsupported-capability error used by production appd.
 
-## Stable WebView origin
+The browser is never given the backend capability credential. Frontend native
+calls use the WebView process bridge; backend native calls use the authenticated
+host/device channel.
 
-The WebView always loads `https://<appname>.appd.local/`. Cookies, storage,
-service workers, client certificates, origin checks, and application
-WebSockets therefore use the same origin in development and production.
+## Stable WebView origin and proxying
 
-The development gateway adds two internal routes:
+The WebView always loads:
 
-- a development asset provider for Vite client modules and public files; and
-- a reserved WebSocket route for Vite HMR.
+~~~
+https://<app-name>.appd.local/
+~~~
 
-The asset provider asks the client environment to handle asset requests and
-falls through to normal appd asset and Worker routing when Vite does not
-handle one. `env.ASSETS.fetch()` uses the same provider. The host must not run
-the application's Worker or SSR handler as an asset fallback.
+The device gateway proxies the entire application origin through the host
+development server:
 
-The HMR WebSocket terminates at the appd gateway and is proxied to Vite. Vite
-is configured through its current `server.ws` options so the injected client
-uses the appd host, `wss`, port `443`, and the reserved path. The browser never
-connects directly to a host or LAN address.
+- document and navigation requests;
+- frontend modules and public assets;
+- SSR and API requests;
+- fetch() and form submissions;
+- browser WebSockets; and
+- the framework's HMR WebSocket.
 
-The development asset and HMR branches are absent from distribution builds.
+The gateway preserves the stable appd origin for cookies, storage, service
+workers, origin checks, redirects, and forwarding headers. It forwards the
+appropriate host/protocol information so the Worker does not accidentally
+generate localhost URLs for the device.
+
+The HMR client connects to the appd origin. The gateway relays the WebSocket to
+the host framework server; the browser never connects directly to a host or LAN
+address. Appd does not interpret HMR messages.
+
+The host framework server remains responsible for deciding whether an edit is
+handled in place, causes a client reload, or causes a Worker/SSR module reload.
 
 ## Development session and security
 
-`appd dev` creates an ephemeral session before starting Vite:
+appd dev creates an ephemeral session before launching the framework command:
 
-- a random 256-bit token;
-- an HTTPS certificate and its SHA-256 fingerprint;
+- a random session token;
+- an authenticated, device-reachable transport;
 - a protocol version and appd release identifier; and
-- the device-reachable host and port.
+- the app origin and host development-server endpoint.
 
-The CLI passes the session descriptor to `@appd/vite`, starts the project's
-normal development command, then packages the endpoint, token, and pinned
-certificate fingerprint into the development app. This build-time bootstrap
-is sufficient because code edits reuse the same installed app and session.
+The device app is built with only the session information required to connect.
+The gateway authenticates every host request and WebSocket. The host bridge
+authenticates every capability call and scopes it to the app and device
+session.
 
-The development app uses the pinned HTTPS service for generation updates,
-asset proxy requests, HMR proxying, and runtime diagnostics. The gateway adds
-the token to host requests; browser JavaScript cannot read it. The host
-service validates the token before returning source, transformed modules, or
-HMR traffic.
+The host service binds to loopback unless the selected device requires LAN
+access. LAN access uses explicit address selection, authentication, and
+certificate pinning. It never enables unrestricted hosts or unauthenticated
+native capability endpoints.
 
-The service binds to loopback unless the selected device requires LAN access.
-LAN binding requires an explicit address, retains certificate pinning and
-token authentication, and configures an exact Vite allowed-host list. It
-never enables unrestricted hosts or CORS.
-
-Only a development runtime accepts the session descriptor or evaluates Vite
-payloads. A release runtime has no development protocol, outbound connection,
-asset proxy, ModuleRunner, or downloaded-code path.
+If the host process exits or the tunnel disappears, the device reports the
+development session as unavailable and retries with bounded backoff. It does
+not execute stale downloaded Worker source on the device.
 
 ## Platform launch
 
-The user command mirrors `appd build` platform selection:
+The user command mirrors appd build platform selection:
 
-```text
+~~~
 appd dev macos
 appd dev windows
 appd dev ios-simulator
 appd dev ios
 appd dev android
-```
+~~~
 
 Target-pack entrypoints own platform-specific build, install, launch, and
-port-forwarding commands. The Rust CLI continues to prepare common inputs and
-does not acquire Xcode, Android, or Windows implementation details.
+port-forwarding commands. The Rust CLI owns common session and project logic;
+it does not acquire Xcode, Android, or Windows implementation details.
 
-Desktop and iOS Simulator sessions use host loopback. Android uses `adb
-reverse` when available. A physical iOS device and any device without reverse
-port forwarding use the explicit LAN endpoint. Physical-device support is
-part of the protocol and security tests.
+Desktop and iOS Simulator sessions use host loopback. Android uses adb reverse
+when available. A physical iOS device and any device without reverse
+port forwarding use an explicit authenticated LAN endpoint.
 
-Target packs contain separate development runtime artifacts. Native plugin or
-shell changes invalidate the installed app and invoke the entrypoint's native
-rebuild path. JavaScript and supported configuration changes do not invoke a
-target-pack build entrypoint.
+Native shell or plugin changes invalidate the installed app and invoke the
+entrypoint's native rebuild path. JavaScript, styles, assets, and supported
+Worker configuration changes do not invoke a target-pack build.
 
 ## Configuration and lifecycle
 
-The Vite watcher includes the resolved Wrangler configuration, supported dev
-vars, Vite configuration, and files imported by either configuration.
+The appd supervisor watches the resolved Wrangler configuration and the
+framework process reports its own Vite/framework configuration changes.
 
-- A vars or binding change publishes a generation containing code and its
-  normalized environment together.
-- A resolution or Vite-plugin configuration change restarts the host Vite
-  server, then publishes a new generation through the existing app session.
-- An app name, bundle identifier, native permission, or native plugin change
-  rebuilds and reinstalls the development app.
-- Host disconnection keeps the last Worker generation available, marks the
-  asset/HMR provider unavailable, and reconnects with a bounded retry loop.
-- App suspend closes development proxy connections with the gateway's other
-  connections. Resume reconnects before the WebView reloads.
+- A supported code or asset edit is handled by the host framework server.
+- A supported vars or binding change restarts or reloads that host server using
+  its normal mechanism.
+- An unsupported binding change stops the session with the binding validator's
+  message.
+- A change to the app name, bundle identifier, native permission, native
+  plugin, or shell requires a native rebuild and reinstall.
+- Host disconnect keeps the native app installed but marks the WebView's
+  development origin unavailable until the session reconnects.
+- App suspend closes proxy connections and resume reconnects before reloading
+  the WebView.
 
-The runtime forwards Worker console output and uncaught errors to the appd
-terminal with generation and request IDs. Source-mapped Worker errors use the
-same Vite overlay channel as transform errors. Error payloads contain no
-Worker environment secrets.
+Worker console output and uncaught errors remain in the framework's normal host
+terminal and debugger. Appd forwards connection and native-plugin errors with
+request/session IDs, without exposing Worker secrets to the browser.
 
 ## Production parity
 
-`appd build` remains the only production build path. It bundles the Worker,
-compiles split ESM modules to trusted QuickJS bytecode, packages assets and
-the normalized environment, and runs without Vite.
+appd build remains the production build path. It bundles the Worker, compiles
+split ESM modules to trusted QuickJS bytecode, packages assets and the
+normalized environment, and runs without Vite or a development connection.
 
-`appd preview <platform>` builds that production package and runs it in a
-development-signed shell without ModuleRunner or asset proxying. Differential
-fixtures execute the same requests through `dev` and `preview`; the results,
-errors, headers, request isolation, VFS lifetime, and supported bindings must
-match after normalizing development source locations.
+appd preview <platform> runs that packaged QuickJS application in a
+development-signed shell. It is not an HMR server; it is the final appd-runtime
+compatibility check.
 
-The runtime-owned builtin registry and Worker build profile are shared by the
-production packer and `@appd/vite`. Vite does not maintain a second Node or
-Workers compatibility table.
+Development and preview deliberately exercise different runtime implementations:
+
+- appd dev: framework tooling and host workerd, optimized for Cloudflare
+  compatibility and fast feedback;
+- appd preview: appd's packaged QuickJS runtime, optimized for deployment
+  parity.
+
+Compatibility fixtures should run through both paths. QuickJS-specific
+behavior must not be used as an implicit development API.
 
 ## Implementation sequence
 
-### 1. Prove the runtime boundary
+### 1. Extend Wrangler loading and validation
 
-1. Run the pinned `vite/module-runner` in `rquickjs` with the appd evaluator.
-2. Import a transformed multi-module Worker, top-level await, a dynamic
-   import, a compatibility JavaScript module, and native `node:fs`.
-3. Materialize a complete Vite Worker graph without evaluating application
-   code.
-4. Run the Astro SSR environment in device QuickJS without dispatching it in
-   the host Vite process.
-5. Execute concurrent requests in independent QuickJS runtimes from one
-   generation and verify module globals and `/tmp` remain request-local.
-6. Measure import, evaluation, request, and generation-publication time with
-   the Astro Worker graph.
+1. Extend WranglerConfig with the binding declarations needed by appd's
+   support profile.
+2. Preserve the existing JSON, JSONC, TOML, explicit-path, and parent-search
+   behavior.
+3. Add environment selection for the same Wrangler environment used by the
+   host framework command.
+4. Add clear diagnostics for each unsupported binding.
+5. Test that validation fails before the framework child process starts.
 
-Stop if the ModuleRunner cannot preserve request isolation, import native
-modules, produce usable source maps, or meet the development memory envelope.
+### 2. Add the generic development supervisor
 
-### 2. Add runtime generations
+1. Add appd dev and the explicit child-command/host-endpoint contract.
+2. Create the session descriptor and secure host/device transport.
+3. Launch the developer's command with inherited terminal behavior.
+4. Forward signals, child exit status, and clean shutdown.
+5. Add readiness and reconnect handling without parsing framework log output.
 
-1. Add the development-only generation format and strict decoder limits.
-2. Add the packaged/development Worker mode to runtime startup.
-3. Pin one generation per request and atomically swap accepted generations.
-4. Drain old HTTP work and close old-generation Worker WebSockets with `1012`.
-5. Cover normal completion, errors, cancellation, suspend, resume, shutdown,
-   and a generation arriving during each state.
+### 3. Add the device gateway
 
-### 3. Add the Vite provider
+1. Serve the stable appd HTTPS origin.
+2. Proxy host HTTP and WebSocket traffic, including HMR.
+3. Preserve origin, cookie, redirect, and forwarding-header behavior.
+4. Add device-to-host port forwarding for desktop, simulators, emulators, and
+   physical devices.
+5. Verify that the WebView never connects directly to the host endpoint.
 
-1. Create `@appd/vite` with the client and Worker environments.
-2. Consume the target pack's Worker build profile and builtin registry.
-3. Materialize, compress, publish, and acknowledge complete generations.
-4. Watch Worker configuration and publish code and environment atomically.
-5. Keep the last accepted generation on transform failure and forward errors
-   with source maps.
+### 4. Add the capability bridge
 
-### 4. Add same-origin client development
+1. Define the Worker-compatible appd binding/service contract.
+2. Provide the host-side bridge for the Cloudflare/Vite Worker environment.
+3. Route authenticated calls to the device native plugin dispatcher.
+4. Add streaming, cancellation, timeout, and disconnect behavior.
+5. Keep frontend plugin calls on the existing WebView process bridge.
 
-1. Add the development asset provider and `env.ASSETS.fetch()` integration.
-2. Proxy Vite HTTP responses and WebSocket frames through the appd gateway.
-3. Configure the Vite client and HMR WebSocket for the stable appd origin.
-4. Reload the client only after a Worker generation acknowledgement.
-5. Verify cookies, storage, navigation, client HMR, Worker WebSockets, and
-   external fetches through the normal WebView.
+### 5. Validate representative frameworks
 
-### 5. Add CLI and platform launch
-
-1. Add `appd dev`, session creation, child-process supervision, and clean
-   shutdown.
-2. Add development artifacts and build metadata to target packs.
-3. Implement build/install/launch for macOS and iOS Simulator.
-4. Add Android emulator/device, physical iOS, and Windows launch paths.
-5. Add `appd preview` over the packaged QuickJS Worker path.
+1. Run the Astro Cloudflare setup through appd dev without replacing
+   astro dev.
+2. Run a plain Vite + Cloudflare Worker application.
+3. Run the agreed Next/Cloudflare setup through its existing dev command.
+4. Verify that no framework-specific appd request handler is required.
+5. Add framework-specific work only when a generic Cloudflare/Vite contract is
+   insufficient and document the reason.
 
 ## Verification
 
-- Unit tests reject wrong tokens, certificate pins, protocol versions,
-  registry versions, duplicate modules, invalid module names, oversized
-  generations, and truncated payloads.
-- Concurrency tests update a generation during module import, handler
-  execution, response streaming, `waitUntil()`, and a WebSocket session. Each
-  execution observes exactly one generation.
-- Failure tests keep the last accepted generation after syntax, transform,
-  configuration, transport, and runtime errors.
-- Release-binary tests verify that development session parsing, ModuleRunner,
-  and proxy routes are not linked into distribution artifacts.
-- End-to-end tests edit client, Worker, shared, asset, and configuration files
-  in the Astro example and observe the running WebView without reinstalling.
-- Platform tests cover macOS, both iOS Simulator architectures, physical iOS,
-  Android arm64, and Windows x64 with the device transport each target uses.
-- Differential tests compare development execution with the production
-  QuickJS bytecode package for the Workers compatibility fixtures.
-- Performance tests record cold start, client HMR, Worker publication,
-  request evaluation, payload size, retained generations, and memory before
-  enforcing the sub-second targets.
+- Wrangler parser tests cover JSON, JSONC, TOML, explicit paths, parent search,
+  selected environments, and every supported/unsupported binding category.
+- Unsupported bindings produce a deterministic diagnostic and no child process
+  is launched.
+- Supervisor tests cover inherited output, signals, exit status, readiness,
+  reconnect, cancellation, and shutdown.
+- HTTP proxy tests cover navigation, assets, API/SSR requests, headers,
+  cookies, redirects, streaming, and application WebSockets.
+- HMR tests edit styles, client modules, shared modules, and public assets in a
+  device WebView and observe the framework's normal update behavior.
+- Worker tests verify that backend code executes in host workerd, uses the
+  latest host module graph, and never executes in device QuickJS during dev.
+- Capability tests verify frontend calls through the WebView bridge and
+  backend calls through the authenticated host/device bridge.
+- Security tests reject invalid sessions, expired credentials, wrong origins,
+  unauthorized capabilities, and unpinned LAN connections.
+- Native changes rebuild and reinstall; JavaScript and supported configuration
+  changes do not.
+- Preview tests run the packaged QuickJS application and cover appd-specific
+  runtime compatibility separately from host development.
+- Platform tests cover macOS, iOS Simulator, physical iOS, Android emulator,
+  physical Android where supported, and Windows WebView2.
 
 ## Acceptance criteria
 
-- A client edit updates the running Astro app through Vite HMR without an app
-  reinstall.
-- A Worker edit reaches the next request only after one complete generation
-  is accepted, then reloads the page once.
-- A failed edit leaves the last valid application running and displays a
-  source-mapped error in the terminal and WebView.
-- Concurrent requests never share QuickJS globals, module caches, native
-  resources, environment objects, or `/tmp` across generations.
+- appd dev launches the developer's normal framework command without
+  framework-specific appd request handlers.
+- A client style or module edit updates the device WebView through the
+  framework's normal HMR path without reinstalling the app.
+- A Worker/SSR edit is handled by the host Cloudflare development runtime and
+  reaches subsequent device requests without a device-side generation or
+  ModuleRunner.
+- An unsupported Wrangler binding stops startup with a specific diagnostic.
+- Backend native plugin calls reach the device through a scoped authenticated
+  binding/RPC channel.
 - The WebView remains on the stable appd HTTPS origin and never connects
-  directly to Vite.
+  directly to the host development server.
+- QuickJS-only backend code fails in dev rather than being evaluated on the
+  device.
 - Distribution builds contain no Vite runtime, development endpoint,
-  development credential, or remote source-evaluation path.
-- The Astro example passes the same application fixtures in `appd dev` and
-  `appd preview` on every supported target.
+  development credential, or downloaded-code path.
+- appd preview remains available for validating the packaged QuickJS runtime.
 
 ## References
 
-- [Vite Environment API for runtimes](https://vite.dev/guide/api-environment-runtimes)
-- [Vite environment instances](https://vite.dev/guide/api-environment-instances)
-- [Vite server and WebSocket options](https://vite.dev/config/server-options)
-- [Cloudflare Vite environments](https://developers.cloudflare.com/workers/vite-plugin/reference/vite-environments/)
-- [QuickJS-NG developer guide](https://quickjs-ng.github.io/quickjs/developer-guide/intro/)
-- [`rquickjs` documentation](https://docs.rs/rquickjs/latest/rquickjs/)
+- Cloudflare Vite plugin:
+  https://developers.cloudflare.com/workers/vite-plugin/
+- Cloudflare local development:
+  https://developers.cloudflare.com/workers/local-development/
+- Cloudflare Vite plugin API:
+  https://developers.cloudflare.com/workers/vite-plugin/reference/api/
+- Cloudflare Vite programmatic configuration:
+  https://developers.cloudflare.com/workers/vite-plugin/reference/programmatic-configuration/
+- Cloudflare Vite environments:
+  https://developers.cloudflare.com/workers/vite-plugin/reference/vite-environments/
+- Cloudflare service bindings:
+  https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/
+- Astro Cloudflare adapter:
+  https://docs.astro.build/en/guides/integrations-guide/cloudflare/
+- Cloudflare Next.js guide:
+  https://developers.cloudflare.com/workers/framework-guides/web-apps/nextjs/
+- Vite plugin API:
+  https://vite.dev/guide/api-plugin.html
+- QuickJS-NG developer guide:
+  https://quickjs-ng.github.io/quickjs/developer-guide/intro/
+- rquickjs documentation:
+  https://docs.rs/rquickjs/latest/rquickjs/
