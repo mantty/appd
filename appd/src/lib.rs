@@ -18,8 +18,6 @@ mod builtins;
 #[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]
-mod cert_storage;
-#[cfg(feature = "native")]
 mod cert_validation;
 #[cfg(feature = "native")]
 mod certificates;

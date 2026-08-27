@@ -10,11 +10,13 @@ same JavaScript runtime and compatibility layer.
 - `appd/` owns the runtime library. Its modules are organised under
   the root-level application, mTLS, packaging, and platform modules, plus the
   focused compatibility and QuickJS modules.
-- `appd/src/quickjs/` owns the QuickJS-NG engine integration and gateway.
+- `appd/src/quickjs.rs`, `appd/src/dispatcher.rs`, `appd/src/gateway.rs`, and
+  `appd/src/transport.rs` own the QuickJS-NG engine integration, request
+  dispatch, and gateway transport.
 - `appd/src/app_service.rs` owns application startup, lifecycle, and packaged
   Worker loading.
-- `appd/src/certificates.rs`, `appd/src/cert_generation.rs`,
-  `appd/src/cert_storage.rs`, and `appd/src/cert_validation.rs` own local mTLS
+- `appd/src/certificates.rs`, `appd/src/cert_generation.rs`, and
+  `appd/src/cert_validation.rs` own local mTLS
   certificate material and trust decisions.
 - `appd/src/app_layout.rs`, `appd/src/worker_bundle.rs`,
   `appd/src/worker_environment.rs`, `appd/src/asset_manifest.rs`,

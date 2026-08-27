@@ -12,10 +12,8 @@ use time::{Duration, OffsetDateTime};
 use x509_parser::{extensions::GeneralName, pem::parse_x509_pem};
 
 use crate::cert_generation::{
-    build_ca_certificate, build_client_certificate, build_server_certificate, server_identity,
-};
-use crate::cert_storage::{
-    CertificatePaths, is_private_key, remove_if_exists, set_directory_permissions, write_atomic,
+    CertificatePaths, build_ca_certificate, build_client_certificate, build_server_certificate,
+    is_private_key, remove_if_exists, server_identity, set_directory_permissions, write_atomic,
 };
 use crate::cert_validation::{
     certificate_der, certificate_der_matches_pem, certificate_is_issued_by,
