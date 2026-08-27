@@ -8,8 +8,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use appd::compile_module;
 use appd::{
-    AppLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, WranglerModuleType, WranglerRule,
-    compress_worker_module, write_asset_manifest, write_worker_environment, write_worker_manifest,
+    PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, WranglerModuleType,
+    WranglerRule, compress_worker_module, write_asset_manifest, write_worker_environment,
+    write_worker_manifest,
 };
 use appd_cli::{ArtifactKind, TargetPackManifest};
 use serde::Deserialize;
@@ -25,7 +26,7 @@ pub(crate) fn prepare_quickjs_app(
     manifest: &TargetPackManifest,
     wrangler: &WranglerConfig,
 ) -> Result<()> {
-    let layout = AppLayout::new(app_dir);
+    let layout = PackageLayout::new(app_dir);
     write_worker_environment(
         &layout,
         &WorkerEnvironment {
@@ -41,7 +42,7 @@ pub(crate) fn prepare_quickjs_app(
 }
 
 fn compile_worker_bundle(
-    layout: &AppLayout,
+    layout: &PackageLayout,
     wrangler: &WranglerConfig,
     pack_root: &Path,
     manifest: &TargetPackManifest,
@@ -58,7 +59,7 @@ fn compile_worker_bundle(
 }
 
 fn run_esbuild(
-    layout: &AppLayout,
+    layout: &PackageLayout,
     wrangler: &WranglerConfig,
     pack_root: &Path,
     manifest: &TargetPackManifest,
@@ -132,7 +133,7 @@ fn runtime_source(runtime: &Path, current: &str, legacy: &str) -> PathBuf {
     }
 }
 
-fn write_worker_modules(layout: &AppLayout, source: &Path) -> Result<()> {
+fn write_worker_modules(layout: &PackageLayout, source: &Path) -> Result<()> {
     let source_files = javascript_outputs(source)?;
     let entry = source.join(WORKER_ENTRY);
     if !entry.is_file() {
@@ -197,7 +198,7 @@ fn read_metafile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
 
 fn package_bundle_files(
     wrangler: &WranglerConfig,
-    layout: &AppLayout,
+    layout: &PackageLayout,
     inputs: &[PathBuf],
 ) -> Result<()> {
     let mut files = BTreeSet::new();

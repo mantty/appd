@@ -106,7 +106,7 @@ pub(super) fn execute_request(
 
         let fetch = load_worker(&ctx, worker)?;
         let request: Object = ctx
-            .eval("new Request(__appd_request.url, { method: __appd_request.method, headers: __appd_request.headers, body: __appd_request.body })")
+            .eval("new Request(__appd_request.url, { method: __appd_request.method, headers: __appd_request.headers, body: __appd_request.body ? new Uint8Array(__appd_request.body) : undefined })")
             .map_err(|error| js_error("request", error))?;
         let environment: Object = ctx
             .globals()

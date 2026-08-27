@@ -6,7 +6,7 @@
 use std::ffi::{CString, c_char, c_int};
 use std::path::PathBuf;
 
-use crate::app_layout::AppLayout;
+use crate::packaging::PackageLayout;
 use crate::{Challenge, Config, Decision, Event, Runtime};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
@@ -176,7 +176,7 @@ fn start(
     host: &JString,
 ) -> Result<Runtime, String> {
     let config = Config {
-        app: AppLayout::new(text(env, packaged_dir)?),
+        app: PackageLayout::new(text(env, packaged_dir)?),
         state_dir: PathBuf::from(text(env, state_dir)?),
         host: text(env, host)?,
     };

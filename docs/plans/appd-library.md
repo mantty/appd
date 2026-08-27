@@ -18,9 +18,9 @@ appd is pre-release. Backwards compatibility is not a goal.
 | Directory | Owns |
 |---|---|
 | `appd/src/quickjs` | QuickJS embedding and the gateway |
-| `appd/src/app_service.rs`, `appd/src/lifecycle_events.rs` | application startup and lifecycle |
+| `appd/src/server.rs`, `appd/src/lifecycle_events.rs` | application startup and lifecycle |
 | `appd/src/certificates.rs`, `appd/src/cert_*.rs` | local mTLS certificate material and trust decisions |
-| `appd/src/app_layout.rs`, `appd/src/worker_*.rs`, `appd/src/asset_manifest.rs`, `appd/src/worker_package_contract.rs`, `appd/src/wrangler_config.rs` | the on-disk Worker contract and source preparation |
+| `appd/src/packaging.rs`, `appd/src/compat.rs`, `appd/src/env_vars.rs`, `appd/src/asset_manifest.rs`, `appd/src/wrangler_config.rs` | the on-disk Worker contract and source preparation |
 | `appd/src/fs` | the Workers virtual filesystem and native `node:fs` bindings |
 | `appd/src/streams` | Node and Web Streams, text encoding, and adapters |
 | `appd/src/network` | Fetch, URL, and WebSocket APIs |

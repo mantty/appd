@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use appd::compile_module;
-use appd::{AppLayout, decompress_worker_module, read_worker_manifest};
+use appd::{PackageLayout, decompress_worker_module, read_worker_manifest};
 use appd_cli::{
     ESBUILD_EXECUTABLE, MANIFEST_FILE, RUNTIME_JAVASCRIPT_DIRECTORY, Target, TargetPackManifest,
     write_manifest,
@@ -26,6 +26,7 @@ fn create_project(root: &Path) -> TestResult {
     fs::write(
         root.join("wrangler.jsonc"),
         r#"{
+  "name": "demo-app",
   "main": "dist/server/entry.mjs",
   "assets": { "directory": "dist/client", "binding": "ASSETS" }
 }"#,
@@ -88,6 +89,7 @@ fs.mkdirSync("dist/client", { recursive: true });
 fs.writeFileSync("dist/server/entry.mjs", "export default {};");
 fs.writeFileSync("dist/client/index.html", "<html></html>");
 fs.writeFileSync("dist/server/wrangler.json", JSON.stringify({
+  name: "built-app",
   main: "entry.mjs",
   assets: { directory: "../client", binding: "ASSETS" }
 }));
@@ -305,7 +307,7 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
             .join("Contents/Frameworks/AppdRuntime.framework")
             .exists()
     );
-    let manifest = read_worker_manifest(&AppLayout::new(&app))?;
+    let manifest = read_worker_manifest(&PackageLayout::new(&app))?;
     assert_eq!(manifest.entry, "entry.js");
     assert_eq!(
         decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
@@ -337,7 +339,7 @@ fn compiles_a_self_contained_worker() -> TestResult {
         .success();
 
     let bundle = project.join("build/macos/demo-app.app/Contents/Resources/app");
-    let manifest = read_worker_manifest(&AppLayout::new(&bundle))?;
+    let manifest = read_worker_manifest(&PackageLayout::new(&bundle))?;
     assert_eq!(manifest.entry, "entry.js");
     assert_eq!(
         decompress_worker_module(&fs::read(bundle.join("worker-modules/entry.js.qjs"))?)?,
@@ -355,6 +357,7 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     fs::write(
         project.join("wrangler.jsonc"),
         r#"{
+  "name": "demo-app",
   "main": "dist/server/entry.mjs",
   "vars": { "TEXT": "value", "JSON": { "enabled": true } }
 }"#,
@@ -510,6 +513,7 @@ fn writes_configured_asset_routing_modes() -> TestResult {
     fs::write(
         project.join("wrangler.jsonc"),
         r#"{
+  "name": "demo-app",
   "main": "dist/server/entry.mjs",
   "assets": {
     "directory": "dist/client",
@@ -541,6 +545,7 @@ fn packages_declared_non_code_modules_under_bundle() -> TestResult {
     fs::write(
         project.join("wrangler.jsonc"),
         r#"{
+  "name": "demo-app",
   "main": "dist/server/entry.mjs",
   "base_dir": "dist/server",
   "find_additional_modules": true,
@@ -588,57 +593,64 @@ fn packages_webassembly_assets_as_static_files() -> TestResult {
 }
 
 #[test]
-fn rejects_unsafe_package_names() -> TestResult {
+fn rejects_unsafe_wrangler_names() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("package.json"), r#"{"name":"../demo"}"#)?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{"name":"../demo","main":"dist/server/entry.mjs"}"#,
+    )?;
 
     build_command("macos", &project, &manifest)?
         .assert()
         .failure()
-        .stderr(contains("package.json name is not a safe app name"));
+        .stderr(contains("wrangler config name is not a safe app name"));
     Ok(())
 }
 
 #[test]
-fn rejects_package_names_that_are_not_dns_labels() -> TestResult {
+fn rejects_wrangler_names_that_are_not_dns_labels() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("package.json"), r#"{"name":"Demo_App"}"#)?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{"name":"Demo_App","main":"dist/server/entry.mjs"}"#,
+    )?;
 
     build_command("macos", &project, &manifest)?
         .assert()
         .failure()
-        .stderr(contains("package.json name is not a safe app name"));
+        .stderr(contains("wrangler config name is not a safe app name"));
     Ok(())
 }
 
 #[test]
-fn requires_a_package_name() -> TestResult {
-    for package in ["{}", r#"{"name":""}"#] {
-        let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-        fs::write(project.join("package.json"), package)?;
+fn requires_a_wrangler_name() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{"main":"dist/server/entry.mjs"}"#,
+    )?;
 
-        build_command("macos", &project, &manifest)?
-            .assert()
-            .failure()
-            .stderr(contains("package.json name is required"));
-    }
+    build_command("macos", &project, &manifest)?
+        .assert()
+        .failure()
+        .stderr(contains("missing required field name"));
     Ok(())
 }
 
 #[test]
-fn rejects_package_names_outside_dns_label_bounds() -> TestResult {
+fn rejects_wrangler_names_outside_dns_label_bounds() -> TestResult {
     let too_long = "a".repeat(64);
     for name in ["-demo", "demo-", &too_long] {
         let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
         fs::write(
-            project.join("package.json"),
-            format!(r#"{{"name":"{name}"}}"#),
+            project.join("wrangler.jsonc"),
+            format!(r#"{{"name":"{name}","main":"dist/server/entry.mjs"}}"#),
         )?;
 
         build_command("macos", &project, &manifest)?
             .assert()
             .failure()
-            .stderr(contains("package.json name is not a safe app name"));
+            .stderr(contains("wrangler config name is not a safe app name"));
     }
     Ok(())
 }

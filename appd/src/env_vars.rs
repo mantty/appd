@@ -5,9 +5,23 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
-use crate::app_layout::AppLayout;
-use crate::worker_package_contract::Result;
+use crate::packaging::PackageLayout;
+
+/// Failures reading or writing the packaged Worker environment.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Operating-system IO failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// JSON encoding or decoding failed.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+/// Result type for packaged environment operations.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Bindings that appd passes to a Worker at runtime.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -22,7 +36,7 @@ pub struct WorkerEnvironment {
 /// # Errors
 ///
 /// Returns an error when the environment cannot be serialized or written.
-pub fn write(layout: &AppLayout, environment: &WorkerEnvironment) -> Result<()> {
+pub fn write(layout: &PackageLayout, environment: &WorkerEnvironment) -> Result<()> {
     fs::write(
         layout.worker_environment(),
         serde_json::to_vec(environment)?,
@@ -35,7 +49,7 @@ pub fn write(layout: &AppLayout, environment: &WorkerEnvironment) -> Result<()> 
 /// # Errors
 ///
 /// Returns an error when the environment cannot be read or parsed.
-pub fn load(layout: &AppLayout) -> Result<WorkerEnvironment> {
+pub fn load(layout: &PackageLayout) -> Result<WorkerEnvironment> {
     Ok(serde_json::from_slice(&fs::read(
         layout.worker_environment(),
     )?)?)
@@ -48,14 +62,14 @@ mod tests {
     use serde_json::json;
 
     use super::{WorkerEnvironment, load, write};
-    use crate::app_layout::AppLayout;
+    use crate::packaging::PackageLayout;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     #[test]
     fn round_trips_text_and_json_vars() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let layout = AppLayout::new(directory.path());
+        let layout = PackageLayout::new(directory.path());
         let environment = WorkerEnvironment {
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),

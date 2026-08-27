@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use openssl::sha::sha1;
@@ -9,8 +11,8 @@ use openssl::ssl::{SslAcceptor, SslMethod, SslStream, SslVerifyMode};
 use openssl::x509::X509;
 use serde::Serialize;
 
-use crate::gateway::{WebSocketBridge, WebSocketInbound, WebSocketOutbound};
-use crate::quickjs::{Error, RuntimeConfig};
+use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound};
+use crate::quickjs::Error;
 
 const MAX_HEADERS: usize = 64 * 1024;
 const MAX_BODY: usize = 16 * 1024 * 1024;
@@ -21,7 +23,7 @@ pub(super) struct HttpRequest {
     pub(super) target: String,
     pub(super) url: String,
     pub(super) headers: BTreeMap<String, String>,
-    pub(super) body: Option<String>,
+    pub(super) body: Option<Vec<u8>>,
 }
 
 pub(super) struct HttpResponse {
@@ -81,7 +83,7 @@ pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
             .is_some_and(|target| target.eq_ignore_ascii_case(&format!("{host}:443")))
 }
 
-pub(super) fn tls_acceptor(config: &RuntimeConfig) -> Result<SslAcceptor, Error> {
+pub(super) fn tls_acceptor(config: &GatewayConfig) -> Result<SslAcceptor, Error> {
     let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls())
         .map_err(|error| tls_error(&error))?;
     let certificate = X509::from_pem(&std::fs::read(&config.certificates.certificate)?)
@@ -126,7 +128,8 @@ pub(super) fn read_request(
         return Err(Error::Startup("HTTP method is missing".to_owned()));
     }
     let mut request_headers = BTreeMap::new();
-    let mut content_length = 0usize;
+    let mut content_length = None;
+    let mut chunked = false;
     for line in lines {
         if line.is_empty() {
             break;
@@ -137,22 +140,37 @@ pub(super) fn read_request(
         let name = name.trim().to_ascii_lowercase();
         let value = value.trim().to_owned();
         if name == "content-length" {
-            content_length = value
-                .parse()
-                .map_err(|_| Error::Startup("invalid content length".to_owned()))?;
+            content_length = Some(
+                value
+                    .parse()
+                    .map_err(|_| Error::Startup("invalid content length".to_owned()))?,
+            );
+        }
+        if name == "transfer-encoding"
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        {
+            chunked = true;
         }
         request_headers.insert(name, value);
     }
-    if content_length > MAX_BODY {
+    if chunked && content_length.is_some() {
+        return Err(Error::Startup(
+            "chunked request cannot include content length".to_owned(),
+        ));
+    }
+    if content_length.is_some_and(|length| length > MAX_BODY) {
         return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
     }
-    let mut body = vec![0; content_length];
-    stream.read_exact(&mut body)?;
-    let body = if body.is_empty() {
-        None
+    let body = if chunked {
+        read_chunked_body(stream)?
     } else {
-        Some(String::from_utf8_lossy(&body).into_owned())
+        let mut body = vec![0; content_length.unwrap_or_default()];
+        stream.read_exact(&mut body)?;
+        body
     };
+    let body = (!body.is_empty()).then_some(body);
     Ok(HttpRequest {
         method,
         target: target.clone(),
@@ -160,6 +178,57 @@ pub(super) fn read_request(
         headers: request_headers,
         body,
     })
+}
+
+pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    let mut trailer_bytes = 0usize;
+    loop {
+        let line = read_line(stream)?;
+        let size = line.split(';').next().unwrap_or_default().trim();
+        let size = usize::from_str_radix(size, 16)
+            .map_err(|_| Error::Startup("chunk size is invalid".to_owned()))?;
+        if size == 0 {
+            loop {
+                let trailer = read_line(stream)?;
+                trailer_bytes = trailer_bytes.saturating_add(trailer.len() + 2);
+                if trailer_bytes > MAX_HEADERS {
+                    return Err(Error::Startup("HTTP trailers exceed the limit".to_owned()));
+                }
+                if trailer.is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+        if body.len().saturating_add(size) > MAX_BODY {
+            return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        stream.read_exact(&mut body[start..])?;
+        let mut terminator = [0; 2];
+        stream.read_exact(&mut terminator)?;
+        if terminator != *b"\r\n" {
+            return Err(Error::Startup("chunk is not terminated".to_owned()));
+        }
+    }
+}
+
+fn read_line(stream: &mut impl Read) -> Result<String, Error> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0; 1];
+        stream.read_exact(&mut byte)?;
+        line.push(byte[0]);
+        if line.len() > MAX_HEADERS {
+            return Err(Error::Startup("HTTP line is too long".to_owned()));
+        }
+        if line.ends_with(b"\r\n") {
+            line.truncate(line.len() - 2);
+            return String::from_utf8(line)
+                .map_err(|_| Error::Startup("HTTP line is not UTF-8".to_owned()));
+        }
+    }
 }
 
 pub(super) fn is_websocket(request: &HttpRequest) -> bool {
@@ -175,100 +244,271 @@ pub(super) fn websocket_session(
     bridge: &WebSocketBridge,
 ) -> Result<(), Error> {
     let key = key.ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?;
-    let digest = sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes());
-    let accept = STANDARD.encode(digest);
+    let accept = websocket_accept(key);
     write!(
         stream,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
     stream.flush()?;
-    if flush_websocket_outbound(stream, &bridge.outgoing)? {
+    stream
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(20)))?;
+    stream
+        .get_mut()
+        .set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut codec = WebSocketCodec::new(&mut *stream);
+    if wait_for_websocket_ready(&mut codec, &bridge.outgoing)? {
         return Ok(());
     }
 
     let mut fragmented: Option<(u8, Vec<u8>)> = None;
     loop {
-        let Some(frame) = read_websocket_frame(stream)? else {
+        if flush_websocket_outbound(&mut codec, &bridge.outgoing)? {
             return Ok(());
-        };
-        match frame.opcode {
-            0x8 => {
-                let (code, reason) = websocket_close(&frame.payload)?;
-                write_websocket_frame(stream, frame.opcode, &frame.payload)?;
-                let _ = bridge
-                    .incoming
-                    .send(WebSocketInbound::Close { code, reason });
-                return Ok(());
-            }
-            0x9 => write_websocket_frame(stream, 0xA, &frame.payload)?,
-            0xA => {}
-            0x0..=0x2 => {
-                queue_websocket_message(
+        }
+        match codec.read_frame(true)? {
+            WebSocketRead::Closed => return Ok(()),
+            WebSocketRead::Pending => thread::sleep(Duration::from_millis(5)),
+            WebSocketRead::Frame(frame) => match frame.opcode {
+                0x8 => {
+                    let (code, reason) = websocket_close(&frame.payload)?;
+                    codec.write_frame(frame.opcode, &frame.payload, false)?;
+                    let _ = bridge
+                        .incoming
+                        .send(WebSocketInbound::Close { code, reason });
+                    return Ok(());
+                }
+                0x9 => codec.write_frame(0xA, &frame.payload, false)?,
+                0xA => {}
+                0x0..=0x2 => queue_websocket_message(
                     bridge,
                     &mut fragmented,
                     frame.final_frame,
                     frame.opcode,
                     frame.payload,
-                )?;
-                if frame.final_frame && flush_websocket_outbound(stream, &bridge.outgoing)? {
-                    return Ok(());
-                }
-            }
-            _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
+                )?,
+                _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
+            },
         }
     }
 }
 
-fn read_websocket_frame(
-    stream: &mut SslStream<TcpStream>,
+pub(super) enum WebSocketRead {
+    Frame(WebSocketFrame),
+    Pending,
+    Closed,
+}
+
+pub(super) struct WebSocketCodec<S> {
+    stream: S,
+    buffer: Vec<u8>,
+    closed: bool,
+}
+
+impl<S: Read + Write> WebSocketCodec<S> {
+    pub(super) fn new(stream: S) -> Self {
+        Self {
+            stream,
+            buffer: Vec::new(),
+            closed: false,
+        }
+    }
+
+    pub(super) fn read_frame(&mut self, expect_mask: bool) -> Result<WebSocketRead, Error> {
+        if self.closed {
+            return Ok(WebSocketRead::Closed);
+        }
+        loop {
+            if let Some(frame) = parse_websocket_frame(&mut self.buffer, expect_mask)? {
+                return Ok(WebSocketRead::Frame(frame));
+            }
+            let mut bytes = [0; 8192];
+            match self.stream.read(&mut bytes) {
+                Ok(0) => {
+                    self.closed = true;
+                    return Ok(WebSocketRead::Closed);
+                }
+                Ok(count) => {
+                    self.buffer.extend_from_slice(&bytes[..count]);
+                    if self.buffer.len() > MAX_BODY + 14 {
+                        return Err(Error::Startup("WebSocket frame is too large".to_owned()));
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Ok(WebSocketRead::Pending);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    pub(super) fn write_frame(
+        &mut self,
+        opcode: u8,
+        payload: &[u8],
+        mask: bool,
+    ) -> Result<(), Error> {
+        if payload.len() > MAX_BODY {
+            return Err(Error::Startup("WebSocket frame is too large".to_owned()));
+        }
+        if opcode >= 0x8 && (payload.len() > 125 || opcode & 0x40 != 0) {
+            return Err(Error::Startup(
+                "WebSocket control frame is invalid".to_owned(),
+            ));
+        }
+        let mut header = vec![0x80 | opcode];
+        let length = payload.len();
+        let mask_bit = if mask { 0x80 } else { 0 };
+        if length <= 125 {
+            header.push(
+                mask_bit
+                    | u8::try_from(length).map_err(|_| {
+                        Error::Startup("WebSocket frame length is invalid".to_owned())
+                    })?,
+            );
+        } else if let Ok(length) = u16::try_from(length) {
+            header.push(mask_bit | 0x7e);
+            header.extend_from_slice(&length.to_be_bytes());
+        } else {
+            header.push(mask_bit | 127);
+            header.extend_from_slice(&(length as u64).to_be_bytes());
+        }
+        self.stream.write_all(&header)?;
+        if mask {
+            let mut key = [0; 4];
+            getrandom::fill(&mut key)
+                .map_err(|error| Error::Startup(format!("WebSocket mask failed: {error}")))?;
+            self.stream.write_all(&key)?;
+            let mut masked = payload.to_vec();
+            for (index, byte) in masked.iter_mut().enumerate() {
+                *byte ^= key[index % key.len()];
+            }
+            self.stream.write_all(&masked)?;
+        } else {
+            self.stream.write_all(payload)?;
+        }
+        self.stream.flush()?;
+        Ok(())
+    }
+}
+
+fn parse_websocket_frame(
+    buffer: &mut Vec<u8>,
+    expect_mask: bool,
 ) -> Result<Option<WebSocketFrame>, Error> {
-    let mut header = [0; 2];
-    if stream.read_exact(&mut header).is_err() {
+    let Some(header) = parse_websocket_header(buffer, expect_mask)? else {
+        return Ok(None);
+    };
+    if buffer.len() < header.frame_length {
         return Ok(None);
     }
-    let final_frame = header[0] & 0x80 != 0;
-    let opcode = header[0] & 0x0f;
-    if header[0] & 0x70 != 0 {
+    let key = header.mask_offset.map(|offset| {
+        [
+            buffer[offset],
+            buffer[offset + 1],
+            buffer[offset + 2],
+            buffer[offset + 3],
+        ]
+    });
+    let mut payload = buffer[header.payload_offset..header.frame_length].to_vec();
+    buffer.drain(..header.frame_length);
+    if let Some(key) = key {
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+    }
+    Ok(Some(WebSocketFrame {
+        final_frame: header.final_frame,
+        opcode: header.opcode,
+        payload,
+    }))
+}
+
+struct WebSocketHeader {
+    final_frame: bool,
+    opcode: u8,
+    payload_offset: usize,
+    frame_length: usize,
+    mask_offset: Option<usize>,
+}
+
+fn parse_websocket_header(
+    buffer: &[u8],
+    expect_mask: bool,
+) -> Result<Option<WebSocketHeader>, Error> {
+    if buffer.len() < 2 {
+        return Ok(None);
+    }
+    let first = buffer[0];
+    let second = buffer[1];
+    if first & 0x70 != 0 {
         return Err(Error::Startup(
             "WebSocket reserved bits are unsupported".to_owned(),
         ));
     }
-    if header[1] & 0x80 == 0 {
-        return Err(Error::Startup(
-            "client WebSocket frames must be masked".to_owned(),
-        ));
+    let masked = second & 0x80 != 0;
+    if masked != expect_mask {
+        let message = if expect_mask {
+            "client WebSocket frames must be masked"
+        } else {
+            "server WebSocket frames must not be masked"
+        };
+        return Err(Error::Startup(message.to_owned()));
     }
-    let mut length = usize::from(header[1] & 0x7f);
-    if length == 126 {
-        let mut value = [0; 2];
-        stream.read_exact(&mut value)?;
-        length = usize::from(u16::from_be_bytes(value));
-    } else if length == 127 {
-        let mut value = [0; 8];
-        stream.read_exact(&mut value)?;
-        let length64 = u64::from_be_bytes(value);
-        length = usize::try_from(length64)
-            .map_err(|_| Error::Startup("WebSocket frame is too large".to_owned()))?;
-    }
+    let mut offset = 2;
+    let length = match second & 0x7f {
+        length @ 0..=125 => usize::from(length),
+        126 => {
+            if buffer.len() < offset + 2 {
+                return Ok(None);
+            }
+            let length = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]);
+            offset += 2;
+            usize::from(length)
+        }
+        127 => {
+            if buffer.len() < offset + 8 {
+                return Ok(None);
+            }
+            let length = u64::from_be_bytes(
+                buffer[offset..offset + 8]
+                    .try_into()
+                    .map_err(|_| Error::Startup("WebSocket frame length is invalid".to_owned()))?,
+            );
+            offset += 8;
+            usize::try_from(length)
+                .map_err(|_| Error::Startup("WebSocket frame is too large".to_owned()))?
+        }
+        _ => unreachable!(),
+    };
     if length > MAX_BODY {
         return Err(Error::Startup("WebSocket frame is too large".to_owned()));
     }
+    let opcode = first & 0x0f;
+    let final_frame = first & 0x80 != 0;
     if opcode >= 0x8 && (!final_frame || length > 125) {
         return Err(Error::Startup(
             "WebSocket control frame is invalid".to_owned(),
         ));
     }
-    let mut mask = [0; 4];
-    stream.read_exact(&mut mask)?;
-    let mut payload = vec![0; length];
-    stream.read_exact(&mut payload)?;
-    for (index, byte) in payload.iter_mut().enumerate() {
-        *byte ^= mask[index % mask.len()];
+    let mask_offset = masked.then_some(offset);
+    if masked {
+        offset += 4;
     }
-    Ok(Some(WebSocketFrame {
+    let frame_length = offset
+        .checked_add(length)
+        .ok_or_else(|| Error::Startup("WebSocket frame is too large".to_owned()))?;
+    Ok(Some(WebSocketHeader {
         final_frame,
         opcode,
-        payload,
+        payload_offset: offset,
+        frame_length,
+        mask_offset,
     }))
 }
 
@@ -316,27 +556,57 @@ pub(super) fn queue_websocket_message(
     Ok(())
 }
 
-fn flush_websocket_outbound(
-    stream: &mut SslStream<TcpStream>,
+fn flush_websocket_outbound<S: Read + Write>(
+    codec: &mut WebSocketCodec<S>,
     outgoing: &Receiver<WebSocketOutbound>,
 ) -> Result<bool, Error> {
-    while let Ok(frame) = outgoing.recv() {
+    loop {
+        let frame = match outgoing.try_recv() {
+            Ok(frame) => frame,
+            Err(TryRecvError::Empty) => return Ok(false),
+            Err(TryRecvError::Disconnected) => {
+                return Err(Error::Startup("WebSocket worker closed".to_owned()));
+            }
+        };
         match frame {
             WebSocketOutbound::Message { binary, payload } => {
-                write_websocket_frame(stream, if binary { 0x2 } else { 0x1 }, &payload)?;
+                codec.write_frame(if binary { 0x2 } else { 0x1 }, &payload, false)?;
             }
             WebSocketOutbound::Close { code, reason } => {
                 let payload = websocket_close_payload(code, &reason)?;
-                write_websocket_frame(stream, 0x8, &payload)?;
+                codec.write_frame(0x8, &payload, false)?;
                 return Ok(true);
             }
-            WebSocketOutbound::Ready => return Ok(false),
+            WebSocketOutbound::Ready => {}
         }
     }
-    Err(Error::Startup("WebSocket worker closed".to_owned()))
 }
 
-fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
+fn wait_for_websocket_ready<S: Read + Write>(
+    codec: &mut WebSocketCodec<S>,
+    outgoing: &Receiver<WebSocketOutbound>,
+) -> Result<bool, Error> {
+    loop {
+        match outgoing.recv_timeout(Duration::from_secs(30)) {
+            Ok(WebSocketOutbound::Message { binary, payload }) => {
+                codec.write_frame(if binary { 0x2 } else { 0x1 }, &payload, false)?;
+            }
+            Ok(WebSocketOutbound::Close { code, reason }) => {
+                let payload = websocket_close_payload(code, &reason)?;
+                codec.write_frame(0x8, &payload, false)?;
+                return Ok(true);
+            }
+            Ok(WebSocketOutbound::Ready) => return Ok(false),
+            Err(_) => {
+                return Err(Error::Startup(
+                    "WebSocket worker did not become ready".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+pub(super) fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
     if payload.is_empty() {
         return Ok((1000, String::new()));
     }
@@ -359,7 +629,7 @@ fn valid_websocket_close_code(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
 }
 
-fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>, Error> {
+pub(super) fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>, Error> {
     if !valid_websocket_close_code(code) {
         return Err(Error::Startup("WebSocket close code is invalid".to_owned()));
     }
@@ -374,30 +644,9 @@ fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>, Error> {
     Ok(payload)
 }
 
-fn write_websocket_frame(
-    stream: &mut SslStream<TcpStream>,
-    opcode: u8,
-    payload: &[u8],
-) -> Result<(), Error> {
-    let length = payload.len();
-    stream.write_all(&[0x80 | opcode])?;
-    if length <= 125 {
-        stream.write_all(&[u8::try_from(length)
-            .map_err(|_| Error::Startup("WebSocket frame length is invalid".to_owned()))?])?;
-    } else if u16::try_from(length).is_ok() {
-        stream.write_all(&[126])?;
-        stream.write_all(
-            &u16::try_from(length)
-                .map_err(|_| Error::Startup("WebSocket frame length is invalid".to_owned()))?
-                .to_be_bytes(),
-        )?;
-    } else {
-        stream.write_all(&[127])?;
-        stream.write_all(&(length as u64).to_be_bytes())?;
-    }
-    stream.write_all(payload)?;
-    stream.flush()?;
-    Ok(())
+pub(super) fn websocket_accept(key: &str) -> String {
+    let digest = sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes());
+    STANDARD.encode(digest)
 }
 
 pub(super) fn write_plain_response(

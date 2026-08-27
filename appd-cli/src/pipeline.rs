@@ -34,13 +34,12 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let config_path = resolve_wrangler_config_path(&config_base, request.config_path.as_deref())?;
     let wrangler = load_wrangler_config(&config_path)?;
     support::validate_web_build(&wrangler)?;
-    let app_name = support::read_package_name(&request.project_dir)?;
     let plugins = plugins::discover(&request.project_dir)?;
 
     request
         .platforms
         .iter()
-        .map(|platform| build_platform(request, *platform, &app_name, &wrangler, &plugins))
+        .map(|platform| build_platform(request, *platform, &wrangler, &plugins))
         .collect()
 }
 
@@ -63,7 +62,6 @@ fn validate_request(request: &BuildRequest) -> Result<()> {
 fn build_platform(
     request: &BuildRequest,
     platform: Platform,
-    app_name: &str,
     wrangler: &WranglerConfig,
     plugins: &[plugins::Plugin],
 ) -> Result<BuildSummary> {
@@ -104,10 +102,10 @@ fn build_platform(
         .context("prepare the appd application package")?;
     plugins::stage(plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    write_build_metadata(&input, app_name, platform, &manifest)
+    write_build_metadata(&input, &wrangler.name, platform, &manifest)
         .context("write platform build metadata")?;
 
-    let output = output_path(&project, platform, app_name);
+    let output = output_path(&project, platform, &wrangler.name);
     support::run_entrypoint(pack_root, &input, &output, manifest.target).with_context(|| {
         format!(
             "build {} using target-pack entrypoint",

@@ -17,8 +17,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-#[cfg(feature = "native")]
-use crate::{dispatcher, gateway};
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Ctx, Module, Runtime as JsRuntime, WriteOptions, WriteOptionsEndianness};
 
@@ -72,19 +70,6 @@ pub enum Error {
     Startup(String),
 }
 
-/// Certificate paths consumed by the local HTTPS gateway.
-#[cfg(feature = "native")]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Certificates {
-    /// Certificate authority PEM file.
-    pub ca: PathBuf,
-    /// Server certificate PEM file.
-    pub certificate: PathBuf,
-    /// Server private-key PEM file.
-    pub private_key: PathBuf,
-}
-
 /// Static asset service paths.
 #[cfg(feature = "native")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -136,7 +121,7 @@ impl WorkerBundle {
     }
 }
 
-/// Configuration passed to the `QuickJS` runtime.
+/// Configuration passed to packaged `QuickJS` requests.
 #[cfg(feature = "native")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,16 +131,8 @@ pub struct RuntimeConfig {
     pub assets: Option<Assets>,
     /// Directory containing the app-private Worker cache.
     pub cache: PathBuf,
-    /// Loopback HTTPS certificates.
-    pub certificates: Certificates,
     /// Text and JSON Worker environment bindings.
     pub environment: BTreeMap<String, Value>,
-    /// Stable HTTPS hostname used by the `WebView`.
-    pub host: String,
-    /// Require `WebView` client authentication.
-    pub require_client_certificate: bool,
-    /// Requested port, or zero for an operating-system assigned port.
-    pub port: u16,
 }
 
 /// Compile a bundled Worker module to `QuickJS` bytecode.
@@ -194,75 +171,6 @@ pub fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
             })
             .map_err(|error| stage_error("write", &error))
     })
-}
-
-/// A running `QuickJS` application.
-#[cfg(feature = "native")]
-pub struct QuickJsRuntime {
-    runtime: gateway::Runtime,
-}
-
-#[cfg(feature = "native")]
-impl QuickJsRuntime {
-    /// Start an application and wait for its HTTPS listener.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when configuration, certificates, or the gateway is
-    /// invalid.
-    pub fn start(bundle: WorkerBundle, config: &RuntimeConfig) -> Result<Self> {
-        if bundle.entry.is_empty() {
-            return Err(Error::Startup("Worker entry module is empty".to_owned()));
-        }
-        if let Some(bytecode) = &bundle.legacy {
-            if bytecode.is_empty() {
-                return Err(Error::Startup("Worker bytecode is empty".to_owned()));
-            }
-        } else if !bundle
-            .modules
-            .join(format!("{}.qjs", bundle.entry))
-            .is_file()
-        {
-            return Err(Error::Startup(format!(
-                "Worker entry module is missing: {}",
-                bundle.entry
-            )));
-        }
-        let dispatcher = dispatcher::Dispatcher::new(bundle, config.clone());
-        Ok(Self {
-            runtime: gateway::Runtime::start(dispatcher, config.clone())?,
-        })
-    }
-
-    /// Return the loopback HTTPS port.
-    #[must_use]
-    pub fn port(&self) -> u16 {
-        self.runtime.port()
-    }
-
-    pub(crate) fn restore_gateway(&self) -> std::io::Result<u16> {
-        self.runtime.restore_gateway()
-    }
-
-    /// Stop new request dispatch and close active gateway connections.
-    pub fn suspend(&self) {
-        self.runtime.suspend();
-    }
-
-    /// Resume request dispatch.
-    pub fn resume(&self) {
-        self.runtime.resume();
-    }
-}
-
-#[cfg(feature = "native")]
-impl std::fmt::Debug for QuickJsRuntime {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("QuickJsRuntime")
-            .field("port", &self.port())
-            .finish_non_exhaustive()
-    }
 }
 
 struct CompileResolver;
@@ -315,59 +223,6 @@ mod tests {
             assert_eq!(value, 42);
             Ok(())
         })?;
-        Ok(())
-    }
-}
-
-#[cfg(all(test, feature = "native"))]
-mod native_tests {
-    use std::collections::BTreeMap;
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    use super::{Certificates, QuickJsRuntime, RuntimeConfig, WorkerBundle, compile_worker};
-
-    #[test]
-    fn suspends_and_resumes_the_public_runtime() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let bundle =
-            compile_worker(br"export default { async fetch() { return new Response('ok'); } };")?;
-        let runtime = QuickJsRuntime::start(
-            WorkerBundle::from_bytecode(bundle, directory.path()),
-            &RuntimeConfig {
-                assets: None,
-                cache: directory.path().join("cache"),
-                certificates: Certificates {
-                    ca: directory.path().join("ca.pem"),
-                    certificate: directory.path().join("certificate.pem"),
-                    private_key: directory.path().join("private-key.pem"),
-                },
-                environment: BTreeMap::new(),
-                host: "example.test".to_owned(),
-                require_client_certificate: false,
-                port: 0,
-            },
-        )?;
-
-        runtime.suspend();
-        let mut connection = TcpStream::connect(("127.0.0.1", runtime.port()))?;
-        connection.set_read_timeout(Some(Duration::from_millis(100)))?;
-        connection
-            .write_all(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")?;
-        let mut response = [0; 64];
-        let Err(error) = connection.read(&mut response) else {
-            return Err("suspended runtime responded".into());
-        };
-        assert!(matches!(
-            error.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        ));
-
-        runtime.resume();
-        connection.set_read_timeout(Some(Duration::from_secs(2)))?;
-        let bytes = connection.read(&mut response)?;
-        assert!(std::str::from_utf8(&response[..bytes])?.starts_with("HTTP/1.1 200"));
         Ok(())
     }
 }

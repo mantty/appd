@@ -1,11 +1,11 @@
-use appd::{AppLayout, HtmlHandling, NotFoundHandling, WranglerAssets, write_asset_manifest};
+use appd::{HtmlHandling, NotFoundHandling, PackageLayout, WranglerAssets, write_asset_manifest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[test]
 fn writes_content_types_and_routing_modes() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let layout = AppLayout::new(directory.path());
+    let layout = PackageLayout::new(directory.path());
     std::fs::create_dir_all(layout.assets().join("styles"))?;
     std::fs::write(layout.assets().join("index.html"), "home")?;
     std::fs::write(layout.assets().join("styles/app.css"), "body{}")?;

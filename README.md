@@ -13,15 +13,14 @@ same JavaScript runtime and compatibility layer.
 - `appd/src/quickjs.rs`, `appd/src/dispatcher.rs`, `appd/src/gateway.rs`, and
   `appd/src/transport.rs` own the QuickJS-NG engine integration, request
   dispatch, and gateway transport.
-- `appd/src/app_service.rs` owns application startup, lifecycle, and packaged
+- `appd/src/server.rs` owns application startup, lifecycle, and packaged
   Worker loading.
 - `appd/src/certificates.rs`, `appd/src/cert_generation.rs`, and
   `appd/src/cert_validation.rs` own local mTLS
   certificate material and trust decisions.
-- `appd/src/app_layout.rs`, `appd/src/worker_bundle.rs`,
-  `appd/src/worker_environment.rs`, `appd/src/asset_manifest.rs`,
-  `appd/src/worker_package_contract.rs`, and `appd/src/wrangler_config.rs` own
-  the packaged Worker contract.
+- `appd/src/packaging.rs`, `appd/src/env_vars.rs`,
+  `appd/src/asset_manifest.rs`,
+  and `appd/src/wrangler_config.rs` own the packaged Worker contract.
 - `appd/src/fs/` owns the virtual filesystem and native Node filesystem
   bindings.
 - `appd/src/streams/`, `appd/src/network/`, `appd/src/events/`, and

@@ -8,9 +8,6 @@
 
 #[cfg(all(feature = "native", target_os = "android"))]
 mod android_jni;
-mod app_layout;
-#[cfg(feature = "native")]
-mod app_service;
 #[cfg(all(feature = "native", target_vendor = "apple"))]
 mod apple_ffi;
 mod asset_manifest;
@@ -22,6 +19,8 @@ mod cert_validation;
 #[cfg(feature = "native")]
 mod certificates;
 #[cfg(feature = "native")]
+mod dev_proxy;
+#[cfg(feature = "native")]
 mod dispatcher;
 mod events;
 #[cfg(feature = "native")]
@@ -32,45 +31,46 @@ mod globals;
 #[cfg(feature = "native")]
 mod lifecycle_events;
 mod network;
+mod packaging;
 mod quickjs;
+#[cfg(feature = "native")]
+mod server;
 #[cfg(all(test, feature = "native"))]
 mod tests;
 #[cfg(feature = "native")]
-pub use app_service::{Config, Runtime};
+pub use dev_proxy::DevProxyConfig;
+#[cfg(feature = "native")]
+pub use server::{Config, DevelopmentConfig, Runtime};
+mod compat;
+mod env_vars;
 mod streams;
 #[cfg(feature = "native")]
 mod transport;
-mod worker_bundle;
-mod worker_compatibility;
-mod worker_environment;
-mod worker_package_contract;
 mod wrangler_config;
 
 use thiserror::Error as Fail;
 
-pub use app_layout::AppLayout;
-pub use asset_manifest::write_manifest as write_asset_manifest;
+pub use asset_manifest::{Error as AssetManifestError, write_manifest as write_asset_manifest};
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
+pub use compat::write_worker_compatibility_sources;
+pub use env_vars::{
+    Error as WorkerEnvironmentError, WorkerEnvironment, load as load_worker_environment,
+    write as write_worker_environment,
+};
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
+pub use packaging::{
+    Error as BundleError, PackageLayout, WorkerManifest, compress_worker_bundle,
+    compress_worker_module, decompress_worker_bundle, decompress_worker_module,
+    read_worker_manifest, write_worker_manifest,
+};
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
-pub use worker_bundle::{
-    WorkerManifest, compress_worker_bundle, compress_worker_module, decompress_worker_bundle,
-    decompress_worker_module, read_worker_manifest, write_worker_manifest,
-};
-pub use worker_compatibility::write_worker_compatibility_sources;
-pub use worker_environment::{
-    WorkerEnvironment, load as load_worker_environment, write as write_worker_environment,
-};
-pub use worker_package_contract::{
-    Error as WorkerPackageError, Result as WorkerPackageResult, app_host, is_valid_app_name,
-};
 pub use wrangler_config::{
-    HtmlHandling, NotFoundHandling, WranglerAssets, WranglerConfig, WranglerModuleType,
-    WranglerRule, load_config as load_wrangler_config,
-    resolve_config_path as resolve_wrangler_config_path,
+    Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerConfig,
+    WranglerModuleType, WranglerRule, app_host, is_valid_app_name,
+    load_config as load_wrangler_config, resolve_config_path as resolve_wrangler_config_path,
 };
 
 /// Runtime result type.
@@ -94,7 +94,11 @@ pub enum Error {
     /// The packaged app contents are invalid.
     #[cfg(feature = "native")]
     #[error(transparent)]
-    Bundle(#[from] WorkerPackageError),
+    Bundle(#[from] BundleError),
+    /// The packaged Worker environment is invalid.
+    #[cfg(feature = "native")]
+    #[error(transparent)]
+    Environment(#[from] WorkerEnvironmentError),
     /// Certificate state is held by a thread that stopped unexpectedly.
     #[cfg(feature = "native")]
     #[error("certificate state is unavailable")]

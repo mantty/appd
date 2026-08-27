@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, bail};
-use appd::{AppLayout, Certificates, Config, Event, Runtime, app_host, frontend_url};
+use appd::{Certificates, Config, Event, PackageLayout, Runtime, app_host, frontend_url};
 use base64::Engine;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
@@ -44,7 +44,7 @@ pub(crate) fn run() -> Result<()> {
     let state = state_dir(&config.name)?;
     let runtime = Runtime::start(
         Config {
-            app: AppLayout::new(root.join("app")),
+            app: PackageLayout::new(root.join("app")),
             state_dir: state.join("runtime"),
             host: config.host.clone(),
         },

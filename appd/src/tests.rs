@@ -4,11 +4,12 @@ use crate::dispatcher::{
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    Job, JobResponse, Lifecycle, Shared, WebSocketBridge, WebSocketInbound, WebSocketJob,
-    WebSocketOutbound, bind_replacement_listener, close_connections, listener_was_closed,
-    lock_connections, probe_gateway, serve_connection, wait_for_gateway,
+    GatewayCertificates, GatewayConfig, Job, JobResponse, Lifecycle, Shared, WebSocketBridge,
+    WebSocketInbound, WebSocketJob, WebSocketOutbound, bind_replacement_listener,
+    close_connections, listener_was_closed, lock_connections, probe_gateway, serve_connection,
+    wait_for_gateway,
 };
-use crate::quickjs::{Assets, Certificates, Error, RuntimeConfig, WorkerBundle};
+use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpRequest, HttpResponse, queue_websocket_message};
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
@@ -99,15 +100,7 @@ fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::
             root: root.to_owned(),
         }),
         cache: root.join("cache"),
-        certificates: Certificates {
-            ca: root.join("ca.pem"),
-            certificate: root.join("certificate.pem"),
-            private_key: root.join("private-key.pem"),
-        },
         environment: BTreeMap::new(),
-        host: "example.test".to_owned(),
-        require_client_certificate: false,
-        port: 0,
     };
     let request = HttpRequest {
         method: "GET".to_owned(),
@@ -376,15 +369,17 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
 fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let config = RuntimeConfig {
+    let quickjs_config = RuntimeConfig {
         assets: None,
         cache: PathBuf::default(),
-        certificates: Certificates {
+        environment: BTreeMap::new(),
+    };
+    let config = GatewayConfig {
+        certificates: GatewayCertificates {
             ca: PathBuf::default(),
             certificate: PathBuf::default(),
             private_key: PathBuf::default(),
         },
-        environment: BTreeMap::new(),
         host: "example.test".to_owned(),
         require_client_certificate: false,
         port: 0,
@@ -392,7 +387,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     let shared = Arc::new(Shared {
         handler: Dispatcher::new(
             WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
-            config.clone(),
+            quickjs_config,
         ),
         config,
         tokio: tokio.handle().clone(),
@@ -683,15 +678,7 @@ fn websocket_config(root: &Path) -> RuntimeConfig {
     RuntimeConfig {
         assets: None,
         cache: root.join("cache"),
-        certificates: Certificates {
-            ca: root.join("ca.pem"),
-            certificate: root.join("certificate.pem"),
-            private_key: root.join("private-key.pem"),
-        },
         environment: BTreeMap::new(),
-        host: "example.test".to_owned(),
-        require_client_certificate: false,
-        port: 0,
     }
 }
 

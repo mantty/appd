@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::ptr;
 
-use crate::app_layout::AppLayout;
+use crate::packaging::PackageLayout;
 use crate::{Challenge, Config, Decision, Event, Runtime};
 use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
@@ -242,7 +242,7 @@ unsafe fn start(
     host: *const c_char,
 ) -> Result<Runtime, String> {
     let config = Config {
-        app: AppLayout::new(
+        app: PackageLayout::new(
             unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
         ),
         state_dir: PathBuf::from(

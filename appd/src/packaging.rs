@@ -1,14 +1,106 @@
+//! Packaged directory layout and Worker bytecode formats.
+
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::app_layout::AppLayout;
-use crate::worker_package_contract::Result;
-
+const WORKER_BUNDLE: &str = "worker.bundle";
+const WORKER_MANIFEST: &str = "worker-manifest.json";
+const WORKER_MODULES: &str = "worker-modules";
+const WORKER_ENVIRONMENT: &str = "worker-environment.json";
+const ASSET_MANIFEST: &str = "asset-manifest.json";
+const ASSETS: &str = "assets";
+const BUNDLE: &str = "bundle";
 const WORKER_BUNDLE_HEADER: &[u8] = b"APPD-QJS-GZIP\x01";
+
+/// Failures reading or writing packaged Worker bytecode and manifests.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Operating-system IO failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// JSON encoding or decoding failed.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+/// Result type for package layout and bytecode operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// The packaged contents of an appd application.
+///
+/// `appd-cli` writes this layout and `appd` reads it. Both ask for paths
+/// rather than naming files.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageLayout {
+    root: PathBuf,
+}
+
+impl PackageLayout {
+    /// Describe the layout rooted at a packaged app directory.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// The packaged app directory.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The `QuickJS` Worker bytecode.
+    #[must_use]
+    pub fn worker_bundle(&self) -> PathBuf {
+        self.root.join(WORKER_BUNDLE)
+    }
+
+    /// The manifest describing the split `QuickJS` Worker modules.
+    #[must_use]
+    pub fn worker_manifest(&self) -> PathBuf {
+        self.root.join(WORKER_MANIFEST)
+    }
+
+    /// The directory containing split `QuickJS` Worker modules.
+    #[must_use]
+    pub fn worker_modules(&self) -> PathBuf {
+        self.root.join(WORKER_MODULES)
+    }
+
+    /// The normalized Worker environment bindings.
+    #[must_use]
+    pub fn worker_environment(&self) -> PathBuf {
+        self.root.join(WORKER_ENVIRONMENT)
+    }
+
+    /// The static asset routing manifest.
+    #[must_use]
+    pub fn asset_manifest(&self) -> PathBuf {
+        self.root.join(ASSET_MANIFEST)
+    }
+
+    /// The static asset directory.
+    #[must_use]
+    pub fn assets(&self) -> PathBuf {
+        self.root.join(ASSETS)
+    }
+
+    /// The read-only Worker `/bundle` directory.
+    #[must_use]
+    pub fn bundle(&self) -> PathBuf {
+        self.root.join(BUNDLE)
+    }
+
+    /// Whether the packaged app serves static assets.
+    #[must_use]
+    pub fn serves_assets(&self) -> bool {
+        self.asset_manifest().is_file()
+    }
+}
 
 /// The entry module and on-disk module directory for a packaged Worker.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,7 +180,7 @@ fn decompress_gzip(compressed: &[u8]) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error when the manifest cannot be serialized or written.
-pub fn write_worker_manifest(layout: &AppLayout, manifest: &WorkerManifest) -> Result<()> {
+pub fn write_worker_manifest(layout: &PackageLayout, manifest: &WorkerManifest) -> Result<()> {
     std::fs::write(
         layout.worker_manifest(),
         serde_json::to_vec_pretty(manifest)?,
@@ -101,7 +193,7 @@ pub fn write_worker_manifest(layout: &AppLayout, manifest: &WorkerManifest) -> R
 /// # Errors
 ///
 /// Returns an error when the manifest cannot be read or decoded.
-pub fn read_worker_manifest(layout: &AppLayout) -> Result<WorkerManifest> {
+pub fn read_worker_manifest(layout: &PackageLayout) -> Result<WorkerManifest> {
     Ok(serde_json::from_slice(&std::fs::read(
         layout.worker_manifest(),
     )?)?)
@@ -110,10 +202,47 @@ pub fn read_worker_manifest(layout: &AppLayout) -> Result<WorkerManifest> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WORKER_BUNDLE_HEADER, WorkerManifest, compress_worker_bundle, compress_worker_module,
-        decompress_worker_bundle, decompress_worker_module,
+        PackageLayout, WORKER_BUNDLE_HEADER, WorkerManifest, compress_worker_bundle,
+        compress_worker_module, decompress_worker_bundle, decompress_worker_module,
     };
-    use crate::app_layout::AppLayout;
+
+    #[test]
+    fn resolves_every_path_under_the_app_root() {
+        let layout = PackageLayout::new("/apps/example");
+        assert_eq!(
+            layout.worker_bundle(),
+            std::path::Path::new("/apps/example/worker.bundle")
+        );
+        assert_eq!(
+            layout.worker_manifest(),
+            std::path::Path::new("/apps/example/worker-manifest.json")
+        );
+        assert_eq!(
+            layout.worker_modules(),
+            std::path::Path::new("/apps/example/worker-modules")
+        );
+        assert_eq!(
+            layout.worker_environment(),
+            std::path::Path::new("/apps/example/worker-environment.json")
+        );
+        assert_eq!(
+            layout.asset_manifest(),
+            std::path::Path::new("/apps/example/asset-manifest.json")
+        );
+        assert_eq!(
+            layout.assets(),
+            std::path::Path::new("/apps/example/assets")
+        );
+        assert_eq!(
+            layout.bundle(),
+            std::path::Path::new("/apps/example/bundle")
+        );
+    }
+
+    #[test]
+    fn reports_no_assets_without_a_manifest() {
+        assert!(!PackageLayout::new("/apps/missing").serves_assets());
+    }
 
     #[test]
     fn round_trips_compressed_worker_bytecode() -> Result<(), Box<dyn std::error::Error>> {
@@ -157,7 +286,7 @@ mod tests {
     #[test]
     fn round_trips_worker_manifest() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let layout = AppLayout::new(directory.path());
+        let layout = PackageLayout::new(directory.path());
         let manifest = WorkerManifest {
             entry: "entry.js".to_owned(),
         };

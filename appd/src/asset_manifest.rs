@@ -2,20 +2,37 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::app_layout::AppLayout;
-use crate::worker_package_contract::{Error, Result};
+use crate::packaging::PackageLayout;
 use crate::wrangler_config::WranglerAssets;
+
+/// Failures generating the packaged static asset manifest.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Operating-system IO failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// JSON encoding failed.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    /// A filesystem path could not be represented in UTF-8.
+    #[error("path is not valid UTF-8: {0}")]
+    InvalidPath(PathBuf),
+}
+
+/// Result type for static asset manifest operations.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Write the static asset routing manifest for a packaged app.
 ///
 /// # Errors
 ///
 /// Returns an error when asset traversal, path conversion, or writing fails.
-pub fn write_manifest(layout: &AppLayout, assets: &WranglerAssets) -> Result<()> {
+pub fn write_manifest(layout: &PackageLayout, assets: &WranglerAssets) -> Result<()> {
     let root = layout.assets();
     let mut files = BTreeMap::new();
     for entry in WalkDir::new(&root) {
@@ -26,7 +43,7 @@ pub fn write_manifest(layout: &AppLayout, assets: &WranglerAssets) -> Result<()>
         let relative = entry
             .path()
             .strip_prefix(&root)
-            .map_err(|_| Error::InvalidUtf8Path(entry.path().to_owned()))?;
+            .map_err(|_| Error::InvalidPath(entry.path().to_owned()))?;
         let content_type = mime_guess::from_path(entry.path())
             .first_or_octet_stream()
             .essence_str()
@@ -49,6 +66,6 @@ pub fn write_manifest(layout: &AppLayout, assets: &WranglerAssets) -> Result<()>
 fn slash_path(path: &Path) -> Result<String> {
     let path = path
         .to_str()
-        .ok_or_else(|| Error::InvalidUtf8Path(path.to_owned()))?;
+        .ok_or_else(|| Error::InvalidPath(path.to_owned()))?;
     Ok(path.replace(std::path::MAIN_SEPARATOR, "/"))
 }

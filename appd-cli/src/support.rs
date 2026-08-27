@@ -82,22 +82,6 @@ pub(crate) fn validate_web_build(config: &WranglerConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn read_package_name(project: &Path) -> Result<String> {
-    let content = fs::read_to_string(project.join("package.json"))?;
-    let json: serde_json::Value = serde_json::from_str(&content)?;
-    let name = json
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .context("package.json name is required")?;
-    if name.is_empty() {
-        bail!("package.json name is required");
-    }
-    if !appd::is_valid_app_name(name) {
-        bail!("package.json name is not a safe app name: {name}");
-    }
-    Ok(name.to_owned())
-}
-
 pub(crate) fn build_dir(project: &Path, platform: Platform) -> PathBuf {
     project.join("build").join(platform.directory_name())
 }

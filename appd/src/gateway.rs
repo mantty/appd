@@ -2,6 +2,7 @@
 use std::ffi::{CString, c_char, c_int};
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
-use crate::quickjs::{Error, RuntimeConfig};
+use crate::quickjs::Error;
 
 use crate::transport::{
     HttpRequest, HttpResponse, is_connect, is_websocket, read_headers, read_request, tls_acceptor,
@@ -25,15 +26,39 @@ unsafe extern "C" {
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
 
+#[derive(Clone, Debug)]
+pub(super) struct GatewayConfig {
+    pub(super) certificates: GatewayCertificates,
+    pub(super) host: String,
+    pub(super) port: u16,
+    pub(super) require_client_certificate: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct GatewayCertificates {
+    pub(super) ca: PathBuf,
+    pub(super) certificate: PathBuf,
+    pub(super) private_key: PathBuf,
+}
+
 pub(crate) struct Runtime {
     shared: Arc<Shared>,
     gateway: Option<JoinHandle<()>>,
     tokio: Option<TokioRuntime>,
 }
 
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewayRuntime")
+            .field("port", &self.port())
+            .finish_non_exhaustive()
+    }
+}
+
 pub(super) struct Shared {
     pub(super) handler: Arc<dyn Handler>,
-    pub(super) config: RuntimeConfig,
+    pub(super) config: GatewayConfig,
     pub(super) tokio: tokio::runtime::Handle,
     pub(super) port: AtomicU16,
     pub(super) accepting: Arc<AtomicBool>,
@@ -210,7 +235,7 @@ pub(super) enum WebSocketOutbound {
 }
 
 impl Runtime {
-    pub(crate) fn start(handler: Arc<dyn Handler>, config: RuntimeConfig) -> Result<Self, Error> {
+    pub(crate) fn start(handler: Arc<dyn Handler>, config: GatewayConfig) -> Result<Self, Error> {
         let listener = TcpListener::bind(("127.0.0.1", config.port))?;
         let port = listener.local_addr()?.port();
         let tokio_runtime = TokioBuilder::new_multi_thread()

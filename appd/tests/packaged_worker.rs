@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use appd::compile_worker;
 use appd::{
-    AppLayout, Config, Runtime, WorkerEnvironment, compress_worker_bundle, write_worker_environment,
+    Config, PackageLayout, Runtime, WorkerEnvironment, compress_worker_bundle,
+    write_worker_environment,
 };
 use openssl::ssl::{SslConnector, SslFiletype, SslMethod};
 use rcgen::{CertificateParams, KeyPair};
@@ -178,7 +179,7 @@ fn start_packaged_runtime(
     worker: &[u8],
     environment: &WorkerEnvironment,
 ) -> TestResult<(Runtime, PathBuf)> {
-    let app = AppLayout::new(temporary.join("app"));
+    let app = PackageLayout::new(temporary.join("app"));
     fs::create_dir_all(app.root())?;
     write_worker_environment(&app, environment)?;
     fs::write(
