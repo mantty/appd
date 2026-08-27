@@ -1,6 +1,6 @@
 # Request-scoped Bare realms and VFS
 
-Status: planned
+Status: superseded by [appd QuickJS runtime](appd-quickjs-runtime.md)
 
 ## Objective
 
