@@ -22,7 +22,9 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
 
   <div class="grid gap-6 md:grid-cols-2 mb-8">
     <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
-      <h2 class="text-lg font-semibold text-white mb-2">Server-Side Rendered</h2>
+      <h2 class="text-lg font-semibold text-white mb-2">
+        Server-Side Rendered
+      </h2>
       <p class="text-indigo-300 mb-4">
         This page is rendered on every request. The timestamp below changes on
         each reload.
@@ -37,8 +39,8 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
     <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
       <h2 class="text-lg font-semibold text-white mb-2">Navigation Test</h2>
       <p class="text-indigo-300 mb-4">
-        The <a href="/about" class="text-indigo-200 underline">About page</a> is
-        prerendered at build time. Its timestamp is fixed.
+        The <a href="/about" class="text-indigo-200 underline">About page</a> is prerendered
+        at build time. Its timestamp is fixed.
       </p>
       <a
         href="/about"

@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, bail};
-use appd::{Certificates, Config, Event, PackageLayout, Runtime, app_host, frontend_url};
+use appd::{
+    Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
+    app_host, frontend_url,
+};
 use base64::Engine;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
@@ -34,6 +37,10 @@ use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindow
 struct ShellConfig {
     name: String,
     host: String,
+    #[serde(rename = "devEndpoint")]
+    dev_endpoint: Option<String>,
+    #[serde(rename = "devSessionToken")]
+    dev_session_token: Option<String>,
 }
 
 pub(crate) fn run() -> Result<()> {
@@ -42,17 +49,37 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.name)?;
-    let runtime = Runtime::start(
-        Config {
-            app: PackageLayout::new(root.join("app")),
-            state_dir: state.join("runtime"),
-            host: config.host.clone(),
-        },
-        move |event| {
-            report(&event);
-            let _ = events.send_event(event);
-        },
-    )?;
+    let runtime = match (
+        config.dev_endpoint.as_deref(),
+        config.dev_session_token.as_deref(),
+    ) {
+        (Some(endpoint), Some(session_token)) => Runtime::start_development(
+            DevelopmentConfig {
+                state_dir: state.join("runtime"),
+                host: config.host.clone(),
+                proxy: DevProxyConfig {
+                    endpoint: endpoint.to_owned(),
+                    session_token: session_token.to_owned(),
+                },
+            },
+            move |event| {
+                report(&event);
+                let _ = events.send_event(event);
+            },
+        )?,
+        (None, None) => Runtime::start(
+            Config {
+                app: PackageLayout::new(root.join("app")),
+                state_dir: state.join("runtime"),
+                host: config.host.clone(),
+            },
+            move |event| {
+                report(&event);
+                let _ = events.send_event(event);
+            },
+        )?,
+        _ => bail!("appd dev endpoint and session token must be provided together"),
+    };
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
     let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
     let window = WindowBuilder::new()

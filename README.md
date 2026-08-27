@@ -96,8 +96,19 @@ The following command builds the example and creates a native app:
 ```sh
 cargo run -p xtask -- target-pack --target macos-arm64
 appd build macos --project examples/astro \
-  --target-pack target/appd-target-packs/macos-arm64/target-pack.json \
+  --target-pack target/appd-target-packs/macos-arm64 \
   --config examples/astro/dist/server/wrangler.json
+```
+
+Run a development app by passing the framework command after `--`. The
+framework's local HTTP endpoint is supplied with `--server` when it does not
+use the default Vite port:
+
+```sh
+appd dev macos --project examples/astro \
+  --target-pack target/appd-target-packs/macos-arm64 \
+  --config examples/astro/wrangler.json \
+  --server http://localhost:4321 -- pnpm dev
 ```
 
 Physical iOS signing uses `APPD_IOS_SIGNING_IDENTITY` and

@@ -21,6 +21,19 @@ function Read-AppdValue([string] $Name) {
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 $appName = Read-AppdValue "app-name"
 $appHost = Read-AppdValue "host"
+$devEndpoint = $null
+$devSessionToken = $null
+$devEndpointPath = Join-Path $InputDirectory "metadata/dev-endpoint"
+$devSessionTokenPath = Join-Path $InputDirectory "metadata/dev-session-token"
+if (Test-Path $devEndpointPath) {
+  $devEndpoint = [System.IO.File]::ReadAllText($devEndpointPath).Trim()
+}
+if (Test-Path $devSessionTokenPath) {
+  $devSessionToken = [System.IO.File]::ReadAllText($devSessionTokenPath).Trim()
+}
+if ([string]::IsNullOrWhiteSpace($devEndpoint) -xor [string]::IsNullOrWhiteSpace($devSessionToken)) {
+  throw "development endpoint and session token must be provided together"
+}
 $app = Join-Path $output "app"
 
 if (Test-Path $output) {
@@ -33,6 +46,11 @@ Copy-Item (Join-Path $InputDirectory "runtime/appd-shell-windows.exe") (Join-Pat
 $config = [ordered]@{
   name = $appName
   host = $appHost
-} | ConvertTo-Json
+}
+if (-not [string]::IsNullOrWhiteSpace($devEndpoint)) {
+  $config.devEndpoint = $devEndpoint
+  $config.devSessionToken = $devSessionToken
+}
+$config = $config | ConvertTo-Json
 $encoding = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $output "appd.json"), $config, $encoding)

@@ -62,8 +62,25 @@ internal class AppdRuntime private constructor(private var handle: Long) {
         fun start(packagedDir: File, stateDir: File, host: String): AppdRuntime =
             AppdRuntime(nativeStart(packagedDir.path, stateDir.path, host))
 
+        /** Start the runtime against a host development server. */
+        fun startDevelopment(
+            stateDir: File,
+            host: String,
+            endpoint: String,
+            sessionToken: String,
+        ): AppdRuntime =
+            AppdRuntime(nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken))
+
         @JvmStatic
         private external fun nativeStart(packagedDir: String, stateDir: String, host: String): Long
+
+        @JvmStatic
+        private external fun nativeStartDevelopment(
+            stateDir: String,
+            host: String,
+            endpoint: String,
+            sessionToken: String,
+        ): Long
 
         @JvmStatic
         private external fun nativePort(handle: Long): Int

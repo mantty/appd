@@ -16,6 +16,18 @@ bundle_id=$(cat "$metadata/bundle-id")
 host=$(cat "$metadata/host")
 platform=$(cat "$metadata/platform")
 target=$(cat "$metadata/target")
+dev_endpoint=
+dev_session_token=
+if [[ -f "$metadata/dev-endpoint" ]]; then
+  dev_endpoint=$(cat "$metadata/dev-endpoint")
+fi
+if [[ -f "$metadata/dev-session-token" ]]; then
+  dev_session_token=$(cat "$metadata/dev-session-token")
+fi
+if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" && -n "$dev_session_token" ]]; then
+  echo "development endpoint and session token must be provided together" >&2
+  exit 1
+fi
 output_parent=$(dirname "$output")
 module_cache=$output_parent/.appd/module-cache
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/appd-apple.XXXXXX")
@@ -168,6 +180,10 @@ write_plist() {
     printf '%s\n' '  <key>CFBundleVersion</key><string>1</string>'
     printf '%s\n' '  <key>CFBundleShortVersionString</key><string>1.0</string>'
     printf '  <key>AppdHost</key><string>%s</string>\n' "$(xml_escape "$host")"
+    if [[ -n "$dev_endpoint" ]]; then
+      printf '  <key>AppdDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"
+      printf '  <key>AppdDevSessionToken</key><string>%s</string>\n' "$(xml_escape "$dev_session_token")"
+    fi
     write_plugin_plist
     if [[ "$platform" == macos ]]; then
       printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'

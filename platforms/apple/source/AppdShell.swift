@@ -45,23 +45,47 @@ private final class RuntimeHost {
     }
     self.host = host
 
-    let bundle = Bundle.main.resourceURL?.appendingPathComponent("app")
-    guard let bundle else {
-      throw ShellError.configuration("app bundle resources are unavailable")
-    }
     let state = try Self.stateDirectory()
     var error = [CChar](repeating: 0, count: 512)
-    handle = bundle.path.withCString { bundlePath in
-      state.path.withCString { statePath in
+    if
+      let endpoint = Bundle.main.object(forInfoDictionaryKey: "AppdDevEndpoint") as? String,
+      let sessionToken = Bundle.main.object(forInfoDictionaryKey: "AppdDevSessionToken") as? String
+    {
+      handle = state.path.withCString { statePath in
         host.withCString { host in
-          error.withUnsafeMutableBufferPointer { error in
-            appd_runtime_start(
-              bundlePath,
-              statePath,
-              host,
-              error.baseAddress,
-              error.count
-            )
+          endpoint.withCString { endpoint in
+            sessionToken.withCString { sessionToken in
+              error.withUnsafeMutableBufferPointer { error in
+                appd_runtime_start_development(
+                  statePath,
+                  host,
+                  endpoint,
+                  sessionToken,
+                  error.baseAddress,
+                  error.count
+                )
+              }
+            }
+          }
+        }
+      }
+    } else {
+      let bundle = Bundle.main.resourceURL?.appendingPathComponent("app")
+      guard let bundle else {
+        throw ShellError.configuration("app bundle resources are unavailable")
+      }
+      handle = bundle.path.withCString { bundlePath in
+        state.path.withCString { statePath in
+          host.withCString { host in
+            error.withUnsafeMutableBufferPointer { error in
+              appd_runtime_start(
+                bundlePath,
+                statePath,
+                host,
+                error.baseAddress,
+                error.count
+              )
+            }
           }
         }
       }

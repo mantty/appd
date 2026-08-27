@@ -13,9 +13,11 @@ path = "src/main.rs"
 anyhow.workspace = true
 appd = { path = "../appd" }
 clap.workspace = true
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "signal", "sync"] }
 walkdir.workspace = true
 
 [dev-dependencies]

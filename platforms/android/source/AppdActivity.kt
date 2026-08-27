@@ -13,6 +13,8 @@ import java.io.File
 
 private const val TAG = "appd"
 private const val HOST_METADATA = "appd.host"
+private const val DEV_ENDPOINT_METADATA = "appd.dev.endpoint"
+private const val DEV_SESSION_TOKEN_METADATA = "appd.dev.session-token"
 private const val STARTING = "<!doctype html><title>Starting</title>"
 private const val FAILED =
     "<!doctype html><title>appd</title><h1>App failed to start</h1><p>See logcat for details.</p>"
@@ -77,8 +79,21 @@ class AppdActivity : Activity() {
     }
 
     private fun startRuntime() {
-        val started = runCatching { AppdRuntime.start(unpackApp(), stateDir(), appHost()) }
+        val started = runCatching { startConfiguredRuntime() }
         runOnUiThread { finishStart(started) }
+    }
+
+    private fun startConfiguredRuntime(): AppdRuntime {
+        val metadata = packageManager
+            .getApplicationInfo(packageName, PackageManager.GET_META_DATA)
+            .metaData
+        val endpoint = metadata?.getString(DEV_ENDPOINT_METADATA)
+        val sessionToken = metadata?.getString(DEV_SESSION_TOKEN_METADATA)
+        return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
+            AppdRuntime.startDevelopment(stateDir(), appHost(), endpoint, sessionToken)
+        } else {
+            AppdRuntime.start(unpackApp(), stateDir(), appHost())
+        }
     }
 
     private fun finishStart(started: Result<AppdRuntime>) {

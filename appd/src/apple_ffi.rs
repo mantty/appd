@@ -58,6 +58,31 @@ pub unsafe extern "C" fn appd_runtime_start(
     }
 }
 
+/// Start an appd runtime that forwards requests to a host development server.
+///
+/// # Safety
+///
+/// All string pointers must reference NUL-terminated UTF-8 strings. `error`
+/// must be writable for `error_len` bytes when non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn appd_runtime_start_development(
+    state_dir: *const c_char,
+    host: *const c_char,
+    endpoint: *const c_char,
+    session_token: *const c_char,
+    error: *mut c_char,
+    error_len: usize,
+) -> *mut c_void {
+    let result = unsafe { start_development(state_dir, host, endpoint, session_token) };
+    match result {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)).cast(),
+        Err(message) => {
+            write_error(error, error_len, &message);
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Return the runtime's loopback port.
 ///
 /// # Safety
@@ -253,6 +278,31 @@ unsafe fn start(
             .to_owned(),
     };
     Runtime::start(config, report).map_err(|error| error.to_string())
+}
+
+unsafe fn start_development(
+    state_dir: *const c_char,
+    host: *const c_char,
+    endpoint: *const c_char,
+    session_token: *const c_char,
+) -> Result<Runtime, String> {
+    let config = crate::DevelopmentConfig {
+        state_dir: PathBuf::from(
+            unsafe { text(state_dir) }.ok_or("development state path is not valid UTF-8")?,
+        ),
+        host: unsafe { text(host) }
+            .ok_or("app host is not valid UTF-8")?
+            .to_owned(),
+        proxy: crate::DevProxyConfig {
+            endpoint: unsafe { text(endpoint) }
+                .ok_or("development endpoint is not valid UTF-8")?
+                .to_owned(),
+            session_token: unsafe { text(session_token) }
+                .ok_or("development session token is not valid UTF-8")?
+                .to_owned(),
+        },
+    };
+    Runtime::start_development(config, report).map_err(|error| error.to_string())
 }
 
 fn report(event: Event) {

@@ -7,6 +7,7 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use appd_cli::Platform;
 use serde_json::Value;
 
 const MANAGED_IOS_NAME: &str = "appd iPhone";
@@ -33,6 +34,8 @@ pub(super) struct PreparedDevice {
     pub(super) id: String,
     /// Human-readable target type.
     pub(super) kind: String,
+    /// Platform family used to build and launch the development app.
+    pub(super) platform: Platform,
 }
 
 impl DeviceStatus {
@@ -94,6 +97,7 @@ fn prepared_device(device: Device) -> Result<PreparedDevice> {
     match device.status {
         DeviceStatus::Available => Ok(PreparedDevice {
             id: device.id,
+            platform: device_platform(&device.kind),
             kind: device.kind,
         }),
         DeviceStatus::Blocked(reason) => bail!("device `{}` is blocked: {reason}", device.id),
@@ -139,6 +143,7 @@ fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
     Ok(Some(PreparedDevice {
         id: target.id,
         kind: format!("{} / iOS Simulator", target.name),
+        platform: Platform::IosSimulator,
     }))
 }
 
@@ -173,6 +178,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
         return Ok(PreparedDevice {
             id: target.id.clone(),
             kind: format!("{} / iOS Simulator", target.name),
+            platform: Platform::IosSimulator,
         });
     }
     if let Some(target) = targets
@@ -220,6 +226,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
     Ok(PreparedDevice {
         id: target.id,
         kind: format!("{} / iOS Simulator", target.name),
+        platform: Platform::IosSimulator,
     })
 }
 
@@ -359,6 +366,7 @@ fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
             return Ok(PreparedDevice {
                 id: serial,
                 kind: format!("{avd_name} / Android emulator (AVD)"),
+                platform: Platform::Android,
             });
         }
     } else {
@@ -379,7 +387,22 @@ fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
     Ok(PreparedDevice {
         id: serial,
         kind: format!("{avd_name} / Android emulator (AVD)"),
+        platform: Platform::Android,
     })
+}
+
+fn device_platform(kind: &str) -> Platform {
+    if kind.contains("iOS Simulator") {
+        Platform::IosSimulator
+    } else if kind.contains("iOS") || kind.contains("iPhone") || kind.contains("iPad") {
+        Platform::Ios
+    } else if kind.contains("Android") {
+        Platform::Android
+    } else if kind.starts_with("macOS") {
+        Platform::Macos
+    } else {
+        Platform::Windows
+    }
 }
 
 fn find_android_avd(source: &str, avd_name: &str) -> Option<String> {

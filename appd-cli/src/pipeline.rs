@@ -11,7 +11,7 @@ use super::{plugins, support, worker};
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
     pub(crate) project_dir: PathBuf,
-    pub(crate) target_pack_manifest: Option<PathBuf>,
+    pub(crate) target_pack_dir: Option<PathBuf>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) skip_web_build: bool,
 }
@@ -19,6 +19,22 @@ pub(crate) struct BuildRequest {
 pub(crate) struct BuildSummary {
     pub(crate) platform: Platform,
     pub(crate) bundle_dir: PathBuf,
+}
+
+pub(crate) struct DevelopmentRequest {
+    pub(crate) platform: Platform,
+    pub(crate) project_dir: PathBuf,
+    pub(crate) target_pack_dir: Option<PathBuf>,
+    pub(crate) config_path: Option<PathBuf>,
+    pub(crate) endpoint: String,
+    pub(crate) session_token: String,
+}
+
+pub(crate) struct DevelopmentSummary {
+    pub(crate) platform: Platform,
+    pub(crate) bundle_dir: PathBuf,
+    pub(crate) app_name: String,
+    pub(crate) bundle_id: String,
 }
 
 pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
@@ -43,6 +59,55 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect()
 }
 
+pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<DevelopmentSummary> {
+    if !request.project_dir.is_dir() {
+        bail!(
+            "project directory does not exist: {}",
+            request.project_dir.display()
+        );
+    }
+    let config_base = if request.config_path.is_some() {
+        env::current_dir()?
+    } else {
+        request.project_dir.clone()
+    };
+    let config_path = resolve_wrangler_config_path(&config_base, request.config_path.as_deref())?;
+    let wrangler = load_wrangler_config(&config_path)?;
+    let plugins = plugins::discover(&request.project_dir)?;
+    let (input, pack_root, manifest, project) = prepare_platform_input(
+        &request.project_dir,
+        request.platform,
+        request.target_pack_dir.as_deref(),
+    )?;
+    plugins::stage(&plugins, request.platform, &input.join("plugins"))
+        .context("stage native plugin inputs")?;
+    fs::write(input.join("app/.appd-development"), b"")?;
+    write_build_metadata(
+        &input,
+        &wrangler.name,
+        request.platform,
+        &manifest,
+        Some((&request.endpoint, &request.session_token)),
+    )
+    .context("write development metadata")?;
+
+    let bundle_dir = output_path(&project, request.platform, &wrangler.name);
+    support::run_entrypoint(&pack_root, &input, &bundle_dir, manifest.target).with_context(
+        || {
+            format!(
+                "build {} development shell using target-pack entrypoint",
+                request.platform.display_name()
+            )
+        },
+    )?;
+    Ok(DevelopmentSummary {
+        platform: request.platform,
+        bundle_dir,
+        app_name: wrangler.name.clone(),
+        bundle_id: format!("com.appd.{}", wrangler.name),
+    })
+}
+
 fn validate_request(request: &BuildRequest) -> Result<()> {
     if request.platforms.is_empty() {
         bail!("at least one build platform is required");
@@ -53,7 +118,7 @@ fn validate_request(request: &BuildRequest) -> Result<()> {
             request.project_dir.display()
         );
     }
-    if request.target_pack_manifest.is_some() && request.platforms.len() > 1 {
+    if request.target_pack_dir.is_some() && request.platforms.len() > 1 {
         bail!("--target-pack can only be used with a single platform");
     }
     Ok(())
@@ -65,48 +130,21 @@ fn build_platform(
     wrangler: &WranglerConfig,
     plugins: &[plugins::Plugin],
 ) -> Result<BuildSummary> {
-    let manifest_path = fs::canonicalize(resolve_manifest(
+    let (input, pack_root, manifest, project) = prepare_platform_input(
+        &request.project_dir,
         platform,
-        request.target_pack_manifest.as_deref(),
-    )?)?;
-    let manifest = load_manifest(&manifest_path)
-        .with_context(|| format!("invalid target pack: {}", manifest_path.display()))?;
-    manifest
-        .validate_cli_version(env!("CARGO_PKG_VERSION"))
-        .with_context(|| format!("incompatible target pack: {}", manifest_path.display()))?;
-    support::validate_target(&manifest, platform)?;
-    let pack_root = manifest_path
-        .parent()
-        .context("target-pack manifest must have a parent directory")?;
-    let project = fs::canonicalize(&request.project_dir).with_context(|| {
-        format!(
-            "resolve project directory: {}",
-            request.project_dir.display()
-        )
-    })?;
-    let staging = project.join("build/.appd").join(platform.directory_name());
-    support::reset_path(&staging)
-        .with_context(|| format!("reset build staging directory: {}", staging.display()))?;
-    let input = staging.join("input");
-    fs::create_dir_all(input.join("metadata")).with_context(|| {
-        format!(
-            "create build input directory: {}",
-            input.join("metadata").display()
-        )
-    })?;
-    fs::create_dir_all(input.join("app"))?;
-    support::stage_platform_artifacts(&input, pack_root, &manifest)
-        .context("stage target-pack platform artifacts")?;
+        request.target_pack_dir.as_deref(),
+    )?;
 
-    worker::prepare_quickjs_app(&input.join("app"), pack_root, &manifest, wrangler)
+    worker::prepare_quickjs_app(&input.join("app"), &pack_root, &manifest, wrangler)
         .context("prepare the appd application package")?;
     plugins::stage(plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    write_build_metadata(&input, &wrangler.name, platform, &manifest)
+    write_build_metadata(&input, &wrangler.name, platform, &manifest, None)
         .context("write platform build metadata")?;
 
     let output = output_path(&project, platform, &wrangler.name);
-    support::run_entrypoint(pack_root, &input, &output, manifest.target).with_context(|| {
+    support::run_entrypoint(&pack_root, &input, &output, manifest.target).with_context(|| {
         format!(
             "build {} using target-pack entrypoint",
             platform.display_name()
@@ -118,6 +156,40 @@ fn build_platform(
     })
 }
 
+fn prepare_platform_input(
+    project_dir: &Path,
+    platform: Platform,
+    target_pack_dir: Option<&Path>,
+) -> Result<(PathBuf, PathBuf, TargetPackManifest, PathBuf)> {
+    let manifest_path = fs::canonicalize(resolve_manifest(platform, target_pack_dir)?)?;
+    let manifest = load_manifest(&manifest_path)
+        .with_context(|| format!("invalid target pack: {}", manifest_path.display()))?;
+    manifest
+        .validate_cli_version(env!("CARGO_PKG_VERSION"))
+        .with_context(|| format!("incompatible target pack: {}", manifest_path.display()))?;
+    support::validate_target(&manifest, platform)?;
+    let pack_root = manifest_path
+        .parent()
+        .context("target-pack manifest must have a parent directory")?
+        .to_path_buf();
+    let project = fs::canonicalize(project_dir)
+        .with_context(|| format!("resolve project directory: {}", project_dir.display()))?;
+    let staging = project.join("build/.appd").join(platform.directory_name());
+    support::reset_path(&staging)
+        .with_context(|| format!("reset build staging directory: {}", staging.display()))?;
+    let input = staging.join("input");
+    fs::create_dir_all(input.join("metadata")).with_context(|| {
+        format!(
+            "create build input directory: {}",
+            input.join("metadata").display()
+        )
+    })?;
+    fs::create_dir_all(input.join("app"))?;
+    support::stage_platform_artifacts(&input, &pack_root, &manifest)
+        .context("stage target-pack platform artifacts")?;
+    Ok((input, pack_root, manifest, project))
+}
+
 fn output_path(project: &Path, platform: Platform, app_name: &str) -> PathBuf {
     support::build_dir(project, platform).join(platform.output_name(app_name))
 }
@@ -127,6 +199,7 @@ fn write_build_metadata(
     app_name: &str,
     platform: Platform,
     manifest: &TargetPackManifest,
+    development: Option<(&str, &str)>,
 ) -> Result<()> {
     let metadata = input.join("metadata");
     let values = [
@@ -139,14 +212,31 @@ fn write_build_metadata(
     for (name, value) in values {
         fs::write(metadata.join(name), value)?;
     }
+    if let Some((endpoint, session_token)) = development {
+        fs::write(metadata.join("dev-endpoint"), endpoint)?;
+        fs::write(metadata.join("dev-session-token"), session_token)?;
+    }
     Ok(())
 }
 
 const TARGET_PACK_DIR_ENV: &str = "target_pack_dir";
 
-fn resolve_manifest(platform: Platform, explicit_manifest: Option<&Path>) -> Result<PathBuf> {
-    if let Some(manifest) = explicit_manifest {
-        return Ok(manifest.to_path_buf());
+fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<PathBuf> {
+    if let Some(directory) = explicit_dir {
+        if directory.is_file() {
+            bail!(
+                "--target-pack must point to a target-pack directory, not a manifest file: {}",
+                directory.display()
+            );
+        }
+        if !directory.is_dir() {
+            bail!("target-pack directory not found: {}", directory.display());
+        }
+        let manifest = directory.join(MANIFEST_FILE);
+        if manifest.is_file() {
+            return Ok(manifest);
+        }
+        bail!("target-pack manifest not found: {}", manifest.display());
     }
 
     let target = platform.default_target().map_err(anyhow::Error::from)?;
@@ -188,4 +278,42 @@ fn bundled_manifest(target: Target) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::resolve_manifest;
+    use appd_cli::{MANIFEST_FILE, Platform};
+
+    #[test]
+    fn resolves_an_explicit_target_pack_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let manifest = directory.path().join(MANIFEST_FILE);
+        fs::write(&manifest, "manifest")?;
+
+        assert_eq!(
+            resolve_manifest(Platform::Macos, Some(directory.path()))?,
+            manifest
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_explicit_manifest_file() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let manifest = directory.path().join(MANIFEST_FILE);
+        fs::write(&manifest, "manifest")?;
+
+        let Err(error) = resolve_manifest(Platform::Macos, Some(&manifest)) else {
+            return Err("a manifest file was accepted as a target pack".into());
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("must point to a target-pack directory")
+        );
+        Ok(())
+    }
 }

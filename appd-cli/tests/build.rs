@@ -148,7 +148,7 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
                 .collect(),
         },
     )?;
-    Ok(root.join(MANIFEST_FILE))
+    Ok(root.to_path_buf())
 }
 
 fn write_test_shell(shell: &Path) -> TestResult {
@@ -225,8 +225,8 @@ fn create_inputs(target: &str) -> TestResult<(tempfile::TempDir, PathBuf, PathBu
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    let manifest = create_target_pack(&pack, target)?;
-    Ok((temporary, project, manifest))
+    let target_pack = create_target_pack(&pack, target)?;
+    Ok((temporary, project, target_pack))
 }
 
 fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> {
@@ -277,16 +277,16 @@ printf '{"name":"%s","host":"%s"}\n' "$app_name" "$host" > "$output/appd.json"
             required_tools: Vec::new(),
         },
     )?;
-    Ok((temporary, project, pack.join(MANIFEST_FILE)))
+    Ok((temporary, project, pack))
 }
 
-fn build_command(platform: &str, project: &Path, manifest: &Path) -> TestResult<Command> {
+fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResult<Command> {
     let mut command = Command::cargo_bin("appd")?;
     command
         .args(["build", platform, "--project"])
         .arg(project)
         .arg("--target-pack")
-        .arg(manifest)
+        .arg(target_pack)
         .arg("--skip-web-build");
     Ok(command)
 }
@@ -446,7 +446,7 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_unbuilt_project(&project)?;
-    let manifest = create_target_pack(&pack, "macos-arm64")?;
+    let target_pack = create_target_pack(&pack, "macos-arm64")?;
     let config = project.join("dist/server/wrangler.json");
 
     let mut command = Command::cargo_bin("appd")?;
@@ -454,7 +454,7 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
         .args(["build", "macos", "--project"])
         .arg(&project)
         .arg("--target-pack")
-        .arg(manifest)
+        .arg(target_pack)
         .arg("--config")
         .arg(config);
     command.assert().success();
@@ -667,7 +667,8 @@ fn rejects_target_pack_for_another_platform() -> TestResult {
 
 #[test]
 fn rejects_target_pack_for_another_cli_version() -> TestResult {
-    let (_temporary, project, manifest_path) = create_inputs("macos-arm64")?;
+    let (_temporary, project, target_pack) = create_inputs("macos-arm64")?;
+    let manifest_path = target_pack.join(MANIFEST_FILE);
     let target = Target::MacosArm64;
     write_manifest(
         &manifest_path,
@@ -683,7 +684,7 @@ fn rejects_target_pack_for_another_cli_version() -> TestResult {
         },
     )?;
 
-    build_command("macos", &project, &manifest_path)?
+    build_command("macos", &project, &target_pack)?
         .assert()
         .failure()
         .stderr(contains("target pack was built for appd 9.9.9"));

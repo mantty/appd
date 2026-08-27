@@ -75,6 +75,17 @@ pub struct WranglerConfig {
     pub find_additional_modules: bool,
     /// Directory against which additional-module globs are evaluated.
     pub base_dir: PathBuf,
+    /// Named Cloudflare bindings declared by the configuration.
+    pub bindings: Vec<WranglerBinding>,
+}
+
+/// A named binding declared in a Wrangler configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WranglerBinding {
+    /// Binding name exposed to the Worker.
+    pub name: String,
+    /// Wrangler configuration key that declares the binding.
+    pub kind: String,
 }
 
 /// The module type declared by a Wrangler rule.
@@ -299,6 +310,7 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
                 .or_else(|| Path::new(&main).parent())
                 .unwrap_or(Path::new(".")),
         ),
+        bindings: collect_bindings(&raw.other),
     })
 }
 
@@ -314,6 +326,8 @@ struct RawWranglerConfig {
     #[serde(default)]
     find_additional_modules: bool,
     base_dir: Option<String>,
+    #[serde(flatten)]
+    other: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +392,81 @@ fn resolve_rule(rule: RawWranglerRule) -> Result<WranglerRule> {
         globs: rule.globs,
         fallthrough: rule.fallthrough,
     })
+}
+
+fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
+    const BINDING_KINDS: &[&str] = &[
+        "ai",
+        "analytics_engine_datasets",
+        "browser",
+        "d1_databases",
+        "dispatch_namespaces",
+        "durable_objects",
+        "hyperdrive",
+        "images",
+        "kv_namespaces",
+        "mtls_certificates",
+        "pipelines",
+        "queues",
+        "r2_buckets",
+        "rate_limiting",
+        "secrets_store_secrets",
+        "send_email",
+        "services",
+        "vectorize",
+    ];
+    let mut bindings = Vec::new();
+    for kind in BINDING_KINDS {
+        let Some(value) = values.get(*kind) else {
+            continue;
+        };
+        collect_binding_values(kind, value, &mut bindings);
+    }
+    bindings.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.name.cmp(&right.name)));
+    bindings
+}
+
+fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<WranglerBinding>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_binding_values(kind, value, bindings);
+            }
+        }
+        Value::Object(values) => {
+            if kind == "durable_objects"
+                && let Some(value) = values.get("bindings")
+            {
+                collect_binding_values(kind, value, bindings);
+                return;
+            }
+            if kind == "queues" {
+                let mut nested = false;
+                for key in ["producers", "consumers"] {
+                    if let Some(value) = values.get(key) {
+                        collect_binding_values(kind, value, bindings);
+                        nested = true;
+                    }
+                }
+                if nested {
+                    return;
+                }
+            }
+            let name = ["binding", "name", "queue", "dataset", "id"]
+                .iter()
+                .find_map(|key| values.get(*key).and_then(Value::as_str))
+                .unwrap_or("<unnamed>");
+            bindings.push(WranglerBinding {
+                name: name.to_owned(),
+                kind: kind.to_owned(),
+            });
+        }
+        Value::String(name) => bindings.push(WranglerBinding {
+            name: name.clone(),
+            kind: kind.to_owned(),
+        }),
+        _ => {}
+    }
 }
 
 fn parse_config(config_path: &Path) -> Result<RawWranglerConfig> {
@@ -459,7 +548,11 @@ pub fn app_host(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_host, is_valid_app_name};
+    use std::collections::BTreeMap;
+
+    use serde_json::Value;
+
+    use super::{app_host, collect_bindings, is_valid_app_name};
 
     #[test]
     fn accepts_one_lower_case_dns_label() {
@@ -476,5 +569,37 @@ mod tests {
         assert_eq!(app_host("my-app").as_deref(), Some("my-app.appd.local"));
         assert_eq!(app_host("Invalid").as_deref(), Some("invalid.appd.local"));
         assert_eq!(app_host("not valid"), None);
+    }
+
+    #[test]
+    fn collects_named_bindings_from_wrangler_like_shapes() {
+        let values = serde_json::from_str::<BTreeMap<String, Value>>(
+            r#"{
+                "kv_namespaces": [{"binding": "CACHE", "id": "cache"}],
+                "durable_objects": {"bindings": [{"name": "ROOMS", "class_name": "Room"}]},
+                "queues": {"producers": [{"binding": "EVENTS", "queue": "events"}]}
+            }"#,
+        )
+        .ok();
+        let Some(values) = values else {
+            return;
+        };
+        let bindings = collect_bindings(&values);
+        assert_eq!(bindings.len(), 3);
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| { binding.name == "CACHE" && binding.kind == "kv_namespaces" })
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.name == "ROOMS" && binding.kind == "durable_objects")
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.name == "EVENTS" && binding.kind == "queues")
+        );
     }
 }

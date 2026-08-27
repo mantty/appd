@@ -38,6 +38,12 @@ The project may also define the command and host development-server endpoint in
 appd project configuration. appd dev is a supervisor and device adapter; it
 does not replace the framework CLI.
 
+The host server endpoint defaults to `http://localhost:5173`. Commands using a
+different port pass it before the command separator, such as
+`appd dev macos --server http://localhost:4321 -- astro dev`. A physical iOS
+target additionally requires `--host-address` for the host address reachable
+from the device.
+
 | Edit | Result |
 |---|---|
 | Client module or style | The framework's normal Vite HMR updates the WebView through the appd gateway. |

@@ -40,6 +40,30 @@ pub extern "system" fn Java_com_appd_runtime_AppdRuntime_nativeStart(
     }
 }
 
+/// Start the development runtime and return an opaque handle, or throw on
+/// failure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_appd_runtime_AppdRuntime_nativeStartDevelopment(
+    mut env: JNIEnv,
+    _: JClass,
+    state_dir: JString,
+    host: JString,
+    endpoint: JString,
+    session_token: JString,
+) -> jlong {
+    match start_development(&mut env, &state_dir, &host, &endpoint, &session_token) {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)) as jlong,
+        Err(message) => {
+            log(
+                LOG_ERROR,
+                &format!("development runtime startup failed: {message}"),
+            );
+            let _ = env.throw_new(FAILURE, message);
+            0
+        }
+    }
+}
+
 /// Return the loopback port the gateway bound.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_appd_runtime_AppdRuntime_nativePort(
@@ -181,6 +205,24 @@ fn start(
         host: text(env, host)?,
     };
     Runtime::start(config, report).map_err(|error| error.to_string())
+}
+
+fn start_development(
+    env: &mut JNIEnv,
+    state_dir: &JString,
+    host: &JString,
+    endpoint: &JString,
+    session_token: &JString,
+) -> Result<Runtime, String> {
+    let config = crate::DevelopmentConfig {
+        state_dir: PathBuf::from(text(env, state_dir)?),
+        host: text(env, host)?,
+        proxy: crate::DevProxyConfig {
+            endpoint: text(env, endpoint)?,
+            session_token: text(env, session_token)?,
+        },
+    };
+    Runtime::start_development(config, report).map_err(|error| error.to_string())
 }
 
 fn report(event: Event) {

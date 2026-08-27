@@ -23,6 +23,10 @@ typedef struct {
 
 void *appd_runtime_start(const char *packaged_dir, const char *state_dir,
                          const char *host, char *error, size_t error_len);
+void *appd_runtime_start_development(const char *state_dir, const char *host,
+                                     const char *endpoint,
+                                     const char *session_token, char *error,
+                                     size_t error_len);
 uint16_t appd_runtime_port(const void *runtime);
 uint16_t appd_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
