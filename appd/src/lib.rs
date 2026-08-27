@@ -23,17 +23,25 @@ mod cert_storage;
 mod cert_validation;
 #[cfg(feature = "native")]
 mod certificates;
+#[cfg(feature = "native")]
+mod dispatcher;
 mod events;
 #[cfg(feature = "native")]
 mod fs;
+#[cfg(feature = "native")]
+mod gateway;
 mod globals;
 #[cfg(feature = "native")]
 mod lifecycle_events;
 mod network;
 mod quickjs;
+#[cfg(all(test, feature = "native"))]
+mod tests;
 #[cfg(feature = "native")]
 pub use app_service::{Config, Runtime};
 mod streams;
+#[cfg(feature = "native")]
+mod transport;
 mod worker_bundle;
 mod worker_compatibility;
 mod worker_environment;
@@ -102,12 +110,7 @@ pub fn frontend_url(host: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn frontend_url_uses_the_stable_host() {
-        assert_eq!(
-            super::frontend_url("app.appd.local"),
-            "https://app.appd.local/"
-        );
-    }
+#[test]
+fn frontend_url_uses_the_stable_host() {
+    assert_eq!(frontend_url("app.appd.local"), "https://app.appd.local/");
 }

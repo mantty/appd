@@ -1,13 +1,15 @@
-use super::gateway::bind_replacement_listener;
-use super::gateway::{
-    AssetManifest, Job, JobResponse, Lifecycle, Shared, WebSocketBridge, WebSocketInbound,
-    WebSocketJob, WebSocketOutbound, WorkerLoader, WorkerResolver, asset_response,
-    close_connections, configure_worker_loader, execute_request, listener_was_closed, load_worker,
+use crate::dispatcher::{
+    AssetManifest, Dispatcher, WorkerLoader, WorkerResolver, asset_response,
+    configure_worker_loader, execute_request, load_worker,
+};
+use crate::fs::VirtualFileSystem;
+use crate::gateway::{
+    Job, JobResponse, Lifecycle, Shared, WebSocketBridge, WebSocketInbound, WebSocketJob,
+    WebSocketOutbound, bind_replacement_listener, close_connections, listener_was_closed,
     lock_connections, probe_gateway, serve_connection, wait_for_gateway,
 };
-use super::transport::{HttpRequest, HttpResponse, queue_websocket_message};
-use super::{Assets, Certificates, Error, RuntimeConfig, WorkerBundle};
-use crate::fs::VirtualFileSystem;
+use crate::quickjs::{Assets, Certificates, Error, RuntimeConfig, WorkerBundle};
+use crate::transport::{HttpRequest, HttpResponse, queue_websocket_message};
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -374,21 +376,25 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
 fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let shared = Arc::new(Shared {
-        worker: Arc::new(WorkerBundle::from_bytecode(Vec::new(), PathBuf::default())),
-        config: RuntimeConfig {
-            assets: None,
-            cache: PathBuf::default(),
-            certificates: Certificates {
-                ca: PathBuf::default(),
-                certificate: PathBuf::default(),
-                private_key: PathBuf::default(),
-            },
-            environment: BTreeMap::new(),
-            host: "example.test".to_owned(),
-            require_client_certificate: false,
-            port: 0,
+    let config = RuntimeConfig {
+        assets: None,
+        cache: PathBuf::default(),
+        certificates: Certificates {
+            ca: PathBuf::default(),
+            certificate: PathBuf::default(),
+            private_key: PathBuf::default(),
         },
+        environment: BTreeMap::new(),
+        host: "example.test".to_owned(),
+        require_client_certificate: false,
+        port: 0,
+    };
+    let shared = Arc::new(Shared {
+        handler: Dispatcher::new(
+            WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
+            config.clone(),
+        ),
+        config,
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
         accepting: Arc::new(AtomicBool::new(true)),

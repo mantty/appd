@@ -9,8 +9,8 @@ use openssl::ssl::{SslAcceptor, SslMethod, SslStream, SslVerifyMode};
 use openssl::x509::X509;
 use serde::Serialize;
 
-use super::gateway::{WebSocketBridge, WebSocketFrame, WebSocketInbound, WebSocketOutbound};
-use super::{Error, RuntimeConfig};
+use crate::gateway::{WebSocketBridge, WebSocketInbound, WebSocketOutbound};
+use crate::quickjs::{Error, RuntimeConfig};
 
 const MAX_HEADERS: usize = 64 * 1024;
 const MAX_BODY: usize = 16 * 1024 * 1024;
@@ -28,6 +28,12 @@ pub(super) struct HttpResponse {
     pub(super) status: u16,
     pub(super) headers: BTreeMap<String, String>,
     pub(super) body: Vec<u8>,
+}
+
+pub(super) struct WebSocketFrame {
+    pub(super) final_frame: bool,
+    pub(super) opcode: u8,
+    pub(super) payload: Vec<u8>,
 }
 
 impl HttpResponse {
