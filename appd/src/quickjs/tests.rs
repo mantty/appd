@@ -3,14 +3,14 @@ use super::gateway::{
     AssetManifest, Job, JobResponse, Lifecycle, Shared, WebSocketBridge, WebSocketInbound,
     WebSocketJob, WebSocketOutbound, WorkerLoader, WorkerResolver, asset_response,
     close_connections, configure_worker_loader, execute_request, listener_was_closed, load_worker,
-    lock_connections, serve_connection,
+    lock_connections, probe_gateway, serve_connection, wait_for_gateway,
 };
 use super::transport::{HttpRequest, HttpResponse, queue_websocket_message};
 use super::{Assets, Certificates, Error, RuntimeConfig, WorkerBundle};
-use crate::vfs::VirtualFileSystem;
+use crate::fs::VirtualFileSystem;
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -238,10 +238,10 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
     );
     let context = Context::full(&runtime)?;
     context.with(|ctx| {
-        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(crate::vfs::Bundle::new(
+        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(crate::fs::Bundle::new(
             directory.path(),
         ))));
-        crate::node_fs::install(&ctx, &vfs)
+        crate::fs::install(&ctx, &vfs)
             .map_err(|error| Error::Engine(format!("{error}; {:?}", ctx.catch())))?;
         let object: Object = Module::import(&ctx, "node:fs")
             .map_err(|error| Error::Engine(format!("{error}; {:?}", ctx.catch())))?
@@ -441,6 +441,75 @@ fn closed_listener_uses_a_random_port_when_its_port_was_taken()
     let (_listener, replacement_port) = bind_replacement_listener(port)?;
 
     assert_ne!(replacement_port, port);
+    Ok(())
+}
+
+#[test]
+fn probes_a_gateway_through_connect() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line)?;
+        if !request_line.starts_with("CONNECT appd-probe.invalid:443 ") {
+            return Err(io::Error::other("unexpected probe request"));
+        }
+        while reader.read_line(&mut String::new())? > 2 {}
+        stream
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request")
+    });
+
+    probe_gateway(port)?;
+    server.join().map_err(|_| "probe server panicked")??;
+    Ok(())
+}
+
+#[test]
+fn waits_for_the_gateway_to_publish_a_new_port() -> Result<(), Box<dyn std::error::Error>> {
+    let old_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let old_port = old_listener.local_addr()?.port();
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let new_port = listener.local_addr()?.port();
+    drop(old_listener);
+    let port = Arc::new(AtomicU16::new(old_port));
+    let server_port = Arc::clone(&port);
+    let server = thread::spawn(move || -> io::Result<()> {
+        thread::sleep(Duration::from_millis(20));
+        server_port.store(new_port, Ordering::Release);
+        let (mut stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        while reader.read_line(&mut String::new())? > 2 {}
+        stream
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request")
+    });
+
+    assert_eq!(wait_for_gateway(|| port.load(Ordering::Acquire))?, new_port);
+    server.join().map_err(|_| "probe server panicked")??;
+    Ok(())
+}
+
+#[test]
+fn reports_an_unexpected_gateway_response() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        while reader.read_line(&mut String::new())? > 2 {}
+        stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+    });
+
+    let error = match probe_gateway(port) {
+        Ok(()) => return Err("unexpected response was accepted".into()),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        "unexpected CONNECT response: HTTP/1.1 503 Service Unavailable"
+    );
+    server.join().map_err(|_| "probe server panicked")??;
     Ok(())
 }
 

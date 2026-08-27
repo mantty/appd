@@ -42,8 +42,9 @@ features deferred by the compatibility contract.
 - Use one `JSRuntime` and one `JSContext` per request.
 - Compile the Worker to QuickJS bytecode during `appd build` and load that
   bytecode per request.
-- Use the same pinned `rquickjs` and QuickJS-NG revision in `cli` and the
-  target runtime. Reject target packs from a different appd release.
+- Use the same pinned `rquickjs` and QuickJS-NG revision in `appd-cli` and the
+  target runtime. Target packs record `appdVersion`; the CLI accepts a pack
+  only when that value exactly matches the CLI's package version.
 - Schedule each request on the shared Tokio runtime. Keep its QuickJS runtime,
   context, and JavaScript execution on one Tokio blocking task.
 - Keep asynchronous host I/O on the same Tokio runtime so completions can be
@@ -82,7 +83,9 @@ WebView
 and the shell-facing API.
 
 The `appd/src/quickjs` module owns the engine, runtime threads, gateway, Worker
-image, request lifecycle, native modules, VFS, and asynchronous host I/O. It
+image, request lifecycle, and asynchronous host I/O. Capability modules such as
+`fs`, `streams`, `network`, `events`, `globals`, and `builtins` own their API
+implementations and source files. It
 replaces `appd-bare` directly; no backend trait is added.
 
 ### Rust request fast path
@@ -131,8 +134,8 @@ The packaged app contains:
 - a manifest and files for read-only `/bundle`; and
 - the existing static asset manifest and files.
 
-`cli` statically links QuickJS-NG through `rquickjs`. After esbuild emits
-the bundled ESM, `cli` uses `Module::declare()` and `Module::write()` to
+`appd-cli` statically links QuickJS-NG through `rquickjs`. After esbuild emits
+the bundled ESM, `appd-cli` uses `Module::declare()` and `Module::write()` to
 compile and serialize it without evaluation. Bytecode endianness follows the
 target; all current targets are little-endian. `qjsc` is not packaged or
 invoked; `rquickjs` provides its compile-and-serialize operation in-process.
@@ -170,6 +173,11 @@ current JavaScript turn finish. WebSocket executions end at their next event
 boundary; other executions drain normally. New work waits without consuming a
 polling loop. `resume()` refreshes certificates before dispatch. Shutdown
 cancels all executions, closes the gateway, and joins the scheduler.
+
+Platform shells do not call `suspend()` for ordinary focus or background
+transitions. Desktop shells keep the runtime running. Mobile shells allow the
+operating system to pause the process and probe the gateway on foreground,
+reconfiguring and reloading the WebView only when the listener moved ports.
 
 ### Native modules
 
@@ -315,12 +323,12 @@ ownership does not depend on it because each runtime has one `RequestState`.
 | --- | --- |
 | Top-level `bare/` | Delete it; do not add a corresponding `quickjs/` directory because Cargo builds QuickJS-NG through `rquickjs`. |
 | `appd/src/quickjs` | Keep the QuickJS engine and gateway as an `appd` module. |
-| `appd` | Own the runtime, QuickJS, VFS, and native Node APIs in modules. |
-| `cli` | Compile bundled ESM to bytecode and package native apps. |
-| `appd/src/worker_package` | Package Worker bytecode, source map, environment, and `/bundle` manifest. |
+| `appd` | Own the runtime, QuickJS, and capability modules in Rust and JavaScript. |
+| `appd-cli` | Compile bundled ESM to bytecode and package native apps. |
+| Root-level Worker-package modules | Package Worker bytecode, source map, environment, and `/bundle` manifest. |
 | Runtime JavaScript | Remove all `bare-*` dependencies as features move. |
 | Worker packer | Emit bundled ESM; remove the CommonJS worklet and `bare-pack`. |
-| `tools/xtask` | Build target packs and keep the versioned manifest schema out of the user CLI. |
+| `tools/xtask` | Build target packs and write their appd version. |
 | Native shells | Keep the ABI and co-locate each platform build entrypoint with its shell. The CLI invokes the fixed target-pack entrypoint convention. |
 | CI | Build the pinned engine for every target and package only prebuilt artifacts for users. |
 
@@ -395,7 +403,8 @@ dependency at the same time.
 
 ### 6. Integrate and cut over
 
-1. Update app layout, CLI packing, target-pack schema, artifacts, and licenses.
+1. Update app layout, CLI packing, target-pack manifest contract, artifacts,
+   and licenses.
 2. Build and start the Astro example through the normal package scripts on
    macOS, iOS Simulator, and Android emulator.
 3. Build physical iOS, both simulator architectures, both macOS
@@ -411,7 +420,8 @@ dependency at the same time.
 - Differential fixtures compare appd with pinned workerd/Miniflare behaviour,
   including values, errors, headers, streams, cancellation, and lifetimes.
 - Bytecode produced by each supported host CLI loads on every target available
-  from that host. Target packs from another appd release fail during build.
+  from that host. Target packs whose `appdVersion` differs from the running
+  CLI's package version fail during build.
 - Every builtin is tested through static import, its supported unprefixed
   form, and `process.getBuiltinModule()`.
 - Concurrent requests cannot observe each other's globals, module state,

@@ -10,8 +10,8 @@ mod support;
 use std::process::ExitCode;
 
 use anyhow::Result;
+use appd_cli::Target;
 use clap::{Parser, Subcommand};
-use target_pack_format::Target;
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "appd maintainer tasks")]

@@ -10,6 +10,10 @@ internal class AppdRuntime private constructor(private var handle: Long) {
     val port: Int
         get() = synchronized(lock) { nativePort(requireHandle()) }
 
+    fun restoreGateway(): Int = synchronized(lock) {
+        nativeRestoreGateway(requireHandle())
+    }
+
     fun suspend() = synchronized(lock) {
         handle.takeIf { it != 0L }?.let(::nativeSuspend)
     }
@@ -63,6 +67,9 @@ internal class AppdRuntime private constructor(private var handle: Long) {
 
         @JvmStatic
         private external fun nativePort(handle: Long): Int
+
+        @JvmStatic
+        private external fun nativeRestoreGateway(handle: Long): Int
 
         @JvmStatic
         private external fun nativeSuspend(handle: Long)

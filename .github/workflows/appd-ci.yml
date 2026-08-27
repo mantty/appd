@@ -52,18 +52,20 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: plugins/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install plugin dependencies
+        working-directory: plugins
         run: pnpm install --frozen-lockfile
 
       - name: Check TypeScript
+        working-directory: plugins
         run: |
           pnpm lint:ts
           pnpm test:ts
 
       - name: Check native shells
-        run: xcrun swift-format lint --strict platforms/apple/native/*.swift plugins/*/apple/*.swift
+        run: xcrun swift-format lint --strict platforms/apple/source/*.swift plugins/*/apple/*.swift
 
       - name: Build host target pack
         run: |
@@ -122,12 +124,14 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: plugins/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install plugin dependencies
+        working-directory: plugins
         run: pnpm install --frozen-lockfile
 
       - name: Check TypeScript
+        working-directory: plugins
         run: |
           pnpm lint:ts
           pnpm test:ts

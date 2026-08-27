@@ -2,8 +2,7 @@
 resolver = "3"
 members = [
     "appd",
-    "cli",
-    "target_pack_format",
+    "appd-cli",
     "platforms/windows",
     "tools/xtask",
 ]

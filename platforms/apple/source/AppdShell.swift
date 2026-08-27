@@ -84,18 +84,6 @@ private final class RuntimeHost {
     appd_runtime_port(handle)
   }
 
-  func suspend() {
-    if !appd_runtime_suspend(handle) {
-      print("appd runtime could not suspend")
-    }
-  }
-
-  func resume() {
-    if !appd_runtime_resume(handle) {
-      print("appd runtime could not resume")
-    }
-  }
-
   func restoreGateway() throws -> UInt16 {
     var error = [CChar](repeating: 0, count: 512)
     let port = error.withUnsafeMutableBufferPointer { error in
@@ -362,9 +350,9 @@ private final class AppdController {
   private var runtime: RuntimeHost?
   private var navigation: NavigationDelegate?
   private var pluginBridge: AppdPluginBridge?
+  private weak var activeWebView: WKWebView?
   private var dataStore: WKWebsiteDataStore?
   private var proxyPort: UInt16?
-  private var suspended = false
 
   func start(
     frame: CGRect,
@@ -376,23 +364,12 @@ private final class AppdController {
         switch result {
         case .success(let runtime):
           self.runtime = runtime
-          if self.suspended { runtime.suspend() }
           completion(self.webView(frame: frame, runtime: runtime))
         case .failure(let error):
           RuntimeHost.recordStartupFailure(error)
           completion(self.failureWebView(frame: frame))
         }
       }
-    }
-  }
-
-  func setSuspended(_ suspended: Bool) {
-    if self.suspended == suspended { return }
-    self.suspended = suspended
-    if suspended {
-      runtime?.suspend()
-    } else {
-      runtime?.resume()
     }
   }
 
@@ -403,6 +380,7 @@ private final class AppdController {
       guard port != proxyPort else { return }
       setProxy(port: port, host: runtime.host, dataStore: dataStore)
       proxyPort = port
+      activeWebView?.reload()
     } catch {
       print("appd gateway could not recover: \(error)")
     }
@@ -428,6 +406,7 @@ private final class AppdController {
     )
     self.navigation = navigation
     let webView = WKWebView(frame: frame, configuration: configuration)
+    activeWebView = webView
     pluginBridge.webView = webView
     self.pluginBridge = pluginBridge
     webView.navigationDelegate = navigation
@@ -489,14 +468,6 @@ private final class AppdController {
         webView.autoresizingMask = [.width, .height]
         content.addSubview(webView)
       }
-    }
-
-    func applicationDidResignActive(_ notification: Notification) {
-      controller.setSuspended(true)
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-      controller.setSuspended(false)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(

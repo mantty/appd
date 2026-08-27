@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use target_pack_format::{
+use appd::write_worker_compatibility_sources;
+use appd_cli::{
     Artifact, ESBUILD_DIRECTORY, RUNTIME_DIRECTORY, RUNTIME_JAVASCRIPT_DIRECTORY, Target,
-    TargetPackManifest, TargetPackVersion, write_manifest,
+    TargetPackManifest, write_manifest,
 };
 
 use crate::layout::WorkspaceLayout;
@@ -32,7 +33,6 @@ fn build_source_target_pack_at(workspace: &WorkspaceLayout, target: Target) -> R
     validate_artifacts(&pack_dir, &artifacts)?;
 
     let manifest = TargetPackManifest {
-        schema_version: TargetPackVersion::CURRENT,
         appd_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
         artifacts,
@@ -90,10 +90,8 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
     let runtime = pack_root.join(RUNTIME_DIRECTORY);
     reset_dir(&runtime)?;
     copy_dir_contents(&workspace.esbuild(), &pack_root.join(ESBUILD_DIRECTORY))?;
-    copy_dir_contents(
-        &workspace.runtime_javascript(),
-        &pack_root.join(RUNTIME_JAVASCRIPT_DIRECTORY),
-    )
+    write_worker_compatibility_sources(pack_root.join(RUNTIME_JAVASCRIPT_DIRECTORY))?;
+    Ok(())
 }
 
 fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
@@ -120,8 +118,10 @@ fn reset_dir(path: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::validate_artifacts;
-    use target_pack_format::{Artifact, ArtifactKind};
+    use super::{deploy_runtime, validate_artifacts};
+    use appd_cli::{Artifact, ArtifactKind};
+
+    use crate::layout::WorkspaceLayout;
 
     #[test]
     fn rejects_missing_pack_artifacts() -> anyhow::Result<()> {
@@ -155,6 +155,41 @@ mod tests {
                 path: "runtime".to_owned(),
             }],
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn materializes_feature_owned_runtime_sources() -> anyhow::Result<()> {
+        let workspace_root = tempfile::tempdir()?;
+        fs::create_dir_all(workspace_root.path().join("plugins/node_modules/esbuild"))?;
+        let pack_root = tempfile::tempdir()?;
+        deploy_runtime(
+            &WorkspaceLayout::from_root(workspace_root.path()),
+            pack_root.path(),
+        )?;
+
+        for path in [
+            "builtins/cloudflare-workers.mjs",
+            "events/events.mjs",
+            "globals/console.mjs",
+            "globals/process.mjs",
+            "globals/web.mjs",
+            "network/fetch.mjs",
+            "network/url.mjs",
+            "network/websocket.mjs",
+            "streams/node.mjs",
+            "streams/text.mjs",
+            "streams/web.mjs",
+        ] {
+            assert!(
+                pack_root
+                    .path()
+                    .join("tools/runtime/runtime-js")
+                    .join(path)
+                    .is_file(),
+                "missing generated runtime source {path}"
+            );
+        }
         Ok(())
     }
 }

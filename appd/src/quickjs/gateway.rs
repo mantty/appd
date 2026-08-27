@@ -2,19 +2,19 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "android")]
 use std::ffi::{CString, c_char, c_int};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::node_fs::{
+use crate::fs::VirtualFileSystem;
+use crate::fs::{
     MODULE_NAME as NODE_FS_MODULE_NAME, NodeFsModule, NodeFsPromisesModule,
     PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install,
 };
-use crate::vfs::VirtualFileSystem;
 use flate2::read::GzDecoder;
 use rquickjs::loader::{BuiltinResolver, ImportAttributes, Loader, ModuleLoader, Resolver};
 use rquickjs::{
@@ -250,6 +250,10 @@ impl Runtime {
         self.shared.port.load(Ordering::Acquire)
     }
 
+    pub(crate) fn restore_gateway(&self) -> io::Result<u16> {
+        wait_for_gateway(|| self.port())
+    }
+
     pub(crate) fn suspend(&self) {
         self.shared.lifecycle.suspend();
         close_connections(&self.shared);
@@ -383,6 +387,48 @@ pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<TcpStr
 pub(super) fn close_connections(shared: &Shared) {
     for connection in lock_connections(shared).iter() {
         let _ = connection.shutdown(Shutdown::Both);
+    }
+}
+
+pub(super) fn probe_gateway(port: u16) -> io::Result<()> {
+    let timeout = Duration::from_millis(100);
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, timeout)
+        .map_err(|error| io::Error::new(error.kind(), format!("TCP connect failed: {error}")))?;
+    stream.set_read_timeout(Some(timeout)).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("setting read timeout failed: {error}"),
+        )
+    })?;
+    stream
+        .write_all(b"CONNECT appd-probe.invalid:443 HTTP/1.1\r\n\r\n")
+        .map_err(|error| io::Error::new(error.kind(), format!("CONNECT write failed: {error}")))?;
+    let response = std::io::read_to_string(stream)
+        .map_err(|error| io::Error::new(error.kind(), format!("CONNECT read failed: {error}")))?;
+    if response.starts_with("HTTP/1.1 400") && response.ends_with("\r\n\r\nBad CONNECT request") {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "unexpected CONNECT response: {}",
+            response.lines().next().unwrap_or("empty response")
+        )))
+    }
+}
+
+pub(super) fn wait_for_gateway(mut port: impl FnMut() -> u16) -> io::Result<u16> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let current = port();
+        match probe_gateway(current) {
+            Ok(()) => return Ok(current),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(io::Error::other(format!(
+                    "gateway did not recover: {error}"
+                )));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
     }
 }
 

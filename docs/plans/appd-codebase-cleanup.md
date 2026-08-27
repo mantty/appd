@@ -16,21 +16,19 @@ responsibilities:
 
 | File | Mixed responsibilities |
 |---|---|
-| `appd/src/node_fs/exports.rs` | module registration and export wiring, with filesystem operations, callbacks, JavaScript objects, and tests in neighbouring files |
+| `appd/src/fs/node/exports.rs` | module registration and export wiring, with filesystem operations, callbacks, JavaScript objects, and tests in neighbouring files |
 | `appd/src/quickjs/gateway.rs` | runtime lifecycle, listener recovery, Worker loading, assets, and request execution, with transport and tests separated |
-| `appd/src/vfs/virtual_filesystem.rs` | public API and request-scoped tree operations, with nodes/devices, bundle storage, path handling, and tests separated |
-| `appd/src/runtime/certificate/bundle.rs` | certificate bundle lifecycle and cache coordination, with generation, validation, and storage separated |
+| `appd/src/fs/vfs/virtual_filesystem.rs` | public API and request-scoped tree operations, with nodes/devices, bundle storage, path handling, and tests separated |
 
 Split each by responsibility without introducing new public API solely for the
 refactor. A
 reasonable direction is:
 
-- `node_fs`: module/export registration, filesystem operations, callback and
+- `fs/node`: module/export registration, filesystem operations, callback and
   promise adapters, JS object types, and small conversion helpers;
 - `quickjs`: lifecycle/gateway, HTTP, WebSocket, Worker loading, and assets;
-- `vfs`: public types, tree nodes/devices, bundle storage, path handling, and
+- `fs/vfs`: public types, tree nodes/devices, bundle storage, path handling, and
   tests;
-- `runtime`: certificate generation, validation, and storage.
 
 Do not create a module for a single helper merely to reduce a line count. A
 new file should own a coherent responsibility and have a narrow visibility
@@ -39,9 +37,9 @@ boundary.
 ## 2. Move target-pack recipes behind the platform boundary
 
 `tools/xtask/src/builder.rs` is now a generic target-pack orchestrator.
-The target-pack format owns canonical target metadata; platform recipes own
-toolchain setup, runtime packaging, shell source paths, entrypoints, and
-required tools.
+The public target-pack API in `appd-cli/src/lib.rs` owns canonical target metadata;
+platform recipes own toolchain setup, runtime packaging, shell source paths,
+entrypoints, and required tools.
 
 The maintainer tool should remain the generic target-pack orchestrator. Each
 platform should own the metadata and recipe needed to prepare its pack, while
@@ -57,17 +55,15 @@ prevents the maintainer tool from becoming a second platform abstraction.
 
 ## 3. Remove duplicate platform/target mappings
 
-The platform and target relationships now live in the target-pack format
-package. The CLI consumes `Platform` and `Target` metadata instead of defining
-its own platform enum and target matches.
-
-The package is named `target-pack-format`; the on-disk manifest and CLI command
-remain `target-pack`.
+The platform and target relationships now live in the private `target_pack`
+module inside the CLI library. The CLI and maintainer tooling consume
+`Platform` and `Target` metadata instead of defining duplicate enums and
+matches. The on-disk manifest and CLI command remain `target-pack`.
 
 ## 4. Narrow the CLI build modules
 
-`cli/src/build/pipeline.rs` is the right orchestration layer, but
-`cli/src/build/support.rs` still combines:
+`appd-cli/src/pipeline.rs` is the right orchestration layer, but
+`appd-cli/src/support.rs` still combines:
 
 - project/package discovery;
 - package-manager selection;
@@ -93,13 +89,13 @@ manifest and entrypoint contract as production.
 
 ## 6. Reduce fixture-heavy integration tests
 
-`cli/tests/build.rs` contains fixture construction, fake target-pack creation,
+`appd-cli/tests/build.rs` contains fixture construction, fake target-pack creation,
 fake shell entrypoints, and nineteen build behaviours in one file.
 `appd/tests/packaged_worker.rs` similarly combines runtime setup, certificate
 material, HTTP framing, WebSocket framing, and assertions.
 
 Move reusable builders and protocol fixtures into the existing
-`cli/tests/fixtures` and `appd/tests/fixtures` locations. Split tests by
+`appd-cli/tests/fixtures` and `appd/tests/fixtures` locations. Split tests by
 behaviour only where that makes failures or ownership clearer. Keep the
 platform entrypoint contract covered by a small shared fixture rather than
 duplicating fake pack construction in every test.
@@ -112,15 +108,14 @@ coupled to the implementation language.
 Each platform keeps its shell source, target-pack recipe, app build entrypoint,
 and platform metadata under its own directory.
 
-## 8. Disambiguate target-pack names
+## 8. Keep the target-pack API narrow
 
-The manifest contract lives in `target_pack_format/src/lib.rs`, the maintainer
-build logic lives in `tools/xtask/src/builder.rs`, and the format package is
-named `target-pack-format`. These names distinguish the format library from
-the pack builder.
+The manifest contract lives in `appd-cli/src/target_pack.rs`, while the maintainer
+build logic lives in `tools/xtask/src/builder.rs`. `appd-cli/src/lib.rs` re-exports
+only the target-pack types, constants, and functions needed by the CLI and
+maintainer tooling; it does not expose the CLI's build modules.
 
-The maintainer module is `builder` and the manifest package has a role-based
-name. The on-disk `target-pack.json` name and CLI terminology are unchanged.
+The on-disk `target-pack.json` name and CLI terminology are unchanged.
 
 ## 9. Audit visibility after the structural split
 
@@ -130,7 +125,7 @@ In particular:
 
 - keep VFS nodes, devices, path helpers, and filesystem internals private;
 - expose only the native module definitions and installation seam from
-  `node_fs`;
+  `fs/node`;
 - keep Apple/Android bridge modules private because their ABI symbols are the
   interface, not Rust module paths; and
 - retain public target-pack types only where the CLI or maintainer tooling

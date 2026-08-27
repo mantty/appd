@@ -17,13 +17,18 @@ appd is pre-release. Backwards compatibility is not a goal.
 
 | Directory | Owns |
 |---|---|
-| `appd/src/worker_package` | the on-disk Worker contract and source preparation |
 | `appd/src/quickjs` | QuickJS embedding and the gateway |
-| `appd/src/runtime` | certificates, lifecycle, and runtime startup |
-| `appd/src/vfs` | the Workers virtual filesystem |
-| `appd/src/node_fs` | native `node:fs` bindings |
-| `appd/src/platform` | target-specific runtime bridges |
-| `cli` | user-facing native app packaging |
+| `appd/src/app_service.rs`, `appd/src/lifecycle_events.rs` | application startup and lifecycle |
+| `appd/src/certificates.rs`, `appd/src/cert_*.rs` | local mTLS certificate material and trust decisions |
+| `appd/src/app_layout.rs`, `appd/src/worker_*.rs`, `appd/src/asset_manifest.rs`, `appd/src/worker_package_contract.rs`, `appd/src/wrangler_config.rs` | the on-disk Worker contract and source preparation |
+| `appd/src/fs` | the Workers virtual filesystem and native `node:fs` bindings |
+| `appd/src/streams` | Node and Web Streams, text encoding, and adapters |
+| `appd/src/network` | Fetch, URL, and WebSocket APIs |
+| `appd/src/events` | Event and EventEmitter APIs |
+| `appd/src/globals` | Web, process, and console globals |
+| `appd/src/builtins` | synthetic builtin entrypoints and registration |
+| `appd/src/android_jni.rs`, `appd/src/apple_ffi.rs` | target-specific runtime bridges |
+| `appd-cli` | user-facing native app packaging |
 | `platforms/apple/source` | Swift shell, C ABI header, and module map |
 | `platforms/apple/build` | Apple target-pack recipe and app build entrypoint |
 | `platforms/android/source` | Kotlin shell sources |
@@ -31,11 +36,11 @@ appd is pre-release. Backwards compatibility is not a goal.
 | `platforms/windows/source` | Rust Windows application shell |
 | `platforms/windows/build` | Windows target-pack recipe and app build entrypoint |
 | `tools/xtask` | maintainer-only target-pack generation |
-| `target_pack_format` | target-pack manifest format and target metadata |
+| `appd-cli/src/target_pack.rs` | target-pack manifest format and target metadata |
 
-`appd/src/worker_package` owns the Worker layout and resolves every path within it,
-so neither `cli` nor the runtime names a file. `cli` writes the contract and
-the runtime reads it.
+The root-level Worker-package modules own the Worker layout and resolve every
+path within it, so neither `appd-cli` nor the runtime names a file. `appd-cli`
+writes the contract and the runtime reads it.
 
 The `appd` package contains the shared runtime and its Apple C and Android JNI
 bridges. Every platform shell remains under `platforms/`, regardless of its
@@ -56,10 +61,11 @@ interfaces.
 ## Runtime
 
 - Starts and stops QuickJS, and owns the runtime handle.
-- Builds the runtime config from paths resolved by `appd/src/worker_package` and the
+- Builds the runtime config from paths resolved by the root-level Worker-package
+  modules and the
   certificates.
-- Loads app code, already prepared by `cli`.
-- Suspends and resumes when the shell reports an OS lifecycle change.
+- Loads app code, already prepared by `appd-cli`.
+- Exposes explicit suspend and resume operations for callers that need them.
 - Emits lifecycle events — starting, listening, suspended, resumed, failed —
   for shells and, later, plugins.
 - Learns the gateway's port when its listener binds. Startup does not poll.
@@ -67,9 +73,9 @@ interfaces.
 ## Shell
 
 The shell owns the process entry point, application object, UI event loop,
-window, WebView, and WebView proxy configuration. It starts, stops, suspends,
-and resumes appd, and answers platform callbacks using the certificate
-component.
+window, WebView, and WebView proxy configuration. It starts and stops appd,
+answers platform callbacks using the certificate component, and recovers the
+gateway after mobile foreground transitions when the listener changed ports.
 
 macOS and iOS use the same Swift shell and C runtime ABI. Android uses a Kotlin
 shell and JNI runtime ABI. Windows uses the Rust shell under
@@ -78,6 +84,12 @@ artifact, native shell sources where the platform compiles the shell during app
 assembly, or a precompiled shell executable, and `build/entrypoint`.
 Developers need the native platform toolchain to build and sign an app; the
 Windows target pack additionally contains the precompiled Rust shell.
+
+Desktop focus, minimization, and occlusion do not suspend the appd runtime.
+Android and iOS likewise leave the runtime available to the operating system
+while backgrounded; on foreground, their shells probe the gateway and update
+the WebView proxy when its port changed. A changed Android proxy reloads the
+WebView. The operating system may still freeze or terminate a mobile process.
 
 ## Done when
 

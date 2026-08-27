@@ -71,9 +71,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: plugins/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install plugin dependencies
+        working-directory: plugins
         run: pnpm install --frozen-lockfile
 
       - name: Build target pack
@@ -137,9 +138,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: plugins/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install plugin dependencies
+        working-directory: plugins
         run: pnpm install --frozen-lockfile
 
       - name: Build target pack

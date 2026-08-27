@@ -25,7 +25,8 @@ class AppdActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var pluginBridge: AppdPluginBridge
     private var runtime: AppdRuntime? = null
-    private var suspended = false
+    private var proxyPort: Int? = null
+    private var restoreGeneration = 0L
     private var destroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,20 +48,16 @@ class AppdActivity : Activity() {
         Thread(::startRuntime, "appd-startup").start()
     }
 
-    override fun onPause() {
-        super.onPause()
-        suspended = true
-        runtime?.suspend()
-    }
-
     override fun onResume() {
         super.onResume()
-        suspended = false
-        runtime?.resume()
+        restoreGeneration += 1
+        val generation = restoreGeneration
+        runtime?.let { restoreGateway(it, generation) }
     }
 
     override fun onDestroy() {
         destroyed = true
+        restoreGeneration += 1
         AppdProxy.release(this)
         pluginBridge.close()
         webView.stopLoading()
@@ -95,8 +92,32 @@ class AppdActivity : Activity() {
             return
         }
         this.runtime = runtime
-        if (suspended) runtime.suspend()
+        proxyPort = runtime.port
         AppdProxy.acquire(this, appHost(), runtime.port)
+    }
+
+    private fun restoreGateway(runtime: AppdRuntime, generation: Long) {
+        Thread {
+            val result = runCatching { runtime.restoreGateway() }
+            runOnUiThread {
+                if (
+                    destroyed ||
+                    this.runtime !== runtime ||
+                    generation != restoreGeneration
+                ) return@runOnUiThread
+                result
+                    .onSuccess { port ->
+                        if (port != runtime.port) return@onSuccess
+                        if (port != proxyPort) {
+                            proxyPort = port
+                            AppdProxy.acquire(this, appHost(), port)
+                        }
+                    }
+                    .onFailure { error ->
+                        Log.w(TAG, "appd gateway could not recover", error)
+                    }
+            }
+        }.start()
     }
 
     internal fun proxyReady() {

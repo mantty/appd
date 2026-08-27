@@ -1,18 +1,16 @@
 use std::fs;
 use std::path::Path;
 
-use appd::worker_package::{
-    Error,
-    wrangler::{
-        HtmlHandling, NotFoundHandling, WranglerModuleType, load_config, resolve_config_path,
-    },
+use appd::{
+    HtmlHandling, NotFoundHandling, WorkerPackageError, WranglerModuleType, load_wrangler_config,
+    resolve_wrangler_config_path,
 };
 use serde_json::json;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn load_config_error(path: &Path) -> TestResult<Error> {
-    let Err(error) = load_config(path) else {
+fn load_config_error(path: &Path) -> TestResult<WorkerPackageError> {
+    let Err(error) = load_wrangler_config(path) else {
         return Err(std::io::Error::other("config should fail").into());
     };
     Ok(error)
@@ -30,7 +28,7 @@ fn discovers_wrangler_config_using_wrangler_order_and_parent_search() -> TestRes
         r#"{ "main": "jsonc-entry.mjs" }"#,
     )?;
 
-    let config_path = resolve_config_path(&nested, None)?;
+    let config_path = resolve_wrangler_config_path(&nested, None)?;
 
     assert_eq!(config_path, root.join("wrangler.jsonc"));
     Ok(())
@@ -52,8 +50,8 @@ fn discovers_and_parses_json_before_jsonc_and_toml() -> TestResult {
         r#"{ "main": "json-entry.mjs", "compatibility_date": "2026-06-01" }"#,
     )?;
 
-    let config_path = resolve_config_path(&nested, None)?;
-    let config = load_config(&config_path)?;
+    let config_path = resolve_wrangler_config_path(&nested, None)?;
+    let config = load_wrangler_config(&config_path)?;
 
     assert_eq!(config_path, root.join("wrangler.json"));
     assert_eq!(config.main, root.join("json-entry.mjs"));
@@ -69,7 +67,7 @@ fn explicit_config_path_overrides_default_discovery() -> TestResult {
     let explicit = root.join("config/custom.toml");
     fs::write(&explicit, "main = \"worker.mjs\"")?;
 
-    let config_path = resolve_config_path(root, Some(Path::new("config/custom.toml")))?;
+    let config_path = resolve_wrangler_config_path(root, Some(Path::new("config/custom.toml")))?;
 
     assert_eq!(config_path, explicit);
     Ok(())
@@ -85,7 +83,7 @@ fn rejects_missing_required_wrangler_fields() -> TestResult {
     let error = load_config_error(&config_path)?;
     assert!(matches!(
         error,
-        Error::MissingConfigField { field: "main", .. }
+        WorkerPackageError::MissingConfigField { field: "main", .. }
     ));
 
     fs::write(&config_path, r#"{ "main": "worker.mjs", "assets": {} }"#)?;
@@ -93,7 +91,7 @@ fn rejects_missing_required_wrangler_fields() -> TestResult {
     let error = load_config_error(&config_path)?;
     assert!(matches!(
         error,
-        Error::MissingConfigField {
+        WorkerPackageError::MissingConfigField {
             field: "assets.directory",
             ..
         }
@@ -110,14 +108,14 @@ fn rejects_invalid_wrangler_config_values_and_formats() -> TestResult {
     fs::write(&unsupported, "main: worker.mjs")?;
     assert!(matches!(
         load_config_error(&unsupported)?,
-        Error::UnsupportedConfigFormat(_)
+        WorkerPackageError::UnsupportedConfigFormat(_)
     ));
 
     let jsonc_path = root.join("wrangler.jsonc");
     fs::write(&jsonc_path, r#"{ "main": "#)?;
     assert!(matches!(
         load_config_error(&jsonc_path)?,
-        Error::InvalidConfig { .. }
+        WorkerPackageError::InvalidConfig { .. }
     ));
 
     fs::write(
@@ -132,7 +130,7 @@ fn rejects_invalid_wrangler_config_values_and_formats() -> TestResult {
     )?;
     assert!(matches!(
         load_config_error(&jsonc_path)?,
-        Error::InvalidAssetConfig(_)
+        WorkerPackageError::InvalidAssetConfig(_)
     ));
 
     fs::write(
@@ -147,7 +145,7 @@ fn rejects_invalid_wrangler_config_values_and_formats() -> TestResult {
     )?;
     assert!(matches!(
         load_config_error(&jsonc_path)?,
-        Error::InvalidAssetConfig(_)
+        WorkerPackageError::InvalidAssetConfig(_)
     ));
 
     fs::write(
@@ -156,7 +154,7 @@ fn rejects_invalid_wrangler_config_values_and_formats() -> TestResult {
     )?;
     assert!(matches!(
         load_config_error(&jsonc_path)?,
-        Error::InvalidAssetConfig(_)
+        WorkerPackageError::InvalidAssetConfig(_)
     ));
     Ok(())
 }
@@ -185,7 +183,7 @@ fn parses_jsonc_wrangler_config_subset_and_resolves_paths() -> TestResult {
 }"#,
     )?;
 
-    let config = load_config(&config_path)?;
+    let config = load_wrangler_config(&config_path)?;
 
     assert_eq!(config.main, root.join("build/server/entry.mjs"));
     let assets = config
@@ -228,7 +226,7 @@ not_found_handling = "404-page"
 "#,
     )?;
 
-    let config = load_config(&config_path)?;
+    let config = load_wrangler_config(&config_path)?;
 
     assert_eq!(config.main, root.join("worker/entry.mjs"));
     let assets = config
@@ -268,7 +266,7 @@ fn parses_additional_module_rules_and_base_directory() -> TestResult {
 }"#,
     )?;
 
-    let config = load_config(&config_path)?;
+    let config = load_wrangler_config(&config_path)?;
 
     assert_eq!(config.base_dir, root.join("worker"));
     assert!(config.find_additional_modules);

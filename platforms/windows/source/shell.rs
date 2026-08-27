@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, bail};
-use appd::worker_package::{AppLayout, app_host};
-use appd::{Certificates, Config, Event, Runtime, frontend_url};
+use appd::{AppLayout, Certificates, Config, Event, Runtime, app_host, frontend_url};
 use base64::Engine;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;

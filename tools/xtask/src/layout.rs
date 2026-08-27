@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use target_pack_format::{MANIFEST_FILE, Target};
+use appd_cli::{MANIFEST_FILE, Target};
 
 pub(crate) struct WorkspaceLayout {
     root: PathBuf,
@@ -42,11 +42,12 @@ impl WorkspaceLayout {
     }
 
     pub(crate) fn esbuild(&self) -> PathBuf {
-        self.root.join("node_modules/esbuild")
+        self.root.join("plugins/node_modules/esbuild")
     }
 
-    pub(crate) fn runtime_javascript(&self) -> PathBuf {
-        self.root.join("runtime/qjs")
+    #[cfg(test)]
+    pub(crate) fn from_root(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
     }
 
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {
@@ -59,7 +60,7 @@ mod tests {
     use std::path::Path;
 
     use super::WorkspaceLayout;
-    use target_pack_format::Target;
+    use appd_cli::Target;
 
     #[test]
     fn resolves_workspace_artifacts_from_one_root() {
@@ -85,11 +86,7 @@ mod tests {
         );
         assert_eq!(
             layout.esbuild(),
-            Path::new("/workspace/appd/node_modules/esbuild")
-        );
-        assert_eq!(
-            layout.runtime_javascript(),
-            Path::new("/workspace/appd/runtime/qjs")
+            Path::new("/workspace/appd/plugins/node_modules/esbuild")
         );
     }
 }

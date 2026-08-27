@@ -26,7 +26,9 @@ contract.
 loads the shared packaged Worker bytecode into it. The packaged bytecode is
 owned by an immutable app-wide Worker image. The current JavaScript runtime
 contains small `events`, `stream`, `fs`, `cloudflare:workers`, and Web API
-modules under `runtime/qjs`.
+modules under capability modules (`appd/src/fs`, `appd/src/streams`,
+`appd/src/network`, `appd/src/events`, `appd/src/globals`, and
+`appd/src/builtins`).
 
 The current filesystem is only a per-context JavaScript `Map` for `/tmp`.
 Each accepted request is now scheduled on Tokio and gets its own QuickJS

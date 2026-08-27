@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
-use crate::vfs::Bundle as VfsBundle;
+use crate::fs::Bundle as VfsBundle;
 #[cfg(feature = "native")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "native")]
@@ -221,6 +221,10 @@ impl QuickJsRuntime {
     #[must_use]
     pub fn port(&self) -> u16 {
         self.runtime.port()
+    }
+
+    pub(crate) fn restore_gateway(&self) -> std::io::Result<u16> {
+        self.runtime.restore_gateway()
     }
 
     /// Stop new request dispatch and close active gateway connections.

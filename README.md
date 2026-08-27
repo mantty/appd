@@ -8,22 +8,35 @@ same JavaScript runtime and compatibility layer.
 ## Structure
 
 - `appd/` owns the runtime library. Its modules are organised under
-  `appd/src/worker_package/`, `appd/src/quickjs/`, `appd/src/runtime/`,
-  `appd/src/vfs/`, and `appd/src/node_fs/`.
-- `appd/src/worker_package/` owns the on-disk Worker contract: layout, Wrangler
-  config, and the asset manifest. The CLI writes it and the runtime reads it.
+  the root-level application, mTLS, packaging, and platform modules, plus the
+  focused compatibility and QuickJS modules.
 - `appd/src/quickjs/` owns the QuickJS-NG engine integration and gateway.
-- `appd/src/runtime/` owns certificates, lifecycle, and runtime startup.
-- `appd/src/vfs/` and `appd/src/node_fs/` own the Workers filesystem contract
-  and native Node filesystem bindings.
-- `runtime/qjs/` owns the engine-neutral Web, Node, and Workers compatibility
-  modules bundled into each Worker.
-- `cli/` builds web projects and packages native application
+- `appd/src/app_service.rs` owns application startup, lifecycle, and packaged
+  Worker loading.
+- `appd/src/certificates.rs`, `appd/src/cert_generation.rs`,
+  `appd/src/cert_storage.rs`, and `appd/src/cert_validation.rs` own local mTLS
+  certificate material and trust decisions.
+- `appd/src/app_layout.rs`, `appd/src/worker_bundle.rs`,
+  `appd/src/worker_environment.rs`, `appd/src/asset_manifest.rs`,
+  `appd/src/worker_package_contract.rs`, and `appd/src/wrangler_config.rs` own
+  the packaged Worker contract.
+- `appd/src/fs/` owns the virtual filesystem and native Node filesystem
+  bindings.
+- `appd/src/streams/`, `appd/src/network/`, `appd/src/events/`, and
+  `appd/src/globals/` own capability implementations shared by Web, Node, and
+  Worker compatibility surfaces.
+- `appd/src/builtins/` owns synthetic builtin entrypoints and registration.
+- `appd-cli/` builds web projects and packages native application
   bundles.
+- `plugins/` is an independent pnpm workspace containing the frontend plugin
+  bridge and local plugin packages. Plugin Swift and Kotlin sources compile
+  with the application shell.
+- Each directory under `examples/` is an independent app package and links
+  local plugins by their published package names.
 - `tools/xtask/` contains maintainer-only target-pack generation. Target packs
   are CI/build artifacts, not a user-facing CLI operation.
-- `appd/src/platform/` owns the target-specific runtime bridges, including the
-  Apple C ABI and Android JNI ABI.
+- `appd/src/android_jni.rs` and `appd/src/apple_ffi.rs` own the target-specific
+  runtime bridges.
 - `platforms/apple/source/` contains the Swift application shell and Apple ABI
   headers. `platforms/apple/build/entrypoint` owns the Apple bundle build.
 - `platforms/android/source/` contains the Kotlin application shell compiled
@@ -31,9 +44,6 @@ same JavaScript runtime and compatibility layer.
 - `platforms/windows/source/` contains the Rust application shell, and
   `platforms/windows/build/entrypoint.ps1` owns Windows app assembly around
   the precompiled shell.
-- `plugins/` contains the frontend plugin bridge and plugin packages. Plugin
-  Swift and Kotlin sources compile with the application shell.
-
 The native shell is the application: it owns the process entry point, window,
 `WebView`, and operating-system lifecycle, and drives the appd runtime through
 a narrow native API. The appd package owns the shared runtime and its
@@ -59,8 +69,9 @@ native plugin data under `plugins/`.
 ```sh
 cargo fmt --all --check
 xcrun swift-format lint --strict platforms/apple/source/*.swift plugins/*/apple/*.swift
-pnpm lint:ts
-pnpm test:ts
+pnpm --dir plugins lint:ts
+pnpm --dir plugins test:ts
+node --test appd/tests/quickjs_runtime/runtime.test.mjs
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p appd --all-targets --features test-stubs -- -D warnings
 cargo clippy -p appd --lib --features test-stubs --target aarch64-apple-ios -- -D warnings
@@ -75,7 +86,7 @@ cargo test --workspace
 Build a target pack with:
 
 ```sh
-pnpm install
+pnpm --dir plugins install --frozen-lockfile
 cargo run -p xtask -- target-pack --target macos-arm64
 ```
 

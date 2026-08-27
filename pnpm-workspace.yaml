@@ -1,5 +1,0 @@
-packages:
-  - "."
-  - "runtime"
-  - "examples/*"
-  - "plugins/*"

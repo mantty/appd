@@ -1,6 +1,4 @@
-use appd::worker_package::AppLayout;
-use appd::worker_package::assets::write_manifest;
-use appd::worker_package::wrangler::{HtmlHandling, NotFoundHandling, WranglerAssets};
+use appd::{AppLayout, HtmlHandling, NotFoundHandling, WranglerAssets, write_asset_manifest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -18,7 +16,7 @@ fn writes_content_types_and_routing_modes() -> TestResult {
         not_found_handling: NotFoundHandling::SinglePageApplication,
     };
 
-    write_manifest(&layout, &assets)?;
+    write_asset_manifest(&layout, &assets)?;
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(layout.asset_manifest())?)?;

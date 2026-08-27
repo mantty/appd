@@ -19,18 +19,18 @@ running the developer's existing Cloudflare-compatible framework command on the
 host. The running app uses the framework's normal development server, Worker
 runtime, HMR, overlays, source maps, and debugging tools.
 
-The target is a single selector. It may be an appd-managed alias such as
-`ios-sim` or `android-emulator`, the native identifier of an existing simulator,
-emulator, or physical device, or `host` for the local desktop target. Dev mode
-does not accept a separate platform argument and device flag; the selected
+The target is a single selector. It may be an appd-managed alias such as `ios`
+or `android`, the native identifier of an existing simulator, emulator, or
+physical device, or the host platform name (`macos`, `windows`, or `linux`). Dev
+mode does not accept a separate platform argument and device flag; the selected
 target determines the platform and native target pack.
 
 The command may be supplied explicitly so appd does not need to know which
 framework is being used:
 
 ~~~
-appd dev ios-sim -- astro dev
-appd dev android-emulator -- vite dev
+appd dev ios -- astro dev
+appd dev android -- vite dev
 appd dev <simulator-or-device-id> -- vinext dev
 ~~~
 
@@ -145,18 +145,18 @@ Dev mode accepts one target selector, not a platform plus a separate device
 option:
 
 ~~~
-appd dev host
-appd dev ios-sim
-appd dev android-emulator
+appd dev macos
+appd dev ios
+appd dev android
 appd dev <simulator-or-device-id>
 ~~~
 
 The selector is resolved against an inventory assembled by the platform
 adapters. It may identify:
 
-- `host`, the local desktop target;
-- an appd-managed virtual-target alias such as `ios-sim` or
-  `android-emulator`;
+- the host platform name (`macos`, `windows`, or `linux`), selecting the local
+  desktop target;
+- an appd-managed virtual-target alias such as `ios` or `android`;
 - an existing iOS Simulator UUID, Android AVD name, Android ADB serial, or
   physical-device identifier; or
 - another concrete identifier returned by a supported platform adapter.
@@ -173,12 +173,13 @@ deliberately small:
 
 ~~~
 ID                    Type                              Status
-host                  macOS desktop                     available
-ios-sim               managed iOS Simulator              available
+macos                 macOS desktop                     available
+ios                   managed iOS Simulator              available
+android               managed Android emulator            available
+00008110-...          physical iPhone                    blocked: trust device
 A1B2C3D4-...          iPhone 15 / iOS Simulator          available
 Pixel_8_API_35        Android emulator (AVD)              available
 emulator-5554         Android emulator                   available
-00008110-...          physical iPhone                    blocked: trust device
 ~~~
 
 `available` includes targets that are already running, can be booted, or can
@@ -188,9 +189,16 @@ unauthorized physical device, or an incompatible architecture. Low-level
 transitions such as `booting` are progress messages from `appd dev`, not
 additional user-facing states.
 
+The default inventory omits valid but never-booted iOS Simulator records, which
+are commonly created automatically for every installed Xcode runtime. A
+simulator is listed when it is available and either currently booted or has a
+non-empty `lastBootedAt` value. The managed `ios` and `android` aliases remain
+visible so a fresh target can be provisioned without selecting an arbitrary
+existing profile.
+
 ### Managed virtual targets
 
-`ios-sim` and `android-emulator` are requests for an appd-managed default
+`ios` and `android` are requests for an appd-managed default
 target, not claims that a particular instance is already running. The adapter
 does the following when the alias is selected:
 
@@ -227,9 +235,9 @@ target. A disconnect never silently switches the session to another target.
 ## Wrangler configuration and binding validation
 
 The appd repository already resolves and parses Wrangler JSON, JSONC, and TOML
-files in appd/src/worker_package/wrangler.rs. Development mode reuses
-resolve_config_path() and load_config() rather than adding another config
-parser.
+files in `appd/src/wrangler_config.rs`. Development mode reuses
+`resolve_wrangler_config_path()` and `load_wrangler_config()` rather than
+adding another config parser.
 
 The current normalized WranglerConfig intentionally retains only the fields
 needed by packaging (main, assets, vars, and rules). Extend that model with the
@@ -380,16 +388,17 @@ The user selects one target. Platform selection is inferred from the resolved
 target rather than repeated in a separate argument:
 
 ~~~
-appd dev host
-appd dev ios-sim
-appd dev android-emulator
+appd dev macos
+appd dev ios
+appd dev android
 appd dev <simulator-or-device-id>
 ~~~
 
-`host` selects the local desktop target. `ios-sim` and `android-emulator`
-select the project’s managed virtual targets, creating them when the required
-host runtime or system image is already installed. A concrete identifier
-selects an existing simulator, emulator, or physical device.
+The host platform name (`macos`, `windows`, or `linux`) selects the local desktop
+target. `ios` and `android` select the project’s managed virtual targets,
+creating them when the required host runtime or system image is already
+installed. A concrete identifier selects an existing simulator, emulator, or
+physical device.
 
 Platform adapters expose a common inventory and lifecycle contract: enumerate
 capabilities and target profiles, resolve a selector, create or boot a managed
@@ -425,8 +434,10 @@ framework process reports its own Vite/framework configuration changes.
   plugin, or shell requires a native rebuild and reinstall.
 - Host disconnect keeps the native app installed but marks the WebView's
   development origin unavailable until the session reconnects.
-- App suspend closes proxy connections and resume reconnects before reloading
-  the WebView.
+- Desktop focus changes leave the appd runtime and proxy running. Mobile
+  backgrounding leaves the process to the operating system; on foreground the
+  shell probes the gateway and, if its port changed, rebinds the proxy and
+  reloads the WebView.
 
 Worker console output and uncaught errors remain in the framework's normal host
 terminal and debugger. Appd forwards connection and native-plugin errors with

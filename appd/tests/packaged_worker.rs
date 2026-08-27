@@ -9,10 +9,9 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use appd::compile_worker;
-use appd::worker_package::AppLayout;
-use appd::worker_package::compress_worker_bundle;
-use appd::worker_package::environment::{WorkerEnvironment, write as write_environment};
-use appd::{Config, Runtime};
+use appd::{
+    AppLayout, Config, Runtime, WorkerEnvironment, compress_worker_bundle, write_worker_environment,
+};
 use openssl::ssl::{SslConnector, SslFiletype, SslMethod};
 use rcgen::{CertificateParams, KeyPair};
 use serde_json::json;
@@ -181,7 +180,7 @@ fn start_packaged_runtime(
 ) -> TestResult<(Runtime, PathBuf)> {
     let app = AppLayout::new(temporary.join("app"));
     fs::create_dir_all(app.root())?;
-    write_environment(&app, environment)?;
+    write_worker_environment(&app, environment)?;
     fs::write(
         app.worker_bundle(),
         compress_worker_bundle(&compile_worker(worker)?)?,

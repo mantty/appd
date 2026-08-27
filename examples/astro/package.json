@@ -11,7 +11,7 @@
     "appd:ios-simulator": "astro build && ../../target/release/appd build ios-simulator --project . --config dist/server/wrangler.json --skip-web-build"
   },
   "dependencies": {
-    "@appd/geolocation": "workspace:*",
+    "@appd/geolocation": "link:../../plugins/geolocation",
     "@astrojs/cloudflare": "13.1.8",
     "@tailwindcss/vite": "^4.2.2",
     "astro": "6.1.5",

@@ -7,7 +7,8 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-target-pack-format = { path = "../../target_pack_format" }
+appd = { path = "../../appd" }
+appd-cli = { path = "../../appd-cli" }
 clap.workspace = true
 walkdir.workspace = true
 

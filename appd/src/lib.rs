@@ -4,25 +4,68 @@
 //!
 //! A per-platform shell owns the application and drives this library: it
 //! starts a [`Runtime`] for a packaged app, answers platform TLS challenges
-//! with [`Certificates`], and reports operating-system lifecycle changes.
+//! with [`Certificates`], and reports runtime events.
 
+#[cfg(all(feature = "native", target_os = "android"))]
+mod android_jni;
+mod app_layout;
 #[cfg(feature = "native")]
-mod node_fs;
+mod app_service;
+#[cfg(all(feature = "native", target_vendor = "apple"))]
+mod apple_ffi;
+mod asset_manifest;
+mod builtins;
 #[cfg(feature = "native")]
-mod platform;
+mod cert_generation;
+#[cfg(feature = "native")]
+mod cert_storage;
+#[cfg(feature = "native")]
+mod cert_validation;
+#[cfg(feature = "native")]
+mod certificates;
+mod events;
+#[cfg(feature = "native")]
+mod fs;
+mod globals;
+#[cfg(feature = "native")]
+mod lifecycle_events;
+mod network;
 mod quickjs;
 #[cfg(feature = "native")]
-mod runtime;
-#[cfg(feature = "native")]
-mod vfs;
-pub mod worker_package;
+pub use app_service::{Config, Runtime};
+mod streams;
+mod worker_bundle;
+mod worker_compatibility;
+mod worker_environment;
+mod worker_package_contract;
+mod wrangler_config;
 
 use thiserror::Error as Fail;
 
+pub use app_layout::AppLayout;
+pub use asset_manifest::write_manifest as write_asset_manifest;
+#[cfg(feature = "native")]
+pub use certificates::{Certificates, Challenge, Decision};
+#[cfg(feature = "native")]
+pub use lifecycle_events::Event;
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
-#[cfg(feature = "native")]
-pub use runtime::{Certificates, Challenge, Config, Decision, Event, Runtime};
+pub use worker_bundle::{
+    WorkerManifest, compress_worker_bundle, compress_worker_module, decompress_worker_bundle,
+    decompress_worker_module, read_worker_manifest, write_worker_manifest,
+};
+pub use worker_compatibility::write_worker_compatibility_sources;
+pub use worker_environment::{
+    WorkerEnvironment, load as load_worker_environment, write as write_worker_environment,
+};
+pub use worker_package_contract::{
+    Error as WorkerPackageError, Result as WorkerPackageResult, app_host, is_valid_app_name,
+};
+pub use wrangler_config::{
+    HtmlHandling, NotFoundHandling, WranglerAssets, WranglerConfig, WranglerModuleType,
+    WranglerRule, load_config as load_wrangler_config,
+    resolve_config_path as resolve_wrangler_config_path,
+};
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -45,7 +88,7 @@ pub enum Error {
     /// The packaged app contents are invalid.
     #[cfg(feature = "native")]
     #[error(transparent)]
-    Bundle(#[from] worker_package::Error),
+    Bundle(#[from] WorkerPackageError),
     /// Certificate state is held by a thread that stopped unexpectedly.
     #[cfg(feature = "native")]
     #[error("certificate state is unavailable")]
