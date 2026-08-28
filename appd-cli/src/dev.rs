@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 use std::sync::Arc;
@@ -52,6 +52,9 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
+    if device.platform == Platform::Ios && request.host_address.is_none() {
+        println!("Using detected host address {relay_host} for physical iOS development");
+    }
     let relay = DevRelay::bind(server.clone(), session_token.clone(), relay_host)?;
     let mut framework =
         spawn_framework(&request.command, &project, &relay, &server, &session_token)?;
@@ -77,16 +80,33 @@ pub(crate) fn run(request: &Request) -> Result<()> {
 
 fn relay_host(device: &PreparedDevice, configured: Option<&str>) -> Result<IpAddr> {
     if device.platform != Platform::Ios {
-        return Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        return Ok(IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
-    let configured = configured.ok_or_else(|| {
-        anyhow::anyhow!(
-            "physical iOS development requires --host-address with an address reachable by the device"
-        )
-    })?;
-    configured
-        .parse()
-        .with_context(|| format!("invalid physical-device host address `{configured}`"))
+    if let Some(configured) = configured {
+        return configured
+            .parse()
+            .with_context(|| format!("invalid physical-device host address `{configured}`"));
+    }
+
+    let interface = netdev::get_default_interface()
+        .map_err(|error| anyhow::anyhow!("detect default host network interface: {error}"))?;
+    usable_ipv4_address(interface.ipv4_addrs())
+        .map(IpAddr::V4)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not detect a usable IPv4 address on the default host network interface; pass --host-address with an address reachable by the device"
+            )
+        })
+}
+
+fn usable_ipv4_address(addresses: impl IntoIterator<Item = Ipv4Addr>) -> Option<Ipv4Addr> {
+    addresses.into_iter().find(|address| {
+        !address.is_loopback()
+            && !address.is_link_local()
+            && !address.is_unspecified()
+            && !address.is_multicast()
+            && !address.is_broadcast()
+    })
 }
 
 fn load_development_config(project: &Path, explicit: Option<&Path>) -> Result<WranglerConfig> {
@@ -1053,9 +1073,10 @@ mod tests {
     use std::thread;
 
     use super::{
-        DevRelay, ServerEndpoint, android_application_id, authorized, parse_authority,
-        rewrite_request,
+        DevRelay, PreparedDevice, ServerEndpoint, android_application_id, authorized,
+        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
     };
+    use appd_cli::Platform;
 
     #[test]
     fn parses_server_authorities() {
@@ -1091,6 +1112,36 @@ mod tests {
     fn derives_android_application_ids() {
         assert_eq!(android_application_id("demo-app"), "com.appd.demo_app");
         assert_eq!(android_application_id("123-app"), "com.appd.app_123_app");
+    }
+
+    #[test]
+    fn selects_the_first_usable_ipv4_address() {
+        assert_eq!(
+            usable_ipv4_address([
+                Ipv4Addr::LOCALHOST,
+                Ipv4Addr::new(169, 254, 1, 2),
+                Ipv4Addr::new(192, 168, 1, 42),
+            ]),
+            Some(Ipv4Addr::new(192, 168, 1, 42))
+        );
+        assert_eq!(
+            usable_ipv4_address([Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED]),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_host_address_is_used_for_physical_ios() -> Result<(), Box<dyn std::error::Error>> {
+        let device = PreparedDevice {
+            id: "device".to_owned(),
+            kind: "iPhone".to_owned(),
+            platform: Platform::Ios,
+        };
+        assert_eq!(
+            relay_host(&device, Some("192.168.1.42"))?,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42))
+        );
+        Ok(())
     }
 
     #[test]

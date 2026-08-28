@@ -42,6 +42,7 @@ flate2 = { version = "1.1.8", default-features = false, features = ["rust_backen
 getrandom = "0.4.2"
 jsonc-parser = "0.32.4"
 mime_guess = "2.0.5"
+netdev = { version = "0.46.1", default-features = false, features = ["gateway"] }
 objc2 = "0.6.4"
 objc2-app-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"

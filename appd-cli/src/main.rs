@@ -61,7 +61,7 @@ enum Command {
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
-        /// Host address reachable by a physical iOS device.
+        /// Override the detected host address for a physical iOS device.
         #[arg(long, value_name = "ADDRESS")]
         host_address: Option<String>,
         /// Dev command after `--` (for example, `astro dev`).
