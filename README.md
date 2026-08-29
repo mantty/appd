@@ -119,8 +119,8 @@ that project and device. Set `APPD_IOS_SIGNING_IDENTITY` and
 example, in CI).
 
 Windows target-pack builds require the Visual Studio C++ toolchain, CMake 4,
-NASM, Perl, Node.js, and Rust. The Windows CI and weekly release jobs configure
-MSVC and verify those prerequisites before building.
+NASM, Perl, Node.js, and Rust. The Windows CI and artifact jobs configure MSVC
+and verify those prerequisites before building.
 
 WebAssembly is deliberately unsupported so every target has the same initial
 feature set.

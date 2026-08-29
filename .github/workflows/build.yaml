@@ -4,74 +4,47 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      platform:
-        description: Platform to build
-        type: choice
-        options:
-          - all
-          - macos-arm64
-          - macos-x64
-          - ios-arm64
-          - ios-simulator-arm64
-          - ios-simulator-x64
-          - android-arm64
-          - windows-x64
-        default: all
-  schedule:
-    - cron: "17 3 * * 0"
-
 permissions:
   contents: read
-
 concurrency:
-  group: appd-artifacts-${{ github.ref }}
-  cancel-in-progress: false
-
+  group: appd-build-${{ github.ref }}
+  cancel-in-progress: true
 defaults:
   run:
     shell: bash
-
 env:
   NODE_VERSION: "22"
 
 jobs:
-  changes:
-    name: Detect changed areas
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    outputs:
-      plugins: ${{ steps.changed.outputs.plugins }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.3
-        with:
-          fetch-depth: 0
-
-      - name: Detect plugin changes
-        id: changed
-        env:
-          BEFORE: ${{ github.event.before }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]] || \
-            ! git diff --quiet "$BEFORE" "$SHA" -- plugins/; then
-            echo "plugins=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "plugins=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  build-sdk:
+  build-target-packs:
     name: Build ${{ matrix.target }}
-    if: github.event_name == 'push' || github.event_name == 'schedule' || inputs.platform != 'windows-x64'
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || inputs.platform == 'all') && '["macos-arm64", "macos-x64", "ios-arm64", "ios-simulator-arm64", "ios-simulator-x64", "android-arm64"]' || format('["{0}"]', inputs.platform)) }}
+        include:
+          - target: macos-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - target: macos-x64
+            runner: macos-15
+            rust_target: x86_64-apple-darwin
+          - target: ios-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-ios
+          - target: ios-simulator-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-ios-sim
+          - target: ios-simulator-x64
+            runner: macos-15
+            rust_target: x86_64-apple-ios
+          - target: android-arm64
+            runner: ubuntu-24.04
+            rust_target: aarch64-linux-android
+          - target: windows-x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
@@ -88,7 +61,26 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,x86_64-apple-darwin,aarch64-linux-android
+          targets: ${{ matrix.rust_target }}
+
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Check native build tools
+        if: runner.os == 'Windows'
+        run: |
+          cmake --version
+          nasm -v
+          perl --version
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.0.8
@@ -129,68 +121,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build-windows-sdk:
-    name: Build windows-x64
-    if: github.event_name == 'push' || github.event_name == 'schedule' || inputs.platform == 'all' || inputs.platform == 'windows-x64'
-    runs-on: windows-2025
-    timeout-minutes: 180
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.3
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.96.0
-
-      - name: Configure MSVC
-        uses: ilammy/msvc-dev-cmd@v1.13.0
-        with:
-          arch: x64
-
-      - name: Check native build tools
-        run: |
-          cmake --version
-          nasm -v
-          perl --version
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-        with:
-          version: 9.9.0
-
-      - name: Setup Node
-        uses: actions/setup-node@v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: plugins/pnpm-lock.yaml
-
-      - name: Install plugin dependencies
-        working-directory: plugins
-        run: pnpm install --frozen-lockfile
-
-      - name: Build target pack
-        run: |
-          cargo run -p xtask -- target-pack --target windows-x64
-
-      - name: Archive target pack
-        run: tar -czf appd-target-pack-windows-x64.tar.gz -C target/appd-target-packs/windows-x64 .
-
-      - name: Upload target pack artifact
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: appd-target-pack-windows-x64
-          path: appd-target-pack-windows-x64.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
   build-cli:
     name: Build CLI ${{ matrix.name }}
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -225,6 +157,12 @@ jobs:
         with:
           arch: x64
 
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: false
+
       - name: Build CLI
         run: cargo build --locked --package appd-cli --release --target "${{ matrix.target }}"
 
@@ -254,8 +192,6 @@ jobs:
 
   build-plugins:
     name: Build plugins
-    if: needs.changes.outputs.plugins == 'true'
-    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -301,19 +237,8 @@ jobs:
 
   prerelease:
     name: Publish pre-release
-    if: >-
-      always() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.changes.result == 'success' &&
-      needs.build-sdk.result == 'success' &&
-      needs.build-windows-sdk.result == 'success' &&
-      needs.build-cli.result == 'success' &&
-      (needs.build-plugins.result == 'success' || needs.build-plugins.result == 'skipped')
     needs:
-      - changes
-      - build-sdk
-      - build-windows-sdk
+      - build-target-packs
       - build-cli
       - build-plugins
     runs-on: ubuntu-24.04
@@ -339,7 +264,6 @@ jobs:
           merge-multiple: true
 
       - name: Download plugin artifacts
-        if: needs.changes.outputs.plugins == 'true'
         uses: actions/download-artifact@v8.0.1
         with:
           name: appd-plugins

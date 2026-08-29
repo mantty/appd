@@ -47,8 +47,7 @@ private final class RuntimeHost {
 
     let state = try Self.stateDirectory()
     var error = [CChar](repeating: 0, count: 512)
-    if
-      let endpoint = Bundle.main.object(forInfoDictionaryKey: "AppdDevEndpoint") as? String,
+    if let endpoint = Bundle.main.object(forInfoDictionaryKey: "AppdDevEndpoint") as? String,
       let sessionToken = Bundle.main.object(forInfoDictionaryKey: "AppdDevSessionToken") as? String
     {
       handle = state.path.withCString { statePath in
