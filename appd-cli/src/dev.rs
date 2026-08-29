@@ -16,12 +16,14 @@ use appd::{WranglerConfig, load_wrangler_config, resolve_wrangler_config_path};
 use appd_cli::Platform;
 
 use super::devices::PreparedDevice;
-use super::{devices, pipeline};
+use super::{devices, ios_signing, pipeline};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(any(unix, windows))]
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const CORE_DEVICE_MAX_RETRIES: usize = 2;
+const CORE_DEVICE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RELAY_HEADER_LIMIT: usize = 64 * 1024;
 
 /// Development command inputs collected by the CLI.
@@ -49,6 +51,12 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let wrangler = load_development_config(&project, request.config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
+    let signing = ios_signing::resolve(
+        device.platform,
+        &project,
+        &format!("com.appd.{}", wrangler.name),
+        &device.id,
+    )?;
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
@@ -64,14 +72,15 @@ pub(crate) fn run(request: &Request) -> Result<()> {
         return Ok(());
     }
 
-    let result = run_session(
+    let result = run_session(&mut DevelopmentSession {
         request,
-        &device,
-        &session_token,
-        &relay,
-        &mut framework,
-        &shutdown,
-    );
+        device: &device,
+        signing: signing.as_ref(),
+        session_token: &session_token,
+        relay: &relay,
+        framework: &mut framework,
+        shutdown: &shutdown,
+    });
     if result.is_err() {
         stop_process(&mut framework)?;
     }
@@ -179,44 +188,49 @@ fn validate_request(request: &Request) -> Result<()> {
     Ok(())
 }
 
-fn run_session(
-    request: &Request,
-    device: &PreparedDevice,
-    session_token: &str,
-    relay: &DevRelay,
-    framework: &mut Child,
-    shutdown: &ShutdownSignal,
-) -> Result<()> {
-    let server = ServerEndpoint::parse(&request.server)?;
-    wait_for_server(framework, &server, shutdown)?;
-    if shutdown.requested() {
-        stop_process(framework)?;
+struct DevelopmentSession<'a> {
+    request: &'a Request,
+    device: &'a PreparedDevice,
+    signing: Option<&'a ios_signing::Selection>,
+    session_token: &'a str,
+    relay: &'a DevRelay,
+    framework: &'a mut Child,
+    shutdown: &'a ShutdownSignal,
+}
+
+fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
+    let server = ServerEndpoint::parse(&session.request.server)?;
+    wait_for_server(session.framework, &server, session.shutdown)?;
+    if session.shutdown.requested() {
+        stop_process(session.framework)?;
         return Ok(());
     }
     println!("Development server is ready at {}", server.display_url());
     let summary = pipeline::run_development(&pipeline::DevelopmentRequest {
-        platform: device.platform,
-        project_dir: request.project_dir.clone(),
-        target_pack_dir: request.target_pack_dir.clone(),
-        config_path: request.config_path.clone(),
-        endpoint: relay.device_endpoint(),
-        session_token: session_token.to_owned(),
+        platform: session.device.platform,
+        project_dir: session.request.project_dir.clone(),
+        target_pack_dir: session.request.target_pack_dir.clone(),
+        config_path: session.request.config_path.clone(),
+        endpoint: session.relay.device_endpoint(),
+        session_token: session.session_token.to_owned(),
+        ios_signing_identity: session.signing.map(|selection| selection.identity.clone()),
+        ios_provisioning_profile: session.signing.map(|selection| selection.profile.clone()),
     })?;
-    if shutdown.requested() {
-        stop_process(framework)?;
+    if session.shutdown.requested() {
+        stop_process(session.framework)?;
         return Ok(());
     }
-    let mut app = launch_app(&summary, device, relay.port())?;
-    if shutdown.requested() {
+    let mut app = launch_app(&summary, session.device, session.relay.port())?;
+    if session.shutdown.requested() {
         app.stop();
-        stop_process(framework)?;
+        stop_process(session.framework)?;
         return Ok(());
     }
     println!(
         "Development app is running on {} ({})",
-        device.id, device.kind
+        session.device.id, session.device.kind
     );
-    supervise(framework, &mut app, shutdown)
+    supervise(session.framework, &mut app, session.shutdown)
 }
 
 fn spawn_framework(
@@ -711,19 +725,55 @@ fn run_platform_command(
     action: &str,
 ) -> Result<()> {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
-    let output = ProcessCommand::new(program)
-        .args(&arguments)
-        .output()
-        .with_context(|| format!("{action}: failed to start {program}"))?;
-    if output.status.success() {
-        return Ok(());
+    let mut retries = 0;
+    loop {
+        let output = ProcessCommand::new(program)
+            .args(&arguments)
+            .output()
+            .with_context(|| format!("{action}: failed to start {program}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let transient_detail = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if retries < CORE_DEVICE_MAX_RETRIES
+            && is_transient_devicectl_error(program, &arguments, &transient_detail)
+        {
+            retries += 1;
+            eprintln!(
+                "{action} encountered a transient Apple device connection error; retrying ({retries}/{CORE_DEVICE_MAX_RETRIES})"
+            );
+            thread::sleep(CORE_DEVICE_RETRY_DELAY);
+            continue;
+        }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        if detail.is_empty() {
+            bail!("{action} failed with status {}", output.status);
+        }
+        bail!("{action} failed: {detail}");
     }
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let detail = detail.trim();
-    if detail.is_empty() {
-        bail!("{action} failed with status {}", output.status);
+}
+
+fn is_transient_devicectl_error(program: &str, arguments: &[String], detail: &str) -> bool {
+    if program != "xcrun" || arguments.first().map(String::as_str) != Some("devicectl") {
+        return false;
     }
-    bail!("{action} failed: {detail}");
+    let detail = detail.to_ascii_lowercase();
+    [
+        "connection was invalidated",
+        "connection reset by peer",
+        "could not be established",
+        "controlchannelconnectionerror",
+        "timed out waiting for coredeviceservice",
+        "transport error",
+        "xpcerror",
+    ]
+    .iter()
+    .any(|fragment| detail.contains(fragment))
 }
 
 fn android_application_id(app_name: &str) -> String {
@@ -1074,7 +1124,8 @@ mod tests {
 
     use super::{
         DevRelay, PreparedDevice, ServerEndpoint, android_application_id, authorized,
-        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
+        is_transient_devicectl_error, parse_authority, relay_host, rewrite_request,
+        usable_ipv4_address,
     };
     use appd_cli::Platform;
 
@@ -1142,6 +1193,31 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42))
         );
         Ok(())
+    }
+
+    #[test]
+    fn retries_only_transient_devicectl_errors() {
+        let arguments = vec!["devicectl".to_owned(), "device".to_owned()];
+        assert!(is_transient_devicectl_error(
+            "xcrun",
+            &arguments,
+            "Connection reset by peer"
+        ));
+        assert!(is_transient_devicectl_error(
+            "xcrun",
+            &arguments,
+            "CoreDevice.ControlChannelConnectionError"
+        ));
+        assert!(!is_transient_devicectl_error(
+            "xcrun",
+            &arguments,
+            "The executable contains an invalid signature"
+        ));
+        assert!(!is_transient_devicectl_error(
+            "adb",
+            &arguments,
+            "Connection reset by peer"
+        ));
     }
 
     #[test]

@@ -111,8 +111,12 @@ appd dev macos --project examples/astro \
   --server http://localhost:4321 -- pnpm dev
 ```
 
-Physical iOS signing uses `APPD_IOS_SIGNING_IDENTITY` and
-`APPD_IOS_PROVISIONING_PROFILE`.
+On macOS, `appd dev` automatically finds valid signing identities and
+provisioning profiles for a physical iOS device. If more than one match is
+available, it asks which identity/profile to use and remembers the choice for
+that project and device. Set `APPD_IOS_SIGNING_IDENTITY` and
+`APPD_IOS_PROVISIONING_PROFILE` together to override the selection (for
+example, in CI).
 
 Windows target-pack builds require the Visual Studio C++ toolchain, CMake 4,
 NASM, Perl, Node.js, and Rust. The Windows CI and weekly release jobs configure

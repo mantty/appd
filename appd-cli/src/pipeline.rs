@@ -28,6 +28,8 @@ pub(crate) struct DevelopmentRequest {
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) endpoint: String,
     pub(crate) session_token: String,
+    pub(crate) ios_signing_identity: Option<String>,
+    pub(crate) ios_provisioning_profile: Option<PathBuf>,
 }
 
 pub(crate) struct DevelopmentSummary {
@@ -92,14 +94,26 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&project, request.platform, &wrangler.name);
-    support::run_entrypoint(&pack_root, &input, &bundle_dir, manifest.target).with_context(
-        || {
-            format!(
-                "build {} development shell using target-pack entrypoint",
-                request.platform.display_name()
-            )
-        },
-    )?;
+    let mut environment = Vec::new();
+    if let Some(identity) = &request.ios_signing_identity {
+        environment.push(("APPD_IOS_SIGNING_IDENTITY", std::ffi::OsStr::new(identity)));
+    }
+    if let Some(profile) = &request.ios_provisioning_profile {
+        environment.push(("APPD_IOS_PROVISIONING_PROFILE", profile.as_os_str()));
+    }
+    support::run_entrypoint(
+        &pack_root,
+        &input,
+        &bundle_dir,
+        manifest.target,
+        &environment,
+    )
+    .with_context(|| {
+        format!(
+            "build {} development shell using target-pack entrypoint",
+            request.platform.display_name()
+        )
+    })?;
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
@@ -144,12 +158,14 @@ fn build_platform(
         .context("write platform build metadata")?;
 
     let output = output_path(&project, platform, &wrangler.name);
-    support::run_entrypoint(&pack_root, &input, &output, manifest.target).with_context(|| {
-        format!(
-            "build {} using target-pack entrypoint",
-            platform.display_name()
-        )
-    })?;
+    support::run_entrypoint(&pack_root, &input, &output, manifest.target, &[]).with_context(
+        || {
+            format!(
+                "build {} using target-pack entrypoint",
+                platform.display_name()
+            )
+        },
+    )?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,

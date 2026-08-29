@@ -123,6 +123,7 @@ pub(crate) fn run_entrypoint(
     input: &Path,
     output: &Path,
     target: Target,
+    environment: &[(&str, &std::ffi::OsStr)],
 ) -> Result<()> {
     let entrypoint = pack_root.join(target.build_entrypoint_path());
     if !entrypoint.is_file() {
@@ -146,6 +147,9 @@ pub(crate) fn run_entrypoint(
         command.arg(&entrypoint);
         command
     };
+    for (name, value) in environment {
+        command.env(name, value);
+    }
     let status = command
         .args(["build"])
         .arg(input)

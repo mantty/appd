@@ -5,6 +5,7 @@
 
 mod dev;
 mod devices;
+mod ios_signing;
 mod pipeline;
 mod plugins;
 mod support;
