@@ -1,20 +1,32 @@
 //! iOS development signing asset discovery.
 
+#[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
 use std::env;
+#[cfg(any(target_os = "macos", test))]
 use std::fmt::Write as _;
+#[cfg(target_os = "macos")]
 use std::fs;
+#[cfg(any(target_os = "macos", test))]
 use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", test))]
 use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail};
+#[cfg(any(target_os = "macos", test))]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use appd_cli::Platform;
+#[cfg(any(target_os = "macos", test))]
 use plist::{Dictionary, Value as PlistValue};
+#[cfg(target_os = "macos")]
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "macos", test))]
 use sha1::{Digest as Sha1Digest, Sha1};
+#[cfg(any(target_os = "macos", test))]
 use sha2::{Digest as Sha2Digest, Sha256};
 
 /// A signing identity and provisioning profile selected for a physical iOS app.
@@ -47,6 +59,7 @@ pub(crate) fn resolve(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug)]
 struct Profile {
     path: PathBuf,
@@ -60,6 +73,7 @@ struct Profile {
     developer_certificates: Vec<Vec<u8>>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Profile {
     fn matches(&self, bundle_id: &str, device_id: &str, identity: &Identity) -> bool {
         self.expiration > SystemTime::now()
@@ -75,6 +89,7 @@ impl Profile {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug)]
 struct Identity {
     name: String,
@@ -83,17 +98,20 @@ struct Identity {
     certificate_der: Vec<u8>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 struct Candidate {
     identity: Identity,
     profile: Profile,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct SelectionCache {
     entries: BTreeMap<String, CachedSelection>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CachedSelection {
     identity_fingerprint: String,
@@ -239,6 +257,7 @@ fn discover_identities() -> Result<Vec<Identity>> {
     Ok(identities)
 }
 
+#[cfg(target_os = "macos")]
 fn discover_profiles() -> Vec<Profile> {
     let mut paths = profile_paths();
     paths.sort();
@@ -251,6 +270,7 @@ fn discover_profiles() -> Vec<Profile> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
 fn profile_paths() -> Vec<PathBuf> {
     let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -276,6 +296,7 @@ fn profile_paths() -> Vec<PathBuf> {
     .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_profile(path: &Path, bytes: &[u8]) -> Result<Profile> {
     let value = decode_profile(bytes)?;
     let root = value
@@ -336,6 +357,7 @@ fn parse_profile(path: &Path, bytes: &[u8]) -> Result<Profile> {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn decode_profile(bytes: &[u8]) -> Result<PlistValue> {
     if let Ok(value) = PlistValue::from_reader(Cursor::new(bytes)) {
         return Ok(value);
@@ -366,10 +388,12 @@ fn decode_profile(bytes: &[u8]) -> Result<PlistValue> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn string_value(values: &Dictionary, key: &str) -> Option<String> {
     values.get(key)?.as_string().map(str::to_owned)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn string_array(values: &Dictionary, key: &str) -> Vec<String> {
     values
         .get(key)
@@ -381,6 +405,7 @@ fn string_array(values: &Dictionary, key: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn data_array(values: &Dictionary, key: &str) -> Vec<Vec<u8>> {
     values
         .get(key)
@@ -392,6 +417,7 @@ fn data_array(values: &Dictionary, key: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn app_identifier_matches(application_identifier: &str, bundle_id: &str) -> bool {
     let Some((_, pattern)) = application_identifier.split_once('.') else {
         return false;
@@ -403,14 +429,17 @@ fn app_identifier_matches(application_identifier: &str, bundle_id: &str) -> bool
         })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn fingerprint(bytes: &[u8]) -> String {
     hex_digest(<Sha256 as Sha2Digest>::digest(bytes))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn sha1_fingerprint(bytes: &[u8]) -> String {
     hex_digest(<Sha1 as Sha1Digest>::digest(bytes))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -420,10 +449,12 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
     output
 }
 
+#[cfg(target_os = "macos")]
 fn cache_key(project: &Path, bundle_id: &str, device_id: &str) -> String {
     format!("{}\n{bundle_id}\n{device_id}", project.display())
 }
 
+#[cfg(target_os = "macos")]
 fn cache_path() -> Option<PathBuf> {
     let base = if cfg!(target_os = "windows") {
         env::var_os("APPDATA").map(PathBuf::from)
@@ -437,6 +468,7 @@ fn cache_path() -> Option<PathBuf> {
     Some(base.join("appd/ios-signing.json"))
 }
 
+#[cfg(target_os = "macos")]
 fn load_cache() -> SelectionCache {
     let Some(path) = cache_path() else {
         return SelectionCache::default();
@@ -447,6 +479,7 @@ fn load_cache() -> SelectionCache {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
 fn save_cache(cache: &SelectionCache) {
     let Some(path) = cache_path() else {
         return;
@@ -501,11 +534,6 @@ fn choose_candidate(candidates: &[Candidate]) -> Result<Candidate> {
         }
         eprintln!("Enter a number from 1 to {}.", candidates.len());
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn choose_candidate(_: &[Candidate]) -> Result<Candidate> {
-    bail!("automatic iOS signing selection requires a macOS host");
 }
 
 #[cfg(test)]
@@ -563,6 +591,14 @@ mod tests {
             certificate_der: vec![1, 2, 3],
         };
 
+        assert_eq!(profile.path, Path::new("PROFILE-1.mobileprovision"));
+        assert_eq!(profile.id, "PROFILE-1");
+        assert_eq!(profile.name, "Development");
+        assert_eq!(profile.team_id, "TEAM");
+        assert!(!profile.expiration_label.is_empty());
+        assert_eq!(identity.name, "Apple Development: Test");
+        assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
+        assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
         assert!(profile.matches("com.example.app", "DEVICE", &identity));
         assert!(!profile.matches("com.example.other", "DEVICE", &identity));
         assert!(!profile.matches("com.example.app", "OTHER", &identity));
