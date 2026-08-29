@@ -1,4 +1,4 @@
-name: appd artifacts
+name: Build and Pre-Release
 
 on:
   push:
