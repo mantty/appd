@@ -456,15 +456,9 @@ fn cache_key(project: &Path, bundle_id: &str, device_id: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn cache_path() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
-    } else {
-        env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    }?;
+    let base = env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join("Library/Application Support");
     Some(base.join("appd/ios-signing.json"))
 }
 
