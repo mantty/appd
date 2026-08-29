@@ -84,8 +84,9 @@ fn run_esbuild(
     }
     fs::create_dir_all(&source)?;
 
-    let mut command = Command::new(node_path(&compiler));
+    let mut command = Command::new("node");
     command
+        .arg(node_path(&compiler))
         .args([
             "--bundle",
             "--splitting",

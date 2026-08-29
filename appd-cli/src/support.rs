@@ -196,7 +196,7 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_dir_contents, package_manager};
+    use super::package_manager;
 
     #[test]
     fn selects_platform_package_manager_commands() {
@@ -218,7 +218,7 @@ mod tests {
         std::fs::write(source.join("target"), "content")?;
         symlink("target", source.join("link"))?;
 
-        copy_dir_contents(&source, &destination)?;
+        super::copy_dir_contents(&source, &destination)?;
 
         assert_eq!(
             std::fs::read_to_string(destination.join("link"))?,
