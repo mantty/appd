@@ -2,8 +2,7 @@ name: appd artifacts
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 permissions:
   contents: read
 concurrency:
