@@ -1,0 +1,291 @@
+name: appd artifacts
+
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: appd-build-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  build-target-packs:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - target: macos-x64
+            runner: macos-15
+            rust_target: x86_64-apple-darwin
+          - target: ios-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-ios
+          - target: ios-simulator-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-ios-sim
+          - target: ios-simulator-x64
+            runner: macos-15
+            rust_target: x86_64-apple-ios
+          - target: android-arm64
+            runner: ubuntu-24.04
+            rust_target: aarch64-linux-android
+          - target: windows-x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Android SDK
+        if: matrix.target == 'android-arm64'
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+
+      - name: Install Android NDK
+        if: matrix.target == 'android-arm64'
+        run: sdkmanager "ndk;29.0.14206865"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: ${{ matrix.rust_target }}
+
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Check native build tools
+        if: runner.os == 'Windows'
+        run: |
+          cmake --version
+          nasm -v
+          perl --version
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: plugins/pnpm-lock.yaml
+
+      - name: Install plugin dependencies
+        working-directory: plugins
+        run: pnpm install --frozen-lockfile
+
+      - name: Build target pack
+        run: |
+          set -euo pipefail
+          cargo run -p xtask -- target-pack --target "${{ matrix.target }}"
+
+      - name: Verify packaged Worker mTLS
+        if: matrix.target == 'macos-arm64'
+        run: cargo test -p appd --features native --test packaged_worker
+
+      - name: Archive target pack
+        run: |
+          set -euo pipefail
+          tar -czf "appd-target-pack-${{ matrix.target }}.tar.gz" \
+            -C "target/appd-target-packs/${{ matrix.target }}" .
+
+      - name: Upload target pack artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: appd-target-pack-${{ matrix.target }}
+          path: appd-target-pack-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  build-cli:
+    name: Build CLI ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            runner: macos-15
+            target: x86_64-apple-darwin
+          - name: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: ${{ matrix.target }}
+
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ matrix.target }}
+          cache-bin: false
+
+      - name: Build CLI
+        run: cargo build --locked --package appd-cli --release --target "${{ matrix.target }}"
+
+      - name: Archive CLI
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/appd" dist/appd
+          tar -czf "appd-cli-${{ matrix.name }}.tar.gz" -C dist appd
+
+      - name: Archive CLI for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/appd.exe" "dist/appd.exe"
+          Compress-Archive -Path "dist/appd.exe" -DestinationPath "appd-cli-${{ matrix.name }}.zip" -Force
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: appd-cli-${{ matrix.name }}
+          path: appd-cli-${{ matrix.name }}.*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-plugins:
+    name: Build plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: plugins/pnpm-lock.yaml
+
+      - name: Install plugin dependencies
+        working-directory: plugins
+        run: pnpm install --frozen-lockfile
+
+      - name: Check plugins
+        working-directory: plugins
+        run: |
+          pnpm lint:ts
+          pnpm test:ts
+
+      - name: Package plugins
+        working-directory: plugins
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          pnpm --filter '@appd/*' exec pnpm pack --pack-destination "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: appd-plugins
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  prerelease:
+    name: Publish pre-release
+    needs:
+      - build-target-packs
+      - build-cli
+      - build-plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Download target pack artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: appd-target-pack-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: appd-cli-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download plugin artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: appd-plugins
+          path: artifacts
+
+      - name: Compute release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=pre.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create alpha prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" artifacts/* \
+            --title "appd ${{ steps.meta.outputs.version }} ${{ github.run_number }}" \
+            --notes "Automated appd artifacts from ${GITHUB_SHA}." \
+            --prerelease \
+            --target "${GITHUB_SHA}"

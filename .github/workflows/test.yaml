@@ -1,0 +1,186 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appd-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  general:
+    name: Test Linux and Android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          components: clippy, rustfmt
+          targets: aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;29.0.14206865"
+          ndk="${ANDROID_HOME}/ndk/29.0.14206865"
+          toolchain="$(find "${ndk}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          {
+            echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android31-clang"
+            echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android31 --sysroot=${toolchain}/sysroot"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/bin/aarch64-linux-android31-clang"
+          } >> "${GITHUB_ENV}"
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: plugins/pnpm-lock.yaml
+
+      - name: Install plugin dependencies
+        working-directory: plugins
+        run: pnpm install --frozen-lockfile
+
+      - name: Check plugins
+        working-directory: plugins
+        run: |
+          pnpm lint:ts
+          pnpm test:ts
+
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Lint Rust
+        run: |
+          cargo clippy --workspace --exclude windows-shell --all-targets -- -D warnings
+          cargo clippy -p appd --all-targets --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-linux-android --features test-stubs -- -D warnings
+
+      - name: Test Rust
+        run: |
+          cargo test -p appd --features native
+          cargo test --workspace --exclude appd-cli --exclude windows-shell
+          cargo test -p appd-cli --lib --bin appd --test cli --test target_pack
+          cargo test -p appd-cli --test build requires_a_target_pack_for_app_builds
+
+  apple:
+    name: Test Apple
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          components: clippy
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+
+      - name: Check Swift formatting
+        run: xcrun swift-format lint --strict platforms/apple/source/*.swift plugins/*/apple/*.swift
+
+      - name: Lint Apple Rust
+        run: |
+          cargo clippy -p appd-cli --all-targets -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p appd --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
+
+      - name: Test Apple builds
+        run: >-
+          cargo test -p appd-cli --test build --
+          --skip builds_windows_app_with_its_runtime_files
+          --skip requires_a_target_pack_for_app_builds
+
+  windows:
+    name: Test Windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          components: clippy
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
+
+      - name: Lint Windows Rust
+        run: |
+          cargo clippy -p appd-cli --all-targets -- -D warnings
+          cargo clippy -p windows-shell --all-targets -- -D warnings
+
+      - name: Test Windows Rust
+        run: |
+          cargo test -p windows-shell
+          cargo test -p appd-cli --bin appd selects_platform_package_manager_commands
+          cargo test -p appd-cli --test build builds_windows_app_with_its_runtime_files
+
+  validate:
+    name: Validate
+    if: ${{ always() }}
+    needs:
+      - general
+      - apple
+      - windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Check job results
+        env:
+          GENERAL_RESULT: ${{ needs.general.result }}
+          APPLE_RESULT: ${{ needs.apple.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          test "${GENERAL_RESULT}" = success
+          test "${APPLE_RESULT}" = success
+          test "${WINDOWS_RESULT}" = success

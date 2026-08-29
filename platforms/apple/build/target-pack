@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 4 || "$1" != build ]]; then
+  echo "usage: target-pack build TARGET RUST_TARGET OUTPUT" >&2
+  exit 2
+fi
+
+target=$2
+rust_target=$3
+output=$4
+workspace=$PWD
+
+case "$target" in
+  macos-arm64)
+    sdk=macosx
+    deployment_variable=MACOSX_DEPLOYMENT_TARGET
+    ;;
+  macos-x64)
+    sdk=macosx
+    deployment_variable=MACOSX_DEPLOYMENT_TARGET
+    ;;
+  ios-arm64)
+    sdk=iphoneos
+    deployment_variable=IPHONEOS_DEPLOYMENT_TARGET
+    ;;
+  ios-simulator-arm64)
+    sdk=iphonesimulator
+    deployment_variable=IPHONESIMULATOR_DEPLOYMENT_TARGET
+    ;;
+  ios-simulator-x64)
+    sdk=iphonesimulator
+    deployment_variable=IPHONESIMULATOR_DEPLOYMENT_TARGET
+    ;;
+  *)
+    echo "unsupported Apple target: $target" >&2
+    exit 1
+    ;;
+esac
+
+export "$deployment_variable=17.0"
+if [[ "$sdk" == macosx ]]; then
+  export MACOSX_DEPLOYMENT_TARGET=14.0
+elif [[ "$sdk" == iphonesimulator ]]; then
+  export IPHONEOS_DEPLOYMENT_TARGET=17.0
+fi
+
+rm -rf "$output"
+mkdir -p \
+  "$output/build" \
+  "$output/frameworks/AppdRuntime.framework/Headers" \
+  "$output/frameworks/AppdRuntime.framework/Modules" \
+  "$output/native-shell"
+
+cargo build \
+  --package appd \
+  --release \
+  --target "$rust_target" \
+  --features native \
+  --lib
+
+library="$workspace/target/$rust_target/release/libappd.a"
+if [[ ! -f "$library" ]]; then
+  echo "appd runtime library was not produced: $library" >&2
+  exit 1
+fi
+
+cp "$library" "$output/frameworks/AppdRuntime.framework/AppdRuntime"
+cp "$workspace/platforms/apple/source/AppdRuntime.h" \
+  "$output/frameworks/AppdRuntime.framework/Headers/AppdRuntime.h"
+cp "$workspace/platforms/apple/source/module.modulemap" \
+  "$output/frameworks/AppdRuntime.framework/Modules/module.modulemap"
+cp "$workspace/platforms/apple/source/AppdShell.swift" \
+  "$output/native-shell/AppdShell.swift"
+cp "$workspace/platforms/apple/source/AppdPlugins.swift" \
+  "$output/native-shell/AppdPlugins.swift"
+cp "$workspace/platforms/apple/build/entrypoint" \
+  "$output/build/entrypoint"

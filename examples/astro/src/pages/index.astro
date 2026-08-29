@@ -1,7 +1,9 @@
 ---
 // SSR page — rendered on every request. Server timestamp proves it.
 import Base from "../layouts/Base.astro";
+import Geolocation from "../components/Geolocation.astro";
 import PingPong from "../components/PingPong.astro";
+import WordPicker from "../components/WordPicker.astro";
 import heroSvg from "../assets/hero.svg";
 
 const now = new Date();
@@ -20,7 +22,9 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
 
   <div class="grid gap-6 md:grid-cols-2 mb-8">
     <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
-      <h2 class="text-lg font-semibold text-white mb-2">Server-Side Rendered</h2>
+      <h2 class="text-lg font-semibold text-white mb-2">
+        Server-Side Rendered
+      </h2>
       <p class="text-indigo-300 mb-4">
         This page is rendered on every request. The timestamp below changes on
         each reload.
@@ -35,8 +39,8 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
     <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
       <h2 class="text-lg font-semibold text-white mb-2">Navigation Test</h2>
       <p class="text-indigo-300 mb-4">
-        The <a href="/about" class="text-indigo-200 underline">About page</a> is
-        prerendered at build time. Its timestamp is fixed.
+        The <a href="/about" class="text-indigo-200 underline">About page</a> is prerendered
+        at build time. Its timestamp is fixed.
       </p>
       <a
         href="/about"
@@ -47,5 +51,41 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
     </div>
   </div>
 
+  <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6 mb-6">
+    <h2 class="text-lg font-semibold text-white mb-4">Origin Debug</h2>
+    <div class="font-mono text-sm bg-indigo-950/50 rounded-lg p-3 space-y-3">
+      <div>
+        <div class="text-indigo-400">Frontend origin:</div>
+        <div id="frontend-origin" class="text-white">Loading...</div>
+      </div>
+      <div>
+        <div class="text-indigo-400">Backend request origin:</div>
+        <div id="backend-origin" class="text-white">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <PingPong />
+  <div class="mt-6">
+    <Geolocation />
+  </div>
+  <div class="mt-6">
+    <WordPicker />
+  </div>
 </Base>
+
+<script>
+  const frontendOrigin = document.getElementById("frontend-origin")!;
+  const backendOrigin = document.getElementById("backend-origin")!;
+
+  frontendOrigin.textContent = location.origin;
+
+  void fetch("/api/origin")
+    .then((response) => response.json())
+    .then(({ origin }: { origin: string }) => {
+      backendOrigin.textContent = origin;
+    })
+    .catch(() => {
+      backendOrigin.textContent = "Unavailable";
+    });
+</script>

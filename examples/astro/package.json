@@ -5,12 +5,16 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "appd:macos": "astro build && ../../target/release/appd build macos --project . --config dist/server/wrangler.json"
+    "appd:android": "astro build && ../../target/release/appd build android --project . --config dist/server/wrangler.json --skip-web-build",
+    "appd:macos": "astro build && ../../target/release/appd build macos --project . --config dist/server/wrangler.json --skip-web-build",
+    "appd:ios": "astro build && ../../target/release/appd build ios --project . --config dist/server/wrangler.json --skip-web-build",
+    "appd:ios-simulator": "astro build && ../../target/release/appd build ios-simulator --project . --config dist/server/wrangler.json --skip-web-build"
   },
   "dependencies": {
-    "@astrojs/cloudflare": "^13.1.8",
+    "@appd/geolocation": "link:../../plugins/geolocation",
+    "@astrojs/cloudflare": "13.1.8",
     "@tailwindcss/vite": "^4.2.2",
-    "astro": "^6.1.5",
+    "astro": "6.1.5",
     "tailwindcss": "^4.2.2"
   }
 }

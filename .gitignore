@@ -1,4 +1,7 @@
 /target/
+node_modules/
+*.pyc
 __pycache__/
-hack/dist/
-hack/node_modules/
+
+# Local machine cruft
+.DS_Store

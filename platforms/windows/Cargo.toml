@@ -1,0 +1,25 @@
+[package]
+name = "windows-shell"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "appd-shell-windows"
+path = "source/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+anyhow.workspace = true
+appd = { path = "../../appd", features = ["native"] }
+base64.workspace = true
+openssl.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tao.workspace = true
+webview2-com.workspace = true
+windows.workspace = true
+wry.workspace = true
+
+[lints]
+workspace = true

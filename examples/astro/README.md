@@ -6,16 +6,19 @@ prerendered route, asset serving, navigation, and a WebSocket endpoint.
 From this directory, build the web app with:
 
 ```sh
+pnpm --dir ../../plugins install --frozen-lockfile
 pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-Package it with appd when you have a target pack:
+Build a target pack from the appd workspace, then package it:
 
 ```sh
-appd build --platforms=macos
+cargo run -p xtask -- target-pack --target macos-arm64
+target_pack_dir=../../target/appd-target-packs \
+  cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.json
 ```
 
-Current spike status: release target packs are not available yet, so the
-installed CLI cannot package this example without workspace-local runtime
-artifacts.
+The example intentionally uses no WebAssembly. It covers server rendering,
+static assets, API routes, navigation, and WebSockets through the QuickJS
+runtime.

@@ -1,0 +1,19 @@
+{
+  "name": "appd-plugins",
+  "private": true,
+  "packageManager": "pnpm@9.9.0",
+  "type": "module",
+  "scripts": {
+    "lint:ts": "eslint \"**/*.ts\" --max-warnings 0 && tsc --project tsconfig.json",
+    "test:ts": "node --import tsx --test \"**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^22.19.15",
+    "esbuild": "0.28.1",
+    "eslint": "^9.39.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.53.1"
+  }
+}

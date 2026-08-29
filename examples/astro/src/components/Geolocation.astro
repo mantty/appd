@@ -1,0 +1,64 @@
+<div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+  <h2 class="text-lg font-semibold text-white mb-4">Geolocation</h2>
+  <div class="flex items-center gap-4 mb-4">
+    <button
+      id="location-btn"
+      class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium cursor-pointer"
+    >
+      Share location
+    </button>
+    <span id="location-status" class="text-sm text-indigo-400">
+      Location not requested
+    </span>
+  </div>
+  <div class="font-mono text-sm bg-indigo-950/50 rounded-lg p-4 grid gap-2">
+    <div>
+      <span class="text-indigo-400">Latitude:</span>
+      <span id="latitude" class="text-white">—</span>
+    </div>
+    <div>
+      <span class="text-indigo-400">Longitude:</span>
+      <span id="longitude" class="text-white">—</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  import { geolocation, type Position } from "@appd/geolocation";
+
+  const button = document.getElementById("location-btn") as HTMLButtonElement;
+  const status = document.getElementById("location-status")!;
+  const latitude = document.getElementById("latitude")!;
+  const longitude = document.getElementById("longitude")!;
+  let stopWatching: (() => void) | undefined;
+
+  function show(position: Position) {
+    latitude.textContent = position.coords.latitude.toFixed(6);
+    longitude.textContent = position.coords.longitude.toFixed(6);
+    status.textContent = "Receiving updates";
+    status.className = "text-sm text-emerald-400";
+  }
+
+  function showError(error: DOMException) {
+    status.textContent = `${error.name}: ${error.message}`;
+    status.className = "text-sm text-red-400";
+    button.disabled = false;
+  }
+
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = "Requesting location...";
+    try {
+      show(await geolocation.getCurrentPosition());
+      stopWatching = geolocation.watchPosition(show, showError);
+    } catch (error) {
+      showError(
+        error instanceof DOMException
+          ? error
+          : new DOMException(String(error), "UnknownError"),
+      );
+    }
+  });
+
+  window.addEventListener("pagehide", () => stopWatching?.());
+</script>
