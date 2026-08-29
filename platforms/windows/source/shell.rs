@@ -17,11 +17,21 @@ use tao::event::{Event as TaoEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+    COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
+    COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY,
+    COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
+    COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2, ICoreWebView2_5,
+    ICoreWebView2_14, ICoreWebView2Certificate, ICoreWebView2ClientCertificate,
+    ICoreWebView2ClientCertificateRequestedEventArgs, ICoreWebView2PermissionRequestedEventArgs,
+    ICoreWebView2ServerCertificateErrorDetectedEventArgs,
+};
+use webview2_com::take_pwstr;
 use webview2_com::{
     ClientCertificateRequestedEventHandler, PermissionRequestedEventHandler,
     ServerCertificateErrorDetectedEventHandler,
 };
-use webview2_com::{Microsoft::Web::WebView2::Win32::*, take_pwstr};
 use windows::Win32::Security::Cryptography::{
     CERT_CONTEXT, CERT_STORE_ADD_REPLACE_EXISTING_INHERIT_PROPERTIES, CRYPT_INTEGER_BLOB,
     CertAddCertificateContextToStore, CertCloseStore, CertDeleteCertificateFromStore,
@@ -206,7 +216,7 @@ impl ClientIdentity {
         let mut held = current
             .write()
             .map_err(|_| anyhow::anyhow!("client certificate state is unavailable"))?;
-        *held = replacement.der.clone();
+        (*held).clone_from(&replacement.der);
         drop(held);
         drop(std::mem::replace(self, replacement));
         Ok(())
@@ -239,7 +249,7 @@ fn import_pfx(data: &[u8]) -> Result<HCERTSTORE> {
         pbData: data.as_ptr().cast_mut(),
     };
     unsafe {
-        PFXImportCertStore(&blob, PCWSTR::null(), PKCS12_PREFER_CNG_KSP)
+        PFXImportCertStore(&raw const blob, PCWSTR::null(), PKCS12_PREFER_CNG_KSP)
             .context("import appd client identity")
     }
 }
@@ -257,7 +267,7 @@ fn add_to_personal_store(imported: HCERTSTORE, der: &[u8]) -> Result<ClientIdent
             Some(store),
             certificate,
             CERT_STORE_ADD_REPLACE_EXISTING_INHERIT_PROPERTIES,
-            Some(&mut added),
+            Some(&raw mut added),
         )
     };
     if let Err(error) = result {
@@ -309,21 +319,21 @@ impl Handlers {
                     host.to_owned(),
                     client,
                 ))),
-                &mut client_token,
+                &raw mut client_token,
             )?;
             permissions.add_PermissionRequested(
                 &PermissionRequestedEventHandler::create(Box::new(permission_challenge(
                     host.to_owned(),
                     name.to_owned(),
                 ))),
-                &mut permission_token,
+                &raw mut permission_token,
             )?;
             server_view.add_ServerCertificateErrorDetected(
                 &ServerCertificateErrorDetectedEventHandler::create(Box::new(server_challenge(
                     certificates,
                     host.to_owned(),
                 ))),
-                &mut server_token,
+                &raw mut server_token,
             )?;
         }
         Ok(Self {
@@ -370,7 +380,7 @@ fn client_challenge(
             .map_err(|_| windows::core::Error::from_win32())?;
         let certificates = unsafe { args.MutuallyTrustedCertificates() }?;
         let mut count = 0;
-        unsafe { certificates.Count(&mut count) }?;
+        unsafe { certificates.Count(&raw mut count) }?;
         for index in 0..count {
             let candidate = unsafe { certificates.GetValueAtIndex(index)? };
             if certificate_matches(&candidate, &client)? {
@@ -396,7 +406,7 @@ fn permission_challenge(
         let Some(args) = args else { return Ok(()) };
         let uri = webview_string(|value| unsafe { args.Uri(value) })?;
         let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
-        unsafe { args.PermissionKind(&mut kind) }?;
+        unsafe { args.PermissionKind(&raw mut kind) }?;
         if !is_app_geolocation_request(kind, &uri, &host) {
             return Ok(());
         }
@@ -468,7 +478,7 @@ fn certificate_matches(
 
 fn certificate_pem(certificate: &impl PemCertificate) -> windows::core::Result<String> {
     let mut value = PWSTR::null();
-    unsafe { certificate.pem(&mut value)? };
+    unsafe { certificate.pem(&raw mut value)? };
     Ok(take_pwstr(value))
 }
 
@@ -492,7 +502,7 @@ fn webview_string(
     read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>,
 ) -> windows::core::Result<String> {
     let mut value = PWSTR::null();
-    read(&mut value)?;
+    read(&raw mut value)?;
     Ok(take_pwstr(value))
 }
 

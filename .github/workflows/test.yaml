@@ -84,7 +84,9 @@ jobs:
       - name: Test Rust
         run: |
           cargo test -p appd --features native
-          cargo test --workspace --exclude windows-shell
+          cargo test --workspace --exclude appd-cli --exclude windows-shell
+          cargo test -p appd-cli --lib --bin appd --test cli --test target_pack
+          cargo test -p appd-cli --test build requires_a_target_pack_for_app_builds
 
   apple:
     name: Test Apple
@@ -106,6 +108,11 @@ jobs:
         with:
           cache-bin: false
 
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+
       - name: Check Swift formatting
         run: xcrun swift-format lint --strict platforms/apple/source/*.swift plugins/*/apple/*.swift
 
@@ -116,6 +123,12 @@ jobs:
           cargo clippy -p appd --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
           cargo clippy -p appd --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
           cargo clippy -p appd --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
+
+      - name: Test Apple builds
+        run: >-
+          cargo test -p appd-cli --test build --
+          --skip builds_windows_app_with_its_runtime_files
+          --skip requires_a_target_pack_for_app_builds
 
   windows:
     name: Test Windows
