@@ -13,7 +13,7 @@ use x509_parser::{extensions::GeneralName, pem::parse_x509_pem};
 
 use crate::cert_generation::{
     CertificatePaths, build_ca_certificate, build_client_certificate, build_server_certificate,
-    is_private_key, remove_if_exists, server_identity, set_directory_permissions, write_atomic,
+    is_private_key, remove_if_exists, server_identity, write_atomic,
 };
 use crate::cert_validation::{
     certificate_der, certificate_der_matches_pem, certificate_is_issued_by,
@@ -259,7 +259,8 @@ impl CertificateBundle {
     pub fn write_all(&self, work_dir: impl AsRef<Path>) -> Result<()> {
         let work_dir = work_dir.as_ref();
         fs::create_dir_all(work_dir)?;
-        set_directory_permissions(work_dir)?;
+        #[cfg(unix)]
+        crate::cert_generation::set_directory_permissions(work_dir)?;
         remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
         for (name, content) in [
             (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),

@@ -353,11 +353,13 @@ fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
     }
 }
 
+#[cfg(unix)]
 pub(super) fn listener_was_closed(error: &io::Error) -> bool {
-    #[cfg(unix)]
-    return error.raw_os_error() == Some(libc::EBADF);
+    error.raw_os_error() == Some(libc::EBADF)
+}
 
-    #[cfg(not(unix))]
+#[cfg(not(unix))]
+pub(super) fn listener_was_closed(_: &io::Error) -> bool {
     false
 }
 

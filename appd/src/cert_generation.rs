@@ -186,8 +186,3 @@ pub(crate) fn set_directory_permissions(directory: &Path) -> Result<()> {
     fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
-
-#[cfg(not(unix))]
-pub(crate) fn set_directory_permissions(_: &Path) -> Result<()> {
-    Ok(())
-}

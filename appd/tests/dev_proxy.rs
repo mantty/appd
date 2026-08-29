@@ -94,6 +94,9 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     assert_eq!(opcode, 0x1);
     assert_eq!(payload, b"ping");
     write_frame(&mut websocket, 0x1, b"pong", false)?;
+    let (opcode, payload) = read_frame(&mut websocket)?;
+    assert_eq!(opcode, 0x8);
+    assert_eq!(payload, [3, 232]);
     Ok(())
 }
 
