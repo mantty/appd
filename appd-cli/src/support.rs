@@ -86,6 +86,19 @@ pub(crate) fn build_dir(project: &Path, platform: Platform) -> PathBuf {
     project.join("build").join(platform.directory_name())
 }
 
+pub(crate) fn command_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(value) = value.strip_prefix(r"\\?\")
+            && value.as_bytes().get(1) == Some(&b':')
+        {
+            return value.into();
+        }
+    }
+    path.into()
+}
+
 pub(crate) fn reset_path(path: &Path) -> Result<()> {
     if path.is_dir() {
         fs::remove_dir_all(path)?;
@@ -140,11 +153,11 @@ pub(crate) fn run_entrypoint(
     {
         let mut command = Command::new("powershell");
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        command.arg(&entrypoint);
+        command.arg(command_path(&entrypoint));
         command
     } else {
         let mut command = Command::new("bash");
-        command.arg(&entrypoint);
+        command.arg(command_path(&entrypoint));
         command
     };
     for (name, value) in environment {
@@ -152,9 +165,9 @@ pub(crate) fn run_entrypoint(
     }
     let status = command
         .args(["build"])
-        .arg(input)
-        .arg(output)
-        .current_dir(pack_root)
+        .arg(command_path(input))
+        .arg(command_path(output))
+        .current_dir(command_path(pack_root))
         .status()
         .with_context(|| format!("failed to run {}", entrypoint.display()))?;
     if status.success() {

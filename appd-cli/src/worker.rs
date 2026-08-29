@@ -16,7 +16,7 @@ use appd_cli::{ArtifactKind, TargetPackManifest};
 use serde::Deserialize;
 use walkdir::WalkDir;
 
-use super::support::{artifact_path, copy_dir_contents, copy_file};
+use super::support::{artifact_path, command_path, copy_dir_contents, copy_file};
 
 const WORKER_ENTRY: &str = "entry.js";
 
@@ -86,7 +86,7 @@ fn run_esbuild(
 
     let mut command = Command::new("node");
     command
-        .arg(node_path(&compiler))
+        .arg(command_path(&compiler))
         .args([
             "--bundle",
             "--splitting",
@@ -96,27 +96,27 @@ fn run_esbuild(
             "--entry-names=entry",
             "--chunk-names=chunks/[name]-[hash]",
         ])
-        .arg(format!("--outdir={}", node_path(&source).display()))
-        .arg(format!("--metafile={}", node_path(&metafile).display()))
+        .arg(format!("--outdir={}", command_path(&source).display()))
+        .arg(format!("--metafile={}", command_path(&metafile).display()))
         .arg(format!(
             "--alias:node:events={}",
-            node_path(&events).display()
+            command_path(&events).display()
         ))
         .arg(format!(
             "--alias:node:stream={}",
-            node_path(&stream).display()
+            command_path(&stream).display()
         ))
         .arg("--external:node:fs")
         .arg("--external:node:fs/promises")
         .arg(format!(
             "--alias:cloudflare:workers={}",
-            node_path(&builtins).display()
+            command_path(&builtins).display()
         ));
     for (extension, loader) in esbuild_loaders(&wrangler.rules) {
         command.arg(format!("--loader:.{extension}={loader}"));
     }
     let status = command
-        .arg(node_path(&wrangler.main))
+        .arg(command_path(&wrangler.main))
         .status()
         .context("failed to bundle the Worker with esbuild")?;
     if !status.success() {
@@ -353,19 +353,6 @@ fn slash_path(path: &Path) -> Result<String> {
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Worker path is not valid UTF-8: {}", path.display()))?;
     Ok(path.replace(std::path::MAIN_SEPARATOR, "/"))
-}
-
-fn node_path(path: &Path) -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
-        let value = path.to_string_lossy();
-        if let Some(value) = value.strip_prefix(r"\\?\")
-            && value.as_bytes().get(1) == Some(&b':')
-        {
-            return value.into();
-        }
-    }
-    path.into()
 }
 
 #[cfg(test)]
