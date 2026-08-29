@@ -8,9 +8,6 @@ permissions:
 concurrency:
   group: appd-build-${{ github.ref }}
   cancel-in-progress: true
-defaults:
-  run:
-    shell: bash
 env:
   NODE_VERSION: "22"
 
@@ -98,19 +95,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build target pack
-        run: |
-          set -euo pipefail
-          cargo run -p xtask -- target-pack --target "${{ matrix.target }}"
+        run: cargo run -p xtask -- target-pack --target "${{ matrix.target }}"
 
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
         run: cargo test -p appd --features native --test packaged_worker
 
       - name: Archive target pack
-        run: |
-          set -euo pipefail
-          tar -czf "appd-target-pack-${{ matrix.target }}.tar.gz" \
-            -C "target/appd-target-packs/${{ matrix.target }}" .
+        run: tar -czf "appd-target-pack-${{ matrix.target }}.tar.gz" -C "target/appd-target-packs/${{ matrix.target }}" .
 
       - name: Upload target pack artifact
         uses: actions/upload-artifact@v7.0.1
