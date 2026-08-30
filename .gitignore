@@ -5,3 +5,6 @@ __pycache__/
 
 # Local machine cruft
 .DS_Store
+
+# AI cruft
+.claude
