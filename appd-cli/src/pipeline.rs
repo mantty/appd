@@ -235,7 +235,7 @@ fn write_build_metadata(
     Ok(())
 }
 
-const TARGET_PACK_DIR_ENV: &str = "target_pack_dir";
+const TARGET_PACK_DIR_ENV: &str = "APPD_TARGET_PACK_DIR";
 
 fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(directory) = explicit_dir {

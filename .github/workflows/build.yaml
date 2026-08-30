@@ -88,10 +88,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-          cache-dependency-path: plugins/pnpm-lock.yaml
+          cache-dependency-path: tools/esbuild-hosts/pnpm-lock.yaml
 
-      - name: Install plugin dependencies
-        working-directory: plugins
+      - name: Install target-pack tool dependencies
+        working-directory: tools/esbuild-hosts
         run: pnpm install --frozen-lockfile
 
       - name: Build target pack

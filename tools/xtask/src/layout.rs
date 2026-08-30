@@ -41,8 +41,10 @@ impl WorkspaceLayout {
             .join(platform.target_pack_recipe_file_name())
     }
 
-    pub(crate) fn esbuild(&self) -> PathBuf {
-        self.root.join("plugins/node_modules/esbuild")
+    pub(crate) fn esbuild_host_package(&self, host: &str) -> PathBuf {
+        self.root
+            .join("tools/esbuild-hosts/node_modules/@esbuild")
+            .join(host)
     }
 
     #[cfg(test)]
@@ -85,8 +87,8 @@ mod tests {
             Path::new("/workspace/appd/platforms/windows/build/target-pack.ps1")
         );
         assert_eq!(
-            layout.esbuild(),
-            Path::new("/workspace/appd/plugins/node_modules/esbuild")
+            layout.esbuild_host_package("win32-x64"),
+            Path::new("/workspace/appd/tools/esbuild-hosts/node_modules/@esbuild/win32-x64")
         );
     }
 }

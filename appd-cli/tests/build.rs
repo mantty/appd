@@ -439,6 +439,29 @@ fn requires_a_target_pack_for_app_builds() -> TestResult {
 }
 
 #[test]
+fn reads_target_pack_directory_from_appd_environment() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let target_packs = temporary.path().join("target-packs");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&target_packs)?;
+    create_project(&project)?;
+
+    let mut command = Command::cargo_bin("appd")?;
+    command
+        .args(["build", "macos", "--project"])
+        .arg(&project)
+        .arg("--skip-web-build")
+        .env("APPD_TARGET_PACK_DIR", target_packs)
+        .assert()
+        .failure()
+        .stderr(contains(
+            "APPD_TARGET_PACK_DIR does not contain a target pack",
+        ));
+    Ok(())
+}
+
+#[test]
 fn builds_web_project_before_loading_generated_config() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");

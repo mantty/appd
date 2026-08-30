@@ -10,7 +10,6 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@types/node": "^22.19.15",
-    "esbuild": "0.28.1",
     "eslint": "^9.39.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

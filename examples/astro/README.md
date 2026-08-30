@@ -15,7 +15,7 @@ Build a target pack from the appd workspace, then package it:
 
 ```sh
 cargo run -p xtask -- target-pack --target macos-arm64
-target_pack_dir=../../target/appd-target-packs \
+APPD_TARGET_PACK_DIR=../../target/appd-target-packs \
   cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.json
 ```
 
