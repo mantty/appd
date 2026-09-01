@@ -208,7 +208,7 @@ fn open_external(url: &str) {
             SW_SHOWNORMAL,
         )
     };
-    if result.0 <= 32 {
+    if result.0 as usize <= 32 {
         eprintln!("appd could not open external URL");
     }
 }

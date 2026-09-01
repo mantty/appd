@@ -68,10 +68,10 @@ try {
   Assert-True ((Get-Content -LiteralPath $installedCli -Raw).Contains("appd")) "CLI was not replaced"
   foreach ($target in $targets) {
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot "share/appd/target-packs/$target/target-pack.json") -PathType Leaf) "$target was not installed"
-    Assert-True ($global:AppdInstallerDownloads -match "/appd-target-pack-$target.tar.gz$") "$target was not downloaded"
+    Assert-True ((@($global:AppdInstallerDownloads -match "/appd-target-pack-$target.tar.gz$")).Count -gt 0) "$target was not downloaded"
   }
   Assert-True (-not (Test-Path -LiteralPath $obsolete)) "obsolete target pack was retained"
-  Assert-True ($global:AppdInstallerDownloads -match "/appd-cli-windows-x64.zip$") "Windows CLI was not downloaded"
+  Assert-True ((@($global:AppdInstallerDownloads -match "/appd-cli-windows-x64.zip$")).Count -gt 0) "Windows CLI was not downloaded"
   Assert-True ($output.Contains("Installed appd pre.2")) "release tag was not reported"
   Assert-True ($output.Contains("Add $(Join-Path $installRoot 'bin') to PATH")) "PATH instruction was not reported"
 } finally {
