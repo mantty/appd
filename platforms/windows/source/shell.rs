@@ -14,7 +14,7 @@ use openssl::pkey::PKey;
 use openssl::x509::X509;
 use serde::Deserialize;
 use tao::event::{Event as TaoEvent, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -63,37 +63,7 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.name)?;
-    let runtime = match (
-        config.dev_endpoint.as_deref(),
-        config.dev_session_token.as_deref(),
-    ) {
-        (Some(endpoint), Some(session_token)) => Runtime::start_development(
-            DevelopmentConfig {
-                state_dir: state.join("runtime"),
-                host: config.host.clone(),
-                proxy: DevProxyConfig {
-                    endpoint: endpoint.to_owned(),
-                    session_token: session_token.to_owned(),
-                },
-            },
-            move |event| {
-                report(&event);
-                let _ = events.send_event(event);
-            },
-        )?,
-        (None, None) => Runtime::start(
-            Config {
-                app: PackageLayout::new(root.join("app")),
-                state_dir: state.join("runtime"),
-                host: config.host.clone(),
-            },
-            move |event| {
-                report(&event);
-                let _ = events.send_event(event);
-            },
-        )?,
-        _ => bail!("appd dev endpoint and session token must be provided together"),
-    };
+    let runtime = start_runtime(&config, &root, &state, events)?;
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
     let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
     let window = WindowBuilder::new()
@@ -159,6 +129,45 @@ pub(crate) fn run() -> Result<()> {
     drop(webview);
     drop(runtime);
     Ok(())
+}
+
+fn start_runtime(
+    config: &ShellConfig,
+    root: &Path,
+    state: &Path,
+    events: EventLoopProxy<Event>,
+) -> Result<Runtime> {
+    match (
+        config.dev_endpoint.as_deref(),
+        config.dev_session_token.as_deref(),
+    ) {
+        (Some(endpoint), Some(session_token)) => Runtime::start_development(
+            DevelopmentConfig {
+                state_dir: state.join("runtime"),
+                host: config.host.clone(),
+                proxy: DevProxyConfig {
+                    endpoint: endpoint.to_owned(),
+                    session_token: session_token.to_owned(),
+                },
+            },
+            move |event| {
+                report(&event);
+                let _ = events.send_event(event);
+            },
+        ),
+        (None, None) => Runtime::start(
+            Config {
+                app: PackageLayout::new(root.join("app")),
+                state_dir: state.join("runtime"),
+                host: config.host.clone(),
+            },
+            move |event| {
+                report(&event);
+                let _ = events.send_event(event);
+            },
+        ),
+        _ => bail!("appd dev endpoint and session token must be provided together"),
+    }
 }
 
 fn executable_dir() -> Result<PathBuf> {
