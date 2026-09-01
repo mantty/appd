@@ -6,6 +6,9 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::io;
+
 use appd::{DevProxyConfig, DevelopmentConfig, Runtime};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use openssl::sha::sha1;
@@ -45,6 +48,31 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
     assert_eq!(opcode, 0x1);
     assert_eq!(payload, b"pong");
     write_masked_frame(&mut websocket, 0x8, &[3, 232])?;
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn closes_client_websocket_after_an_upstream_reset() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || serve_resetting_websocket(&listener));
+    let state = temporary.path().join("state");
+
+    let mut websocket = connect_gateway(&runtime, &state)?;
+    websocket.write_all(
+        b"GET /@vite/client HTTP/1.1\r\nHost: dev.appd.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: vite-hmr\r\n\r\n",
+    )?;
+    websocket.flush()?;
+    let upgrade = String::from_utf8(read_header_block(&mut websocket)?)?;
+    if !upgrade.starts_with("HTTP/1.1 101") {
+        return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
+    }
+    let (opcode, payload) = read_frame(&mut websocket)?;
+    assert_eq!(opcode, 0x8);
+    assert_eq!(&payload[..2], &[3, 243]);
+    assert_eq!(&payload[2..], b"development server connection failed");
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
@@ -151,6 +179,49 @@ fn serve_restarting_host(listener: &TcpListener) -> TestResult {
     let mut retry = accept_request(listener, "GET / HTTP/1.1")?;
     retry.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn serve_resetting_websocket(listener: &TcpListener) -> TestResult {
+    let (mut websocket, _) = listener.accept()?;
+    websocket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let headers = String::from_utf8(read_header_block(&mut websocket)?)?;
+    assert!(headers.starts_with("GET /@vite/client HTTP/1.1"));
+    let key = header_value(&headers, "sec-websocket-key").ok_or("missing WebSocket key")?;
+    let accept = websocket_accept(key);
+    write!(
+        websocket,
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    )?;
+    websocket.flush()?;
+    thread::sleep(Duration::from_millis(100));
+    reset_connection(&websocket)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn reset_connection(stream: &TcpStream) -> TestResult {
+    use std::os::fd::AsRawFd;
+
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let linger_size = libc::socklen_t::try_from(std::mem::size_of_val(&linger))?;
+    let result = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&raw const linger).cast(),
+            linger_size,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error().into())
+    }
 }
 
 fn serve_interrupted_post(listener: &TcpListener) -> TestResult {

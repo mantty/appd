@@ -151,7 +151,14 @@ impl DevProxy {
             .send(WebSocketOutbound::Ready)
             .map_err(|_| Error::Startup("WebSocket gateway closed".to_owned()))?;
 
-        proxy_websocket(&mut codec, websocket, execution)
+        let result = proxy_websocket(&mut codec, websocket, execution);
+        if result.is_err() {
+            let _ = websocket.outgoing.send(WebSocketOutbound::Close {
+                code: 1011,
+                reason: "development server connection failed".to_owned(),
+            });
+        }
+        result
     }
 
     fn open_websocket(

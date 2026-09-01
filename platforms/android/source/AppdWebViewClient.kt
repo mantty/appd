@@ -1,9 +1,12 @@
 package com.appd.runtime
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.webkit.ClientCertRequest
+import android.webkit.WebResourceRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -16,11 +19,27 @@ import java.security.spec.PKCS8EncodedKeySpec
 
 /** Answers the app origin's TLS challenges with the runtime's decision. */
 internal class AppdWebViewClient(
+    private val activity: Activity,
+    private val host: String,
     private val runtime: AppdRuntime,
     private val pluginBridge: AppdPluginBridge,
 ) : WebViewClient() {
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         pluginBridge.close()
+        val uri = Uri.parse(url)
+        if (!isAppOrigin(uri)) {
+            view.stopLoading()
+            openExternal(uri)
+        }
+    }
+
+    override fun shouldOverrideUrlLoading(
+        view: WebView,
+        request: WebResourceRequest,
+    ): Boolean {
+        if (!request.isForMainFrame || isAppOrigin(request.url)) return false
+        openExternal(request.url)
+        return true
     }
 
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
@@ -46,6 +65,19 @@ internal class AppdWebViewClient(
             return
         }
         request.proceed(privateKey, arrayOf(certificate))
+    }
+
+    private fun isAppOrigin(uri: Uri): Boolean =
+        uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host?.equals(host, ignoreCase = true) == true &&
+            (uri.port == -1 || uri.port == 443)
+
+    private fun openExternal(uri: Uri) {
+        runCatching {
+            activity.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        }.onFailure { error ->
+            android.util.Log.w("appd", "could not open external URL", error)
+        }
     }
 
     private fun chainsTo(error: SslError, authority: ByteArray): Boolean {

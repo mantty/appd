@@ -33,6 +33,9 @@ names are packaging errors.
   WebView. Loopback-only transports may use server TLS without client auth
   when the platform boundary is sufficient.
 - No password-based proxy authentication is used.
+- Native shells keep one app WebView: same-origin top-level navigations stay in
+  that view, while external top-level navigations go to the operating system;
+  subframes and page resources remain unrestricted.
 
 ## Transport modes
 

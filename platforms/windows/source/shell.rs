@@ -37,9 +37,14 @@ use windows::Win32::Security::Cryptography::{
     CertEnumCertificatesInStore, CertOpenSystemStoreW, HCERTSTORE, PFXImportCertStore,
     PKCS12_PREFER_CNG_KSP,
 };
-use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW, SW_SHOWNORMAL,
+};
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
-use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
+use wry::{
+    NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,8 +101,29 @@ pub(crate) fn run() -> Result<()> {
         .build(&event_loop)
         .context("create app window")?;
     let mut context = WebContext::new(Some(state.join("webview")));
+    let navigation_host = config.host.clone();
+    let new_window_host = config.host.clone();
     let webview = WebViewBuilder::new_with_web_context(&mut context)
         .with_additional_browser_args(browser_arguments(&config.host, runtime.port()))
+        .with_navigation_handler(move |url| {
+            if is_app_origin(&url, &navigation_host) {
+                true
+            } else {
+                open_external(&url);
+                false
+            }
+        })
+        .with_new_window_req_handler(move |url, features| {
+            if is_app_origin(&url, &new_window_host) {
+                let url = HSTRING::from(url);
+                if let Err(error) = unsafe { features.opener.webview.Navigate(&url) } {
+                    eprintln!("appd could not reuse its WebView for a new window: {error}");
+                }
+            } else {
+                open_external(&url);
+            }
+            NewWindowResponse::Deny
+        })
         .build(&window)
         .context("create WebView2")?;
     let handlers = Handlers::install(
@@ -168,6 +194,23 @@ fn browser_arguments(host: &str, port: u16) -> String {
     format!(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,{pac}"
     )
+}
+
+fn open_external(url: &str) {
+    let url = HSTRING::from(url);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &url,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 <= 32 {
+        eprintln!("appd could not open external URL");
+    }
 }
 
 fn report(event: &Event) {
@@ -429,8 +472,9 @@ fn is_app_geolocation_request(kind: COREWEBVIEW2_PERMISSION_KIND, uri: &str, hos
 fn is_app_origin(uri: &str, host: &str) -> bool {
     request_authority(uri).is_some_and(|authority| {
         authority
-            .strip_prefix(host)
-            .is_some_and(|suffix| suffix.is_empty() || suffix == ":443")
+            .strip_suffix(":443")
+            .unwrap_or(authority)
+            .eq_ignore_ascii_case(host)
     })
 }
 
@@ -445,8 +489,8 @@ fn server_challenge(
         let Some(args) = args else { return Ok(()) };
         let certificate = unsafe { args.ServerCertificate()? };
         let pem = certificate_pem(&certificate)?;
-        let action = if request_host(&webview_string(|value| unsafe { args.RequestUri(value) })?)
-            == Some(host.as_str())
+        let request_uri = webview_string(|value| unsafe { args.RequestUri(value) })?;
+        let action = if is_app_origin(&request_uri, &host)
             && certificates.trusts_server_certificate(&host, &pem)
         {
             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW
@@ -457,12 +501,10 @@ fn server_challenge(
     }
 }
 
-fn request_host(url: &str) -> Option<&str> {
-    request_authority(url)?.split(':').next()
-}
-
 fn request_authority(url: &str) -> Option<&str> {
-    url.strip_prefix("https://")?.split(['/', '?', '#']).next()
+    let (scheme, remainder) = url.split_once("://")?;
+    scheme.eq_ignore_ascii_case("https").then_some(())?;
+    remainder.split(['/', '?', '#']).next()
 }
 
 fn certificate_matches(
@@ -511,7 +553,7 @@ mod tests {
 
     use super::{
         COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, browser_arguments, is_app_geolocation_request,
-        request_host,
+        is_app_origin,
     };
 
     #[test]
@@ -523,16 +565,27 @@ mod tests {
     }
 
     #[test]
-    fn extracts_a_request_host() {
-        assert_eq!(
-            request_host("https://app.appd.local/path"),
-            Some("app.appd.local")
-        );
-        assert_eq!(
-            request_host("https://app.appd.local:443/path"),
-            Some("app.appd.local")
-        );
-        assert_eq!(request_host("http://app.appd.local/"), None);
+    fn recognizes_only_the_exact_app_origin() {
+        assert!(is_app_origin(
+            "https://app.appd.local/path",
+            "app.appd.local"
+        ));
+        assert!(is_app_origin(
+            "HTTPS://APP.APPD.LOCAL:443/path",
+            "app.appd.local"
+        ));
+        assert!(!is_app_origin(
+            "https://app.appd.local.evil/path",
+            "app.appd.local"
+        ));
+        assert!(!is_app_origin(
+            "https://app.appd.local:444/path",
+            "app.appd.local"
+        ));
+        assert!(!is_app_origin(
+            "http://app.appd.local/path",
+            "app.appd.local"
+        ));
     }
 
     #[test]

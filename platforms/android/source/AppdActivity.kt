@@ -36,6 +36,7 @@ class AppdActivity : Activity() {
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.setSupportMultipleWindows(false)
         }
         pluginBridge = AppdPluginBridge(this, appHost(), appdPlugins(this))
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
@@ -138,7 +139,7 @@ class AppdActivity : Activity() {
     internal fun proxyReady() {
         if (destroyed) return
         val runtime = runtime ?: return
-        webView.webViewClient = AppdWebViewClient(runtime, pluginBridge)
+        webView.webViewClient = AppdWebViewClient(this, appHost(), runtime, pluginBridge)
         webView.loadUrl("https://${appHost()}/")
     }
 

@@ -207,7 +207,7 @@ private final class RuntimeHost {
   }
 }
 
-private final class NavigationDelegate: NSObject, WKNavigationDelegate {
+private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
   private let runtime: RuntimeHost
   private let pluginBridge: AppdPluginBridge
 
@@ -221,6 +221,72 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate {
     didStartProvisionalNavigation navigation: WKNavigation?
   ) {
     pluginBridge.close()
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+  ) {
+    guard let url = navigationAction.request.url else {
+      decisionHandler(.cancel)
+      return
+    }
+
+    if navigationAction.targetFrame?.isMainFrame == false {
+      decisionHandler(.allow)
+      return
+    }
+
+    if isAppOrigin(url) {
+      if navigationAction.targetFrame == nil {
+        webView.load(navigationAction.request)
+        decisionHandler(.cancel)
+      } else {
+        decisionHandler(.allow)
+      }
+      return
+    }
+
+    openExternal(url)
+    decisionHandler(.cancel)
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    decidePolicyFor navigationResponse: WKNavigationResponse,
+    decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+  ) {
+    guard
+      navigationResponse.isForMainFrame,
+      let url = navigationResponse.response.url
+    else {
+      decisionHandler(.allow)
+      return
+    }
+
+    if isAppOrigin(url) {
+      decisionHandler(.allow)
+    } else {
+      openExternal(url)
+      decisionHandler(.cancel)
+    }
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    createWebViewWith configuration: WKWebViewConfiguration,
+    for navigationAction: WKNavigationAction,
+    windowFeatures: WKWindowFeatures
+  ) -> WKWebView? {
+    _ = (configuration, windowFeatures)
+    guard let url = navigationAction.request.url else { return nil }
+    if isAppOrigin(url) {
+      webView.load(navigationAction.request)
+    } else {
+      openExternal(url)
+    }
+    return nil
   }
 
   func webView(
@@ -259,6 +325,24 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate {
     withError error: Error
   ) {
     print("appd WebView navigation failed: \(error)")
+  }
+
+  private func isAppOrigin(_ url: URL) -> Bool {
+    guard
+      url.scheme?.caseInsensitiveCompare("https") == .orderedSame,
+      url.host?.caseInsensitiveCompare(runtime.host) == .orderedSame
+    else {
+      return false
+    }
+    return url.port == nil || url.port == 443
+  }
+
+  private func openExternal(_ url: URL) {
+    #if os(iOS)
+      UIApplication.shared.open(url)
+    #else
+      NSWorkspace.shared.open(url)
+    #endif
   }
 
   private func answer(
@@ -432,10 +516,12 @@ private final class AppdController {
     #if os(iOS)
       webView.scrollView.bounces = false
     #endif
+    webView.allowsLinkPreview = false
     activeWebView = webView
     pluginBridge.webView = webView
     self.pluginBridge = pluginBridge
     webView.navigationDelegate = navigation
+    webView.uiDelegate = navigation
     webView.load(URLRequest(url: URL(string: "https://\(runtime.host)/")!))
     return webView
   }
