@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TryRecvError;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openssl::ssl::{SslConnector, SslMethod, SslStream};
 
@@ -23,6 +23,8 @@ use crate::transport::{
 const MAX_HEADERS: usize = 64 * 1024;
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
+const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 const WEBSOCKET_POLL: Duration = Duration::from_millis(20);
 const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -103,6 +105,24 @@ impl DevProxy {
         request: &HttpRequest,
         response: &std::sync::mpsc::SyncSender<JobResponse>,
     ) -> Result<(), Error> {
+        let deadline = Instant::now() + HTTP_RETRY_TIMEOUT;
+        let result = loop {
+            match self.request_http(request) {
+                Ok(result) => break result,
+                Err(error)
+                    if can_retry_http(&request.method, &error) && Instant::now() < deadline =>
+                {
+                    thread::sleep(HTTP_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        response
+            .send(JobResponse::Http(result))
+            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))
+    }
+
+    fn request_http(&self, request: &HttpRequest) -> Result<HttpResponse, Error> {
         let mut upstream = self.connect()?;
         upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
         write_request(
@@ -112,10 +132,7 @@ impl DevProxy {
             request,
             false,
         )?;
-        let result = read_response(&mut upstream, &request.method)?;
-        response
-            .send(JobResponse::Http(result))
-            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))
+        read_response(&mut upstream, &request.method)
     }
 
     fn forward_websocket(
@@ -173,6 +190,20 @@ impl DevProxy {
         upstream.set_timeouts(WEBSOCKET_POLL, WEBSOCKET_WRITE_TIMEOUT)?;
         Ok(WebSocketCodec::new(upstream))
     }
+}
+
+fn can_retry_http(method: &str, error: &Error) -> bool {
+    let Error::Io(error) = error else {
+        return false;
+    };
+    (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+        && matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+        )
 }
 
 fn proxy_websocket(
@@ -576,7 +607,10 @@ fn queue_upstream_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{DevProxy, DevProxyConfig, Endpoint};
+    use std::io;
+
+    use super::{DevProxy, DevProxyConfig, Endpoint, can_retry_http};
+    use crate::quickjs::Error;
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {
@@ -607,5 +641,11 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn retries_head_after_an_upstream_disconnect() {
+        let error = Error::Io(io::ErrorKind::UnexpectedEof.into());
+        assert!(can_retry_http("HEAD", &error));
     }
 }

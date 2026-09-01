@@ -429,6 +429,9 @@ private final class AppdController {
     )
     self.navigation = navigation
     let webView = WKWebView(frame: frame, configuration: configuration)
+    #if os(iOS)
+      webView.scrollView.bounces = false
+    #endif
     activeWebView = webView
     pluginBridge.webView = webView
     self.pluginBridge = pluginBridge

@@ -1,10 +1,10 @@
 #![cfg(feature = "native")]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use appd::{DevProxyConfig, DevelopmentConfig, Runtime};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -17,22 +17,9 @@ const HOST: &str = "dev.appd.local";
 
 #[test]
 fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let endpoint = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let (listener, runtime, temporary) = start_test_runtime()?;
     let host_server = thread::spawn(move || serve_host(&listener));
-    let temporary = tempfile::tempdir()?;
     let state = temporary.path().join("state");
-    let runtime = Runtime::start_development(
-        DevelopmentConfig {
-            state_dir: state.clone(),
-            host: HOST.to_owned(),
-            proxy: DevProxyConfig {
-                endpoint,
-                session_token: "test-session".to_owned(),
-            },
-        },
-        |_| {},
-    )?;
 
     let mut http = connect_gateway(&runtime, &state)?;
     http.write_all(
@@ -61,6 +48,57 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
+}
+
+#[test]
+fn retries_get_after_the_host_server_restarts() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || serve_restarting_host(&listener));
+    let state = temporary.path().join("state");
+
+    let mut http = connect_gateway(&runtime, &state)?;
+    http.write_all(b"GET / HTTP/1.1\r\nHost: dev.appd.local\r\n\r\n")?;
+    http.flush()?;
+    let response = read_http_response(&mut http)?;
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    assert!(response.starts_with("HTTP/1.1 200"));
+    assert!(response.ends_with("ok"));
+    Ok(())
+}
+
+#[test]
+fn does_not_retry_post_after_an_upstream_disconnect() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || serve_interrupted_post(&listener));
+    let state = temporary.path().join("state");
+
+    let mut http = connect_gateway(&runtime, &state)?;
+    http.write_all(b"POST /api HTTP/1.1\r\nHost: dev.appd.local\r\nContent-Length: 0\r\n\r\n")?;
+    http.flush()?;
+    let response = read_http_response(&mut http)?;
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    assert!(response.starts_with("HTTP/1.1 500"));
+    Ok(())
+}
+
+fn start_test_runtime() -> TestResult<(TcpListener, Runtime, tempfile::TempDir)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let endpoint = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let temporary = tempfile::tempdir()?;
+    let runtime = Runtime::start_development(
+        DevelopmentConfig {
+            state_dir: temporary.path().join("state"),
+            host: HOST.to_owned(),
+            proxy: DevProxyConfig {
+                endpoint,
+                session_token: "test-session".to_owned(),
+            },
+        },
+        |_| {},
+    )?;
+    Ok((listener, runtime, temporary))
 }
 
 fn serve_host(listener: &TcpListener) -> TestResult {
@@ -98,6 +136,57 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     assert_eq!(opcode, 0x8);
     assert_eq!(payload, [3, 232]);
     Ok(())
+}
+
+fn serve_restarting_host(listener: &TcpListener) -> TestResult {
+    listener.set_nonblocking(true)?;
+    let mut first = accept_request(listener, "GET / HTTP/1.1")?;
+    first.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\no")?;
+    drop(first);
+
+    for _ in 0..2 {
+        drop(accept_request(listener, "GET / HTTP/1.1")?);
+    }
+
+    let mut retry = accept_request(listener, "GET / HTTP/1.1")?;
+    retry.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")?;
+    Ok(())
+}
+
+fn serve_interrupted_post(listener: &TcpListener) -> TestResult {
+    listener.set_nonblocking(true)?;
+    let mut post = accept_request(listener, "POST /api HTTP/1.1")?;
+    post.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\no")?;
+    drop(post);
+
+    if accept_before(listener, Duration::from_millis(300))?.is_some() {
+        return Err("POST request was retried".into());
+    }
+    Ok(())
+}
+
+fn accept_request(listener: &TcpListener, expected: &str) -> TestResult<TcpStream> {
+    let mut stream = accept_before(listener, Duration::from_secs(2))?
+        .ok_or("host server did not receive a request")?;
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let request = String::from_utf8(read_header_block(&mut stream)?)?;
+    assert!(request.starts_with(expected));
+    Ok(stream)
+}
+
+fn accept_before(listener: &TcpListener, timeout: Duration) -> TestResult<Option<TcpStream>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Ok(Some(stream)),
+            Err(error) if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn connect_gateway(runtime: &Runtime, state: &Path) -> TestResult<SslStream<TcpStream>> {

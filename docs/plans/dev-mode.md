@@ -34,9 +34,11 @@ device-side module-execution path.
 
 ## 2. Recover transient development-session failures
 
-The host-side supervisor and proxy have no recovery contract for a temporary
-host-server or relay failure. The mobile shells already probe and restore the
-device gateway when they resume. Add recovery that:
+The device proxy retries safe HTTP loads for ten seconds when the stable relay
+disconnects during a framework-server restart. The host-side supervisor still
+has no recovery contract for a persistent host-server or relay failure. The
+mobile shells already probe and restore the device gateway when they resume.
+Add recovery that:
 
 - keeps the selected target, installed app, relay endpoint, and session
   credentials unchanged while the host server is unavailable;
@@ -47,6 +49,12 @@ device gateway when they resume. Add recovery that:
 - distinguishes a temporary failure from an intentional command exit or user
   shutdown, reporting persistent failures and stopping without orphaned
   processes or silently selecting another target.
+
+Physical iOS signing uses the same split as Xcode: an exact valid profile is
+selected when one is already installed, and otherwise `appd dev` asks
+`xcodebuild` to update or register the profile automatically for the selected
+bundle ID and device. Set `APPD_IOS_SIGNING_IDENTITY` together with
+`APPD_IOS_PROVISIONING_PROFILE` when an explicit signing choice is required.
 
 ## 3. Rebuild for native-input changes
 
