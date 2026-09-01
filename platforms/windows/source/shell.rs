@@ -141,7 +141,7 @@ fn start_runtime(
         config.dev_endpoint.as_deref(),
         config.dev_session_token.as_deref(),
     ) {
-        (Some(endpoint), Some(session_token)) => Runtime::start_development(
+        (Some(endpoint), Some(session_token)) => Ok(Runtime::start_development(
             DevelopmentConfig {
                 state_dir: state.join("runtime"),
                 host: config.host.clone(),
@@ -154,8 +154,8 @@ fn start_runtime(
                 report(&event);
                 let _ = events.send_event(event);
             },
-        ),
-        (None, None) => Runtime::start(
+        )?),
+        (None, None) => Ok(Runtime::start(
             Config {
                 app: PackageLayout::new(root.join("app")),
                 state_dir: state.join("runtime"),
@@ -165,7 +165,7 @@ fn start_runtime(
                 report(&event);
                 let _ = events.send_event(event);
             },
-        ),
+        )?),
         _ => bail!("appd dev endpoint and session token must be provided together"),
     }
 }
