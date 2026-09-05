@@ -16,15 +16,16 @@ use crate::gateway::{
 };
 use crate::quickjs::Error;
 use crate::transport::{
-    HttpRequest, HttpResponse, WebSocketCodec, WebSocketRead, read_chunked_body, websocket_accept,
-    websocket_close, websocket_close_payload,
+    BodyChunk, HttpRequest, HttpResponse, WebSocketCodec, WebSocketRead, response_stream,
+    websocket_accept, websocket_close, websocket_close_payload,
 };
 
 const MAX_HEADERS: usize = 64 * 1024;
-const MAX_BODY: usize = 16 * 1024 * 1024;
+const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+const STREAM_POLL: Duration = Duration::from_millis(100);
 const WEBSOCKET_POLL: Duration = Duration::from_millis(20);
 const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -41,6 +42,23 @@ pub struct DevProxyConfig {
 pub(crate) struct DevProxy {
     endpoint: Endpoint,
     session_token: String,
+}
+
+struct HostResponse {
+    response: HttpResponse,
+    body: Option<HostBody>,
+}
+
+struct HostBody {
+    upstream: UpstreamStream,
+    framing: HostFraming,
+    sender: std::sync::mpsc::SyncSender<BodyChunk>,
+    cancelled: Arc<AtomicBool>,
+}
+
+enum HostFraming {
+    Chunked,
+    CloseDelimited,
 }
 
 impl DevProxy {
@@ -117,12 +135,20 @@ impl DevProxy {
                 Err(error) => return Err(error),
             }
         };
+        let HostResponse {
+            response: result,
+            body,
+        } = result;
         response
             .send(JobResponse::Http(result))
-            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))
+            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+        if let Some(body) = body {
+            pump_host_body(body);
+        }
+        Ok(())
     }
 
-    fn request_http(&self, request: &HttpRequest) -> Result<HttpResponse, Error> {
+    fn request_http(&self, request: &HttpRequest) -> Result<HostResponse, Error> {
         let mut upstream = self.connect()?;
         upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
         write_request(
@@ -132,7 +158,21 @@ impl DevProxy {
             request,
             false,
         )?;
-        read_response(&mut upstream, &request.method)
+        let (mut response, framing) = read_response(&mut upstream, &request.method)?;
+        let body = match framing {
+            None => None,
+            Some(framing) => {
+                let (sender, cancelled, body) = response_stream();
+                response.body = body;
+                Some(HostBody {
+                    upstream,
+                    framing,
+                    sender,
+                    cancelled,
+                })
+            }
+        };
+        Ok(HostResponse { response, body })
     }
 
     fn forward_websocket(
@@ -178,7 +218,7 @@ impl DevProxy {
             request,
             true,
         )?;
-        let upgrade = read_response(&mut upstream, &request.method)?;
+        let (upgrade, _) = read_response(&mut upstream, &request.method)?;
         if upgrade.status != 101 {
             return Err(Error::Startup(format!(
                 "host WebSocket upgrade returned HTTP {}",
@@ -395,6 +435,13 @@ impl UpstreamStream {
             }
         }
     }
+
+    fn set_stream_timeout(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.set_read_timeout(Some(STREAM_POLL)),
+            Self::Tls(stream) => stream.get_mut().set_read_timeout(Some(STREAM_POLL)),
+        }
+    }
 }
 
 impl Read for UpstreamStream {
@@ -465,7 +512,10 @@ fn write_request(
     Ok(())
 }
 
-fn read_response(stream: &mut UpstreamStream, method: &str) -> Result<HttpResponse, Error> {
+fn read_response(
+    stream: &mut UpstreamStream,
+    method: &str,
+) -> Result<(HttpResponse, Option<HostFraming>), Error> {
     let headers = read_header_block(stream)?;
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
@@ -511,30 +561,170 @@ fn read_response(stream: &mut UpstreamStream, method: &str) -> Result<HttpRespon
     let no_body = method.eq_ignore_ascii_case("HEAD")
         || (100..200).contains(&status)
         || matches!(status, 204 | 304);
-    let body = if no_body {
-        Vec::new()
+    let (body, framing) = if no_body {
+        (Vec::new(), None)
     } else if chunked {
-        read_chunked_body(stream)?
+        (Vec::new(), Some(HostFraming::Chunked))
     } else if let Some(length) = content_length {
-        if length > MAX_BODY {
-            return Err(Error::Startup("host response body is too large".to_owned()));
-        }
         let mut body = vec![0; length];
         stream.read_exact(&mut body)?;
-        body
+        (body, None)
     } else {
-        let mut body = Vec::new();
-        stream.read_to_end(&mut body)?;
-        if body.len() > MAX_BODY {
-            return Err(Error::Startup("host response body is too large".to_owned()));
-        }
-        body
+        (Vec::new(), Some(HostFraming::CloseDelimited))
     };
-    Ok(HttpResponse {
-        status,
-        headers: response_headers,
-        body,
-    })
+    Ok((
+        HttpResponse::buffered(status, response_headers, body),
+        framing,
+    ))
+}
+
+fn pump_host_body(mut body: HostBody) {
+    let result = body
+        .upstream
+        .set_stream_timeout()
+        .map_err(Error::from)
+        .and_then(|()| match body.framing {
+            HostFraming::Chunked => pump_chunked_body(&mut body),
+            HostFraming::CloseDelimited => pump_close_delimited_body(&mut body),
+        });
+    if let Err(error) = result {
+        let _ = body.sender.send(Err(error.to_string()));
+    }
+}
+
+fn pump_close_delimited_body(body: &mut HostBody) -> Result<(), Error> {
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let Some(count) = read_host_chunk(body, &mut buffer)? else {
+            return Ok(());
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        if !send_host_chunk(body, buffer[..count].to_vec()) {
+            return Ok(());
+        }
+    }
+}
+
+fn pump_chunked_body(body: &mut HostBody) -> Result<(), Error> {
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let Some(line) = read_upstream_line(body)? else {
+            return Ok(());
+        };
+        let size = line.split(';').next().unwrap_or_default().trim();
+        let mut remaining = usize::from_str_radix(size, 16)
+            .map_err(|_| Error::Startup("host response chunk size is invalid".to_owned()))?;
+        if remaining == 0 {
+            read_chunked_trailers(body)?;
+            return Ok(());
+        }
+        while remaining > 0 {
+            let limit = remaining.min(buffer.len());
+            let Some(count) = read_host_chunk(body, &mut buffer[..limit])? else {
+                return Ok(());
+            };
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "host response chunk ended early",
+                )
+                .into());
+            }
+            if !send_host_chunk(body, buffer[..count].to_vec()) {
+                return Ok(());
+            }
+            remaining -= count;
+        }
+        let mut terminator = [0; 2];
+        if !read_host_exact(body, &mut terminator)? {
+            return Ok(());
+        }
+        if terminator != *b"\r\n" {
+            return Err(Error::Startup(
+                "host response chunk is not terminated".to_owned(),
+            ));
+        }
+    }
+}
+
+fn send_host_chunk(body: &HostBody, chunk: Vec<u8>) -> bool {
+    !chunk.is_empty() && body.sender.send(Ok(chunk)).is_ok()
+}
+
+fn read_host_chunk(body: &mut HostBody, buffer: &mut [u8]) -> Result<Option<usize>, Error> {
+    loop {
+        if body.cancelled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        match body.upstream.read(buffer) {
+            Ok(count) => return Ok(Some(count)),
+            Err(error) if is_stream_timeout(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn read_host_exact(body: &mut HostBody, buffer: &mut [u8]) -> Result<bool, Error> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        let Some(count) = read_host_chunk(body, &mut buffer[offset..])? else {
+            return Ok(false);
+        };
+        if count == 0 {
+            return Err(
+                io::Error::new(io::ErrorKind::UnexpectedEof, "host response ended early").into(),
+            );
+        }
+        offset += count;
+    }
+    Ok(true)
+}
+
+fn read_chunked_trailers(body: &mut HostBody) -> Result<(), Error> {
+    let mut bytes = 0usize;
+    loop {
+        let Some(line) = read_upstream_line(body)? else {
+            return Ok(());
+        };
+        bytes = bytes.saturating_add(line.len() + 2);
+        if bytes > MAX_HEADERS {
+            return Err(Error::Startup(
+                "host response trailers exceed the limit".to_owned(),
+            ));
+        }
+        if line.is_empty() {
+            return Ok(());
+        }
+    }
+}
+
+fn read_upstream_line(body: &mut HostBody) -> Result<Option<String>, Error> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0; 1];
+        if !read_host_exact(body, &mut byte)? {
+            return Ok(None);
+        }
+        line.push(byte[0]);
+        if line.len() > MAX_HEADERS {
+            return Err(Error::Startup("host response line is too long".to_owned()));
+        }
+        if line.ends_with(b"\r\n") {
+            line.truncate(line.len() - 2);
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|_| Error::Startup("host response line is not UTF-8".to_owned()));
+        }
+    }
+}
+
+fn is_stream_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 fn read_header_block(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
@@ -581,7 +771,7 @@ fn queue_upstream_message(
                     "host WebSocket continuation has no initial frame".to_owned(),
                 ));
             };
-            if message.len().saturating_add(payload.len()) > MAX_BODY {
+            if message.len().saturating_add(payload.len()) > MAX_WEBSOCKET_BODY {
                 return Err(Error::Startup(
                     "host WebSocket message is too large".to_owned(),
                 ));

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 use std::time::Duration;
 
@@ -15,7 +17,12 @@ use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocket
 use crate::quickjs::Error;
 
 const MAX_HEADERS: usize = 64 * 1024;
-const MAX_BODY: usize = 16 * 1024 * 1024;
+pub(super) const MAX_HTTP_BODY: usize = 250 * 1024 * 1024;
+const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
+const RESPONSE_STREAM_QUEUE: usize = 8;
+const RESPONSE_STREAM_POLL: Duration = Duration::from_millis(100);
+
+pub(super) type BodyChunk = Result<Vec<u8>, String>;
 
 #[derive(Serialize)]
 pub(super) struct HttpRequest {
@@ -23,13 +30,31 @@ pub(super) struct HttpRequest {
     pub(super) target: String,
     pub(super) url: String,
     pub(super) headers: BTreeMap<String, String>,
+    #[serde(skip_serializing)]
     pub(super) body: Option<Vec<u8>>,
 }
 
 pub(super) struct HttpResponse {
     pub(super) status: u16,
     pub(super) headers: BTreeMap<String, String>,
-    pub(super) body: Vec<u8>,
+    pub(super) body: HttpBody,
+}
+
+pub(super) enum HttpBody {
+    Buffered(Vec<u8>),
+    Stream(BodyStream),
+}
+
+pub(super) struct BodyStream {
+    receiver: Receiver<BodyChunk>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl BodyStream {
+    #[cfg(test)]
+    pub(super) fn recv(&self) -> Result<BodyChunk, std::sync::mpsc::RecvError> {
+        self.receiver.recv()
+    }
 }
 
 pub(super) struct WebSocketFrame {
@@ -45,11 +70,34 @@ impl HttpResponse {
             "content-type".to_owned(),
             "text/plain; charset=utf-8".to_owned(),
         );
+        Self::buffered(status, headers, body.as_bytes().to_vec())
+    }
+
+    pub(super) fn buffered(status: u16, headers: BTreeMap<String, String>, body: Vec<u8>) -> Self {
         Self {
             status,
             headers,
-            body: body.as_bytes().to_vec(),
+            body: HttpBody::Buffered(body),
         }
+    }
+}
+
+pub(super) fn response_stream() -> (SyncSender<BodyChunk>, Arc<AtomicBool>, HttpBody) {
+    let (sender, receiver) = sync_channel(RESPONSE_STREAM_QUEUE);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    (
+        sender,
+        Arc::clone(&cancelled),
+        HttpBody::Stream(BodyStream {
+            receiver,
+            cancelled,
+        }),
+    )
+}
+
+impl Drop for BodyStream {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -160,7 +208,7 @@ pub(super) fn read_request(
             "chunked request cannot include content length".to_owned(),
         ));
     }
-    if content_length.is_some_and(|length| length > MAX_BODY) {
+    if content_length.is_some_and(|length| length > MAX_HTTP_BODY) {
         return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
     }
     let body = if chunked {
@@ -200,7 +248,7 @@ pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error
                 }
             }
         }
-        if body.len().saturating_add(size) > MAX_BODY {
+        if body.len().saturating_add(size) > MAX_HTTP_BODY {
             return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
         }
         let start = body.len();
@@ -330,7 +378,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
                 }
                 Ok(count) => {
                     self.buffer.extend_from_slice(&bytes[..count]);
-                    if self.buffer.len() > MAX_BODY + 14 {
+                    if self.buffer.len() > MAX_WEBSOCKET_BODY + 14 {
                         return Err(Error::Startup("WebSocket frame is too large".to_owned()));
                     }
                 }
@@ -353,7 +401,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
         payload: &[u8],
         mask: bool,
     ) -> Result<(), Error> {
-        if payload.len() > MAX_BODY {
+        if payload.len() > MAX_WEBSOCKET_BODY {
             return Err(Error::Startup("WebSocket frame is too large".to_owned()));
         }
         if opcode >= 0x8 && (payload.len() > 125 || opcode & 0x40 != 0) {
@@ -486,7 +534,7 @@ fn parse_websocket_header(
         }
         _ => unreachable!(),
     };
-    if length > MAX_BODY {
+    if length > MAX_WEBSOCKET_BODY {
         return Err(Error::Startup("WebSocket frame is too large".to_owned()));
     }
     let opcode = first & 0x0f;
@@ -526,7 +574,7 @@ pub(super) fn queue_websocket_message(
                     "WebSocket continuation has no initial frame".to_owned(),
                 ));
             };
-            if message.len().saturating_add(payload.len()) > MAX_BODY {
+            if message.len().saturating_add(payload.len()) > MAX_WEBSOCKET_BODY {
                 return Err(Error::Startup("WebSocket message is too large".to_owned()));
             }
             message.extend_from_slice(&payload);
@@ -653,26 +701,125 @@ pub(super) fn write_plain_response(
     stream: &mut TcpStream,
     response: HttpResponse,
 ) -> Result<(), Error> {
-    write_response_inner(stream, response)
+    write_response_inner(stream, response, None, None, None)
 }
 
 pub(super) fn write_response(
     stream: &mut SslStream<TcpStream>,
     response: HttpResponse,
+    method: &str,
+    cancelled: &AtomicBool,
 ) -> Result<(), Error> {
-    write_response_inner(stream, response)
+    let peer = stream.get_ref().try_clone()?;
+    peer.set_read_timeout(Some(Duration::from_millis(1)))?;
+    write_response_inner(stream, response, Some(method), Some(cancelled), Some(&peer))
 }
 
-fn write_response_inner(mut stream: impl Write, mut response: HttpResponse) -> Result<(), Error> {
-    response
-        .headers
-        .entry("content-length".to_owned())
-        .or_insert_with(|| response.body.len().to_string());
+fn write_response_inner(
+    mut stream: impl Write,
+    mut response: HttpResponse,
+    method: Option<&str>,
+    cancelled: Option<&AtomicBool>,
+    peer: Option<&TcpStream>,
+) -> Result<(), Error> {
+    let no_body = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"))
+        || (100..200).contains(&response.status)
+        || matches!(response.status, 204 | 304);
     response
         .headers
         .entry("connection".to_owned())
         .or_insert_with(|| "close".to_owned());
-    let reason = match response.status {
+    match response.body {
+        HttpBody::Buffered(body) => {
+            response
+                .headers
+                .entry("content-length".to_owned())
+                .or_insert_with(|| body.len().to_string());
+            write_response_headers(&mut stream, response.status, &response.headers)?;
+            if !no_body {
+                stream.write_all(&body)?;
+                stream.flush()?;
+            }
+            Ok(())
+        }
+        HttpBody::Stream(body) => {
+            if no_body {
+                response.headers.remove("content-length");
+                response.headers.remove("transfer-encoding");
+                write_response_headers(&mut stream, response.status, &response.headers)?;
+                return Ok(());
+            }
+            response.headers.remove("content-length");
+            response
+                .headers
+                .insert("transfer-encoding".to_owned(), "chunked".to_owned());
+            write_response_headers(&mut stream, response.status, &response.headers)?;
+            loop {
+                let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
+                    Ok(chunk) => chunk,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+                            || body.cancelled.load(Ordering::Acquire)
+                        {
+                            break;
+                        }
+                        if peer_closed(peer) {
+                            body.cancelled.store(true, Ordering::Release);
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                let chunk = chunk
+                    .map_err(|error| Error::Startup(format!("response stream failed: {error}")))?;
+                if !chunk.is_empty() {
+                    write!(stream, "{:X}\r\n", chunk.len())?;
+                    stream.write_all(&chunk)?;
+                    stream.write_all(b"\r\n")?;
+                    stream.flush()?;
+                }
+            }
+            if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+                || body.cancelled.load(Ordering::Acquire)
+            {
+                return Ok(());
+            }
+            stream.write_all(b"0\r\n\r\n")?;
+            stream.flush()?;
+            Ok(())
+        }
+    }
+}
+
+fn peer_closed(stream: Option<&TcpStream>) -> bool {
+    let Some(stream) = stream else {
+        return false;
+    };
+    let mut byte = [0; 1];
+    match stream.peek(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+fn write_response_headers(
+    stream: &mut impl Write,
+    status: u16,
+    headers: &BTreeMap<String, String>,
+) -> Result<(), Error> {
+    let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
@@ -680,16 +827,185 @@ fn write_response_inner(mut stream: impl Write, mut response: HttpResponse) -> R
         503 => "Service Unavailable",
         _ => "",
     };
-    write!(stream, "HTTP/1.1 {} {reason}\r\n", response.status)?;
-    for (name, value) in response.headers {
+    write!(stream, "HTTP/1.1 {status} {reason}\r\n")?;
+    for (name, value) in headers {
         write!(stream, "{name}: {value}\r\n")?;
     }
     stream.write_all(b"\r\n")?;
-    stream.write_all(&response.body)?;
     stream.flush()?;
     Ok(())
 }
 
 fn tls_error(error: &openssl::error::ErrorStack) -> Error {
     Error::Tls(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HttpBody, HttpResponse, response_stream, write_response_inner};
+    use std::collections::BTreeMap;
+    use std::io::{self, Cursor};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn writes_buffered_responses_with_a_content_length() -> Result<(), Box<dyn std::error::Error>> {
+        let response = HttpResponse::buffered(200, BTreeMap::new(), b"ok".to_vec());
+        let mut output = Vec::new();
+
+        write_response_inner(&mut output, response, None, None, None)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("content-length: 2\r\n"));
+        assert!(output.ends_with("\r\nok"));
+        Ok(())
+    }
+
+    #[test]
+    fn writes_streamed_responses_as_chunked_data() -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, _cancelled, body) = response_stream();
+        let HttpBody::Stream(body) = body else {
+            return Err("response stream fixture was buffered".into());
+        };
+        sender.send(Ok(b"one".to_vec()))?;
+        sender.send(Ok(b"two".to_vec()))?;
+        drop(sender);
+        let response = HttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: HttpBody::Stream(body),
+        };
+        let mut output = Vec::new();
+
+        write_response_inner(&mut output, response, None, None, None)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("transfer-encoding: chunked\r\n"));
+        assert!(!output.contains("content-length:"));
+        assert!(output.ends_with("\r\n3\r\ntwo\r\n0\r\n\r\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn suppresses_a_stream_body_for_head_requests() -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, cancelled, body) = response_stream();
+        let HttpBody::Stream(body) = body else {
+            return Err("response stream fixture was buffered".into());
+        };
+        sender.send(Ok(b"body".to_vec()))?;
+        let response = HttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: HttpBody::Stream(body),
+        };
+        let mut output = Vec::new();
+
+        write_response_inner(&mut output, response, Some("HEAD"), None, None)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(!output.contains("transfer-encoding:"));
+        assert!(!output.ends_with("body"));
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        Ok(())
+    }
+
+    #[test]
+    fn stops_an_idle_stream_when_the_gateway_stops() -> Result<(), Box<dyn std::error::Error>> {
+        let (_sender, _cancelled, body) = response_stream();
+        let response = HttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body,
+        };
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let mut output = Vec::new();
+
+        write_response_inner(&mut output, response, None, Some(&cancelled), None)?;
+
+        assert!(String::from_utf8(output)?.contains("HTTP/1.1 200"));
+        Ok(())
+    }
+
+    #[test]
+    fn stops_an_idle_stream_when_the_client_disconnects() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address)?;
+        let (server, _) = listener.accept()?;
+        let peer = server.try_clone()?;
+        peer.set_read_timeout(Some(Duration::from_millis(1)))?;
+        let (sender, cancelled, body) = response_stream();
+        let response = HttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body,
+        };
+        let (done_sender, done_receiver) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let result = write_response_inner(server, response, None, None, Some(&peer));
+            let _ = done_sender.send(result);
+        });
+
+        let mut client = client;
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            std::io::Read::read_exact(&mut client, &mut byte)?;
+            headers.push(byte[0]);
+        }
+        drop(client);
+        match done_receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => result?,
+            Err(error) => {
+                cancelled.store(true, std::sync::atomic::Ordering::Release);
+                let _ = thread.join();
+                return Err(error.into());
+            }
+        }
+        thread.join().map_err(|_| "response writer panicked")?;
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        drop(sender);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_the_configured_http_request_body_limit() {
+        assert_eq!(super::MAX_HTTP_BODY, 250 * 1024 * 1024);
+    }
+
+    #[test]
+    fn rejects_chunked_request_bodies_over_the_limit() {
+        let input = format!("{:X}\r\n", super::MAX_HTTP_BODY + 1);
+        assert!(matches!(
+            super::read_chunked_body(&mut Cursor::new(input.as_bytes())),
+            Err(error) if error.to_string() == "QuickJS startup failed: HTTP body exceeds the limit"
+        ));
+    }
+
+    #[test]
+    fn reports_stream_errors_to_the_http_writer() -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, _cancelled, body) = response_stream();
+        let HttpBody::Stream(body) = body else {
+            return Err("response stream fixture was buffered".into());
+        };
+        sender.send(Err("broken".to_owned()))?;
+        drop(sender);
+        let response = HttpResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: HttpBody::Stream(body),
+        };
+        let error = match write_response_inner(io::sink(), response, None, None, None) {
+            Ok(()) => return Err("stream should fail".into()),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "QuickJS startup failed: response stream failed: broken"
+        );
+        Ok(())
+    }
 }

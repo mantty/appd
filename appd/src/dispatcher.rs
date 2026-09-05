@@ -15,11 +15,12 @@ use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
 };
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{HttpRequest, HttpResponse};
+use crate::transport::{BodyChunk, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
 use rquickjs::loader::{BuiltinResolver, ImportAttributes, Loader, ModuleLoader, Resolver};
 use rquickjs::{
     Array, ArrayBuffer, Context, Function, Module, Object, Promise, Runtime as JsRuntime,
+    TypedArray, Value,
 };
 
 /// Dispatches packaged application requests through `QuickJS`.
@@ -98,15 +99,24 @@ pub(super) fn execute_request(
         install(&ctx, &vfs).map_err(|error| js_error("node fs", error))?;
         let environment = serde_json::to_string(&config.environment)?;
         let descriptor = serde_json::to_string(&request)?;
+        let body = request
+            .body
+            .as_deref()
+            .map(|body| ArrayBuffer::new_copy(ctx.clone(), body))
+            .transpose()
+            .map_err(|error| js_error("request body", error))?;
         let setup = format!(
             "globalThis.__appd_env = {environment}; globalThis.__appd_env.ASSETS = {{ fetch: async () => new Response(null, {{ status: 404 }}) }}; globalThis.__appd_request = {descriptor};"
         );
         ctx.eval::<(), _>(setup)
             .map_err(|error| js_error("setup", error))?;
+        ctx.globals()
+            .set("__appd_body", body)
+            .map_err(|error| js_error("request body", error))?;
 
         let fetch = load_worker(&ctx, worker)?;
         let request: Object = ctx
-            .eval("new Request(__appd_request.url, { method: __appd_request.method, headers: __appd_request.headers, body: __appd_request.body ? new Uint8Array(__appd_request.body) : undefined })")
+            .eval("new Request(__appd_request.url, { method: __appd_request.method, headers: __appd_request.headers, body: __appd_body ? new Uint8Array(__appd_body) : undefined })")
             .map_err(|error| js_error("request", error))?;
         let environment: Object = ctx
             .globals()
@@ -121,7 +131,6 @@ pub(super) fn execute_request(
         let response: Object = response
             .finish()
             .map_err(|error| js_error("response", error))?;
-        drain_wait_until(&ctx, &execution_context)?;
         let web_socket: Option<Object> = response
             .get("webSocket")
             .map_err(|error| js_error("response WebSocket", error))?;
@@ -151,9 +160,7 @@ pub(super) fn execute_request(
             )?;
             return Ok(());
         }
-        response_sender
-            .send(JobResponse::Http(response))
-            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))
+        send_worker_response(&ctx, response, &response_sender, &execution_context)
     })
 }
 
@@ -384,10 +391,21 @@ fn drain_wait_until<'js>(
     Ok(())
 }
 
+struct JsResponse<'js> {
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body: JsResponseBody<'js>,
+}
+
+enum JsResponseBody<'js> {
+    Buffered(Vec<u8>),
+    Stream(Object<'js>),
+}
+
 fn response_from_js<'js>(
     ctx: &rquickjs::Ctx<'js>,
     response: &Object<'js>,
-) -> Result<HttpResponse, Error> {
+) -> Result<JsResponse<'js>, Error> {
     let status: u16 = response
         .get("status")
         .map_err(|error| js_error("response status", error))?;
@@ -411,6 +429,52 @@ fn response_from_js<'js>(
             .map_err(|error| js_error("response header value", error))?;
         headers.insert(name, value);
     }
+    let stream: Value = response
+        .get("__stream")
+        .map_err(|error| js_error("response body", error))?;
+    let body = if stream.is_null() || stream.is_undefined() {
+        JsResponseBody::Buffered(buffered_response_body(ctx, response)?)
+    } else {
+        JsResponseBody::Stream(
+            Object::from_value(stream).map_err(|error| js_error("response stream", error))?,
+        )
+    };
+    Ok(JsResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn buffered_response_body<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    response: &Object<'js>,
+) -> Result<Vec<u8>, Error> {
+    let value: Value = response
+        .get("__body")
+        .map_err(|error| js_error("response body", error))?;
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    if let Ok(body) = TypedArray::<u8>::from_value(value.clone()) {
+        return body
+            .as_bytes()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| Error::Engine("response body was detached".to_owned()));
+    }
+    if let Some(body) = ArrayBuffer::from_value(value) {
+        return body
+            .as_bytes()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| Error::Engine("response body was detached".to_owned()));
+    }
+    read_response_text(ctx, response)
+}
+
+fn read_response_text<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    response: &Object<'js>,
+) -> Result<Vec<u8>, Error> {
     let read_body: Function = ctx
         .eval("response => response.text()")
         .map_err(|error| js_error("response body", error))?;
@@ -420,11 +484,134 @@ fn response_from_js<'js>(
     let body: String = body
         .finish()
         .map_err(|error| js_exception(ctx, "response body", error))?;
-    Ok(HttpResponse {
+    Ok(body.into_bytes())
+}
+
+fn send_worker_response<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    response: JsResponse<'js>,
+    response_sender: &std::sync::mpsc::SyncSender<JobResponse>,
+    execution_context: &Object<'js>,
+) -> Result<(), Error> {
+    let JsResponse {
         status,
         headers,
-        body: body.into_bytes(),
-    })
+        body,
+    } = response;
+    match body {
+        JsResponseBody::Buffered(body) => {
+            drain_wait_until(ctx, execution_context)?;
+            response_sender
+                .send(JobResponse::Http(HttpResponse::buffered(
+                    status, headers, body,
+                )))
+                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))
+        }
+        JsResponseBody::Stream(stream) => {
+            let (sender, cancelled, body) = response_stream();
+            response_sender
+                .send(JobResponse::Http(HttpResponse {
+                    status,
+                    headers,
+                    body,
+                }))
+                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+            pump_response_stream(ctx, stream, &sender, &cancelled);
+            if let Err(error) = drain_wait_until(ctx, execution_context) {
+                eprintln!("Worker waitUntil failed after streaming response: {error}");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn pump_response_stream<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    stream: Object<'js>,
+    sender: &std::sync::mpsc::SyncSender<BodyChunk>,
+    cancelled: &AtomicBool,
+) {
+    let result = pump_response_stream_inner(ctx, stream, sender, cancelled);
+    if let Err(error) = result {
+        let _ = sender.send(Err(error.to_string()));
+    }
+}
+
+fn pump_response_stream_inner<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    stream: Object<'js>,
+    sender: &std::sync::mpsc::SyncSender<BodyChunk>,
+    cancelled: &AtomicBool,
+) -> Result<(), Error> {
+    let get_reader: Function = ctx
+        .eval("stream => stream.getReader()")
+        .map_err(|error| js_error("response stream reader", error))?;
+    let reader: Object = get_reader
+        .call((stream,))
+        .map_err(|error| js_error("response stream reader", error))?;
+    let read: Function = ctx
+        .eval("reader => reader.read()")
+        .map_err(|error| js_error("response stream read", error))?;
+    let cancel: Function = ctx
+        .eval("reader => reader.cancel()")
+        .map_err(|error| js_error("response stream cancel", error))?;
+    let to_bytes: Function = ctx
+        .eval(
+            "value => {\
+                if (typeof value === 'string') return new TextEncoder().encode(value);\
+                if (value instanceof Uint8Array) return value;\
+                if (value instanceof ArrayBuffer) return new Uint8Array(value);\
+                if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);\
+                throw new TypeError('response stream chunks must be byte-oriented');\
+            }",
+        )
+        .map_err(|error| js_error("response stream chunk", error))?;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            cancel_response_stream(ctx, &cancel, &reader);
+            return Ok(());
+        }
+        let pending: Promise = read
+            .call((reader.clone(),))
+            .map_err(|error| js_error("response stream read", error))?;
+        let result: Object = pending
+            .finish()
+            .map_err(|error| js_exception(ctx, "response stream read", error))?;
+        let done: bool = result
+            .get("done")
+            .map_err(|error| js_error("response stream result", error))?;
+        if done {
+            return Ok(());
+        }
+        let value: Value = result
+            .get("value")
+            .map_err(|error| js_error("response stream result", error))?;
+        let chunk: TypedArray<u8> = to_bytes
+            .call((value,))
+            .map_err(|error| js_exception(ctx, "response stream chunk", error))?;
+        let Some(bytes) = chunk.as_bytes() else {
+            return Err(Error::Engine(
+                "response stream chunk was detached".to_owned(),
+            ));
+        };
+        if sender.send(Ok(bytes.to_vec())).is_err() {
+            cancel_response_stream(ctx, &cancel, &reader);
+            return Ok(());
+        }
+    }
+}
+
+fn cancel_response_stream<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    cancel: &Function<'js>,
+    reader: &Object<'js>,
+) {
+    let Ok(pending) = cancel.call::<_, Promise>((reader.clone(),)) else {
+        return;
+    };
+    let _ = pending
+        .finish::<Value>()
+        .map_err(|error| js_exception(ctx, "response stream cancel", error));
 }
 
 pub(super) fn asset_response(
@@ -444,15 +631,15 @@ pub(super) fn asset_response(
     };
     let file = assets.root.join(&relative);
     let body = std::fs::read(file)?;
-    let mut response = HttpResponse {
-        status: 200,
-        headers: BTreeMap::new(),
-        body: if request.method == "HEAD" {
+    let mut response = HttpResponse::buffered(
+        200,
+        BTreeMap::new(),
+        if request.method == "HEAD" {
             Vec::new()
         } else {
             body
         },
-    };
+    );
     response
         .headers
         .insert("content-type".to_owned(), manifest.content_type(&relative));

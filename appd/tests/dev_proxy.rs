@@ -3,6 +3,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -108,6 +109,72 @@ fn does_not_retry_post_after_an_upstream_disconnect() -> TestResult {
 
     host_server.join().map_err(|_| "host server panicked")??;
     assert!(response.starts_with("HTTP/1.1 500"));
+    Ok(())
+}
+
+#[test]
+fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let (release_sender, release_receiver) = mpsc::sync_channel(1);
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut host, _) = listener.accept()?;
+        read_header_block(&mut host)?;
+        host.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\npart\r\n",
+        )?;
+        host.flush()?;
+        release_receiver.recv_timeout(Duration::from_secs(2))?;
+        host.write_all(b"5\r\n two!\r\n0\r\n\r\n")?;
+        Ok(())
+    });
+    let state = temporary.path().join("state");
+
+    let mut http = connect_gateway(&runtime, &state)?;
+    http.write_all(b"GET /stream HTTP/1.1\r\nHost: dev.appd.local\r\n\r\n")?;
+    http.flush()?;
+    let headers = String::from_utf8(read_header_block(&mut http)?)?;
+    assert!(headers.contains("transfer-encoding: chunked\r\n"));
+    assert_eq!(read_chunk(&mut http)?, b"part");
+    release_sender.send(())?;
+    assert_eq!(read_chunk(&mut http)?, b" two!");
+    assert!(read_chunk(&mut http)?.is_empty());
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    Ok(())
+}
+
+#[test]
+fn stops_an_idle_stream_when_the_runtime_stops() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut host, _) = listener.accept()?;
+        read_header_block(&mut host)?;
+        host.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        )?;
+        host.flush()?;
+        host.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let mut byte = [0; 1];
+        match host.read(&mut byte) {
+            Ok(0) => Ok(()),
+            Ok(_) => Err("idle host stream received unexpected data".into()),
+            Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+                Err("idle host stream was not cancelled".into())
+            }
+            Err(error) => Err(error.into()),
+        }
+    });
+    let state = temporary.path().join("state");
+
+    let mut http = connect_gateway(&runtime, &state)?;
+    http.write_all(b"GET /idle HTTP/1.1\r\nHost: dev.appd.local\r\n\r\n")?;
+    http.flush()?;
+    let headers = String::from_utf8(read_header_block(&mut http)?)?;
+    assert!(headers.contains("transfer-encoding: chunked\r\n"));
+    drop(http);
+    drop(runtime);
+
+    host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
 }
 
@@ -285,6 +352,30 @@ fn read_http_response(stream: &mut SslStream<TcpStream>) -> TestResult<String> {
     let mut body = vec![0; length];
     stream.read_exact(&mut body)?;
     Ok(format!("{text}{}", String::from_utf8(body)?))
+}
+
+fn read_chunk(stream: &mut impl Read) -> TestResult<Vec<u8>> {
+    let line = String::from_utf8(read_line(stream)?)?;
+    let size = usize::from_str_radix(line.trim(), 16)?;
+    let mut body = vec![0; size];
+    stream.read_exact(&mut body)?;
+    let mut terminator = [0; 2];
+    stream.read_exact(&mut terminator)?;
+    assert_eq!(terminator, *b"\r\n");
+    Ok(body)
+}
+
+fn read_line(stream: &mut impl Read) -> TestResult<Vec<u8>> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0; 1];
+        stream.read_exact(&mut byte)?;
+        line.push(byte[0]);
+        if line.ends_with(b"\r\n") {
+            line.truncate(line.len() - 2);
+            return Ok(line);
+        }
+    }
 }
 
 fn read_header_block(stream: &mut impl Read) -> TestResult<Vec<u8>> {

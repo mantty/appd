@@ -10,7 +10,7 @@ use crate::gateway::{
     wait_for_gateway,
 };
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{HttpRequest, HttpResponse, queue_websocket_message};
+use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -69,6 +69,44 @@ export default {
 };
 "#;
 
+const STREAM_WORKER: &[u8] = br#"
+globalThis.Request = class Request {
+  constructor(url, init = {}) {
+    this.url = url;
+    this.method = init.method ?? "GET";
+    this.headers = init.headers ?? {};
+    this.body = init.body;
+  }
+};
+globalThis.Response = class Response {
+  constructor(body = null, init = {}) {
+    this.status = init.status ?? 200;
+    this.headers = new Map([["content-type", "application/octet-stream"]]);
+    this.__stream = body;
+  }
+};
+const stream = {
+  getReader() {
+    const values = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
+    return {
+      read() {
+        const value = values.shift();
+        return Promise.resolve(value ? { done: false, value } : { done: true, value: undefined });
+      },
+      cancel() { return Promise.resolve(); },
+    };
+  },
+};
+export default {
+  fetch: async request => {
+    if (!(request.body instanceof Uint8Array) || request.body[0] !== 9 || request.body[2] !== 7) {
+      throw new Error("request body was not transferred as bytes");
+    }
+    return new Response(stream);
+  },
+};
+"#;
+
 #[test]
 fn uses_the_resolved_asset_for_content_type() {
     let manifest = AssetManifest {
@@ -115,7 +153,7 @@ fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::
         response.headers.get("content-type").map(String::as_str),
         Some("text/html")
     );
-    assert_eq!(response.body, b"about");
+    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"about"));
     Ok(())
 }
 
@@ -185,6 +223,49 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         reason: String::new(),
     })?;
     thread.join().map_err(|_| "WebSocket worker panicked")??;
+    Ok(())
+}
+
+#[test]
+fn streams_worker_response_chunks_without_buffering_the_body()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let bundle = crate::compile_worker(STREAM_WORKER)?;
+    let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
+    let config = websocket_config(directory.path());
+    let mut request = websocket_request();
+    request.body = Some(vec![9, 8, 7]);
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let accepting = Arc::new(AtomicBool::new(true));
+    let thread = std::thread::spawn(move || {
+        let lifecycle = Lifecycle::new();
+        let Some(execution) = lifecycle.enter(&accepting) else {
+            return Err(Error::Startup("execution was not admitted".to_owned()));
+        };
+        execute_request(
+            &worker_bundle,
+            &config,
+            Job {
+                request,
+                response: response_sender,
+                websocket: None,
+            },
+            &execution,
+            &accepting,
+        )
+    });
+
+    let response = response_receiver.recv_timeout(Duration::from_secs(1))?;
+    let JobResponse::Http(response) = response else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    let HttpBody::Stream(body) = response.body else {
+        return Err("Worker response was not streamed".into());
+    };
+    assert_eq!(body.recv()?.map_err(io::Error::other)?, vec![1, 2]);
+    assert_eq!(body.recv()?.map_err(io::Error::other)?, vec![3, 4]);
+    assert!(body.recv().is_err());
+    thread.join().map_err(|_| "stream worker panicked")??;
     Ok(())
 }
 

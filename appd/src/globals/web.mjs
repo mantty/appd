@@ -1,6 +1,6 @@
 import { Blob, Headers, Request, Response } from "../network/fetch.mjs";
 import { URL, URLSearchParams } from "../network/url.mjs";
-import { ReadableStream } from "../streams/web.mjs";
+import { ReadableStream, TransformStream, WritableStream } from "../streams/web.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 
 export class DOMException extends Error {
@@ -39,7 +39,7 @@ class PluralRules {
 const intl = { DateTimeFormat, NumberFormat, PluralRules, getCanonicalLocales: (locales) => Array.isArray(locales) ? locales : [locales] };
 
 export function installWebGlobals() {
-  const globals = { TextEncoder, TextDecoder, Headers, URL, URLSearchParams, Request, Response, ReadableStream, Blob, DOMException };
+  const globals = { TextEncoder, TextDecoder, Headers, URL, URLSearchParams, Request, Response, ReadableStream, WritableStream, TransformStream, Blob, DOMException };
   for (const [name, value] of Object.entries(globals)) globalThis[name] = value;
   globalThis.Intl ??= intl;
   if (!Date.prototype.toLocaleString) Date.prototype.toLocaleString = function toLocaleString(locales, options) { return new DateTimeFormat(locales, options).format(this); };

@@ -26,6 +26,37 @@ test("web shims preserve the Worker request and response shapes", async () => {
   assert.equal(new URL("/next", request.url).href, "https://example.test/next");
 });
 
+test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
+  const { ReadableStream, TransformStream } = await import("../../src/streams/web.mjs");
+  let next = 0;
+  const source = new ReadableStream({
+    pull(controller) {
+      next += 1;
+      if (next === 3) controller.close();
+      else controller.enqueue(new Uint8Array([next]));
+    },
+  });
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(new Uint8Array([chunk[0] + 10]));
+    },
+  });
+  const received = [];
+  const writable = {
+    getWriter() {
+      return {
+        write(value) { received.push(value[0]); },
+        close() {},
+        abort() {},
+        releaseLock() {},
+      };
+    },
+  };
+  await source.pipeTo(transform.writable);
+  await transform.readable.pipeTo(writable);
+  assert.deepEqual(received, [11, 12]);
+});
+
 test("Workers builtin registration preserves the Worker environment", async () => {
   globalThis.__appd_env = { FLAG: "enabled" };
   const workers = await import("../../src/builtins/cloudflare-workers.mjs?registry");

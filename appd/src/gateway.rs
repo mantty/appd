@@ -63,7 +63,7 @@ pub(super) struct Shared {
     pub(super) port: AtomicU16,
     pub(super) accepting: Arc<AtomicBool>,
     pub(super) lifecycle: Arc<Lifecycle>,
-    pub(super) connections: Mutex<Vec<Arc<TcpStream>>>,
+    pub(super) connections: Mutex<Vec<Arc<Connection>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -384,9 +384,14 @@ pub(super) fn bind_replacement_listener(port: u16) -> io::Result<(TcpListener, u
     Ok((replacement, replacement_port))
 }
 
+pub(super) struct Connection {
+    stream: TcpStream,
+    cancelled: AtomicBool,
+}
+
 struct ConnectionGuard {
     shared: Arc<Shared>,
-    connection: Arc<TcpStream>,
+    connection: Arc<Connection>,
 }
 
 impl Drop for ConnectionGuard {
@@ -396,7 +401,7 @@ impl Drop for ConnectionGuard {
     }
 }
 
-pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<TcpStream>>> {
+pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<Connection>>> {
     match shared.connections.lock() {
         Ok(connections) => connections,
         Err(poisoned) => poisoned.into_inner(),
@@ -405,7 +410,8 @@ pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<TcpStr
 
 pub(super) fn close_connections(shared: &Shared) {
     for connection in lock_connections(shared).iter() {
-        let _ = connection.shutdown(Shutdown::Both);
+        connection.cancelled.store(true, Ordering::Release);
+        let _ = connection.stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -464,11 +470,14 @@ fn reap_finished_connections(connections: &mut Vec<JoinHandle<()>>) {
 }
 
 pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> Result<(), Error> {
-    let connection = Arc::new(stream.try_clone()?);
+    let connection = Arc::new(Connection {
+        stream: stream.try_clone()?,
+        cancelled: AtomicBool::new(false),
+    });
     lock_connections(shared).push(Arc::clone(&connection));
     let _guard = ConnectionGuard {
         shared: Arc::clone(shared),
-        connection,
+        connection: Arc::clone(&connection),
     };
     if !shared.accepting.load(Ordering::Acquire) {
         return Ok(());
@@ -492,28 +501,16 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
         write_response(
             &mut tls,
             HttpResponse::text(403, "Client certificate required"),
+            "GET",
+            &connection.cancelled,
         )?;
         return Ok(());
     }
     let request = read_request(&mut tls, &shared.config.host)?;
+    let method = request.method.clone();
     let websocket = is_websocket(&request);
     let websocket_key = request.headers.get("sec-websocket-key").cloned();
-    let (websocket_job, websocket_bridge) = if websocket {
-        let (incoming_sender, incoming_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
-        let (outgoing_sender, outgoing_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
-        (
-            Some(WebSocketJob {
-                incoming: incoming_receiver,
-                outgoing: outgoing_sender,
-            }),
-            Some(WebSocketBridge {
-                incoming: incoming_sender,
-                outgoing: outgoing_receiver,
-            }),
-        )
-    } else {
-        (None, None)
-    };
+    let (websocket_job, websocket_bridge) = websocket_channels(websocket);
     let (response, result) = mpsc::sync_channel(1);
     let job = Job {
         request,
@@ -537,8 +534,28 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
                 .as_ref()
                 .ok_or_else(|| Error::Startup("WebSocket bridge was not created".to_owned()))?,
         ),
-        JobResponse::Http(response) => write_response(&mut tls, response),
+        JobResponse::Http(response) => {
+            write_response(&mut tls, response, &method, &connection.cancelled)
+        }
     }
+}
+
+fn websocket_channels(enabled: bool) -> (Option<WebSocketJob>, Option<WebSocketBridge>) {
+    if !enabled {
+        return (None, None);
+    }
+    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
+    let (outgoing_sender, outgoing_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
+    (
+        Some(WebSocketJob {
+            incoming: incoming_receiver,
+            outgoing: outgoing_sender,
+        }),
+        Some(WebSocketBridge {
+            incoming: incoming_sender,
+            outgoing: outgoing_receiver,
+        }),
+    )
 }
 
 fn execute_job(shared: &Shared, job: Job) {
