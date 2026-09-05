@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! Maintainer-only appd build tasks.
+//! Maintainer-only tokamak build tasks.
 
 mod builder;
 mod layout;
@@ -10,11 +10,11 @@ mod support;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use appd_cli::Target;
 use clap::{Parser, Subcommand};
+use tokamak_cli::Target;
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "appd maintainer tasks")]
+#[command(name = "xtask", about = "tokamak maintainer tasks")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Build a target pack from the current appd workspace.
+    /// Build a target pack from the current tokamak workspace.
     TargetPack {
         /// Runtime target to build.
         #[arg(long)]

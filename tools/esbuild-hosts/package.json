@@ -1,5 +1,5 @@
 {
-  "name": "appd-esbuild-hosts",
+  "name": "tokamak-esbuild-hosts",
   "private": true,
   "packageManager": "pnpm@9.9.0",
   "devDependencies": {

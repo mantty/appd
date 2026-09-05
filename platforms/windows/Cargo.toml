@@ -6,12 +6,12 @@ rust-version.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "appd-shell-windows"
+name = "tokamak-shell-windows"
 path = "source/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
-appd = { path = "../../appd", features = ["native"] }
+tokamak = { path = "../../tokamak", features = ["native"] }
 base64.workspace = true
 openssl.workspace = true
 serde.workspace = true

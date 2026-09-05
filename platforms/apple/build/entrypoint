@@ -29,8 +29,8 @@ if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" 
   exit 1
 fi
 output_parent=$(dirname "$output")
-module_cache=$output_parent/.appd/module-cache
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/appd-apple.XXXXXX")
+module_cache=$output_parent/.tokamak/module-cache
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-apple.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 
 case "$target" in
@@ -85,12 +85,12 @@ done
 
 has_shell=false
 for source in "${swift_sources[@]}"; do
-  if [[ $(basename "$source") == AppdShell.swift ]]; then
+  if [[ $(basename "$source") == TokamakShell.swift ]]; then
     has_shell=true
   fi
 done
 if [[ "$has_shell" != true ]]; then
-  echo "Apple native shell source is missing: $native_shell/AppdShell.swift" >&2
+  echo "Apple native shell source is missing: $native_shell/TokamakShell.swift" >&2
   exit 1
 fi
 
@@ -108,10 +108,10 @@ for plugin in "$input/plugins"/*; do
   done
 done
 
-registry=$temporary/AppdPluginRegistry.swift
+registry=$temporary/TokamakPluginRegistry.swift
 {
   printf '%s\n\n' 'import Foundation'
-  printf '%s\n' 'func appdPlugins() -> [any AppdPlugin] {'
+  printf '%s\n' 'func tokamakPlugins() -> [any TokamakPlugin] {'
   printf '%s\n' '  ['
   for plugin in "$input/plugins"/*; do
     [[ -d "$plugin" ]] || continue
@@ -130,7 +130,7 @@ swift_args=(
   -whole-module-optimization
   -module-cache-path "$module_cache"
   -F "$framework_root"
-  -framework AppdRuntime
+  -framework TokamakRuntime
   -framework CoreFoundation
   -lc++
   -lresolv
@@ -179,10 +179,10 @@ write_plist() {
     printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
     printf '%s\n' '  <key>CFBundleVersion</key><string>1</string>'
     printf '%s\n' '  <key>CFBundleShortVersionString</key><string>1.0</string>'
-    printf '  <key>AppdHost</key><string>%s</string>\n' "$(xml_escape "$host")"
+    printf '  <key>TokamakHost</key><string>%s</string>\n' "$(xml_escape "$host")"
     if [[ -n "$dev_endpoint" ]]; then
-      printf '  <key>AppdDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"
-      printf '  <key>AppdDevSessionToken</key><string>%s</string>\n' "$(xml_escape "$dev_session_token")"
+      printf '  <key>TokamakDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"
+      printf '  <key>TokamakDevSessionToken</key><string>%s</string>\n' "$(xml_escape "$dev_session_token")"
     fi
     write_plugin_plist
     if [[ "$platform" == macos ]]; then
@@ -214,8 +214,8 @@ write_plist
 
 sign_bundle() {
   if [[ "$platform" == ios ]]; then
-    identity=${APPD_IOS_SIGNING_IDENTITY-}
-    profile=${APPD_IOS_PROVISIONING_PROFILE-}
+    identity=${TOKAMAK_IOS_SIGNING_IDENTITY-}
+    profile=${TOKAMAK_IOS_PROVISIONING_PROFILE-}
     if [[ -n "$identity" && -n "$profile" ]]; then
       cp "$profile" "$bundle/embedded.mobileprovision"
       decoded=$temporary/profile.plist
@@ -229,7 +229,7 @@ sign_bundle() {
     elif [[ -z "$identity" && -z "$profile" ]]; then
       codesign --force --timestamp=none --sign - "$bundle"
     else
-      echo "physical iOS signing requires APPD_IOS_SIGNING_IDENTITY and APPD_IOS_PROVISIONING_PROFILE" >&2
+      echo "physical iOS signing requires TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE" >&2
       exit 1
     fi
   else

@@ -6,8 +6,8 @@ import { geolocation } from "../src/index.js";
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
 afterEach(() => {
-  Reflect.deleteProperty(globalThis, "__appdNative");
-  Reflect.deleteProperty(globalThis, "__appdReceive");
+  Reflect.deleteProperty(globalThis, "__tokamakNative");
+  Reflect.deleteProperty(globalThis, "__tokamakReceive");
   if (originalNavigator) {
     Object.defineProperty(globalThis, "navigator", originalNavigator);
   } else {
@@ -104,7 +104,7 @@ void test("forwards browser watch failures", () => {
 
 void test("uses the native bridge and cancels watched updates", () => {
   const sent: Record<string, unknown>[] = [];
-  globalThis.__appdNative = {
+  globalThis.__tokamakNative = {
     onmessage: null,
     postMessage(message) {
       sent.push(JSON.parse(message) as Record<string, unknown>);
@@ -118,7 +118,7 @@ void test("uses the native bridge and cancels watched updates", () => {
   );
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session,
     id,
     value: nativePosition(52, 0.2),
@@ -132,7 +132,7 @@ void test("uses the native bridge and cancels watched updates", () => {
 
 void test("ignores native responses from an earlier page session", async () => {
   const sent: Record<string, unknown>[] = [];
-  globalThis.__appdNative = {
+  globalThis.__tokamakNative = {
     onmessage: null,
     postMessage(message) {
       sent.push(JSON.parse(message) as Record<string, unknown>);
@@ -142,13 +142,13 @@ void test("ignores native responses from an earlier page session", async () => {
   const position = geolocation.getCurrentPosition();
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session: "earlier-page",
     id,
     value: nativePosition(1, 2),
     done: true,
   });
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session,
     id,
     value: nativePosition(52, 0.2),
@@ -160,7 +160,7 @@ void test("ignores native responses from an earlier page session", async () => {
 
 void test("preserves native DOM exception errors", async () => {
   const sent: Record<string, unknown>[] = [];
-  globalThis.__appdNative = {
+  globalThis.__tokamakNative = {
     onmessage: null,
     postMessage(message) {
       sent.push(JSON.parse(message) as Record<string, unknown>);
@@ -170,7 +170,7 @@ void test("preserves native DOM exception errors", async () => {
   const position = geolocation.getCurrentPosition();
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session,
     id,
     error: {
@@ -191,7 +191,7 @@ void test("preserves native DOM exception errors", async () => {
 
 void test("keeps a native watch active after an error", () => {
   const sent: Record<string, unknown>[] = [];
-  globalThis.__appdNative = {
+  globalThis.__tokamakNative = {
     onmessage: null,
     postMessage(message) {
       sent.push(JSON.parse(message) as Record<string, unknown>);
@@ -206,13 +206,13 @@ void test("keeps a native watch active after an error", () => {
   );
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session,
     id,
     error: { name: "NotReadableError", message: "Location is unavailable" },
     done: false,
   });
-  globalThis.__appdReceive?.({
+  globalThis.__tokamakReceive?.({
     session,
     id,
     value: nativePosition(52, 0.2),

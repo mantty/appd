@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: appd-checks-${{ github.ref }}
+  group: tokamak-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -81,15 +81,15 @@ jobs:
       - name: Lint Rust
         run: |
           cargo clippy --workspace --exclude windows-shell --all-targets -- -D warnings
-          cargo clippy -p appd --all-targets --features test-stubs -- -D warnings
-          cargo clippy -p appd --lib --target aarch64-linux-android --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --all-targets --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-linux-android --features test-stubs -- -D warnings
 
       - name: Test Rust
         run: |
-          cargo test -p appd --features native
-          cargo test --workspace --exclude appd-cli --exclude windows-shell
-          cargo test -p appd-cli --lib --bin appd --test cli --test target_pack
-          cargo test -p appd-cli --test build requires_a_target_pack_for_app_builds
+          cargo test -p tokamak --features native
+          cargo test --workspace --exclude tokamak-cli --exclude windows-shell
+          cargo test -p tokamak-cli --lib --bin tok --test cli --test target_pack
+          cargo test -p tokamak-cli --test build requires_a_target_pack_for_app_builds
 
   apple:
     name: Test Apple
@@ -121,15 +121,15 @@ jobs:
 
       - name: Lint Apple Rust
         run: |
-          cargo clippy -p appd-cli --all-targets -- -D warnings
-          cargo clippy -p appd --lib --target aarch64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p appd --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
-          cargo clippy -p appd --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p appd --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
+          cargo clippy -p tokamak-cli --all-targets -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
 
       - name: Test Apple builds
         run: >-
-          cargo test -p appd-cli --test build --
+          cargo test -p tokamak-cli --test build --
           --skip builds_windows_app_with_its_runtime_files
           --skip requires_a_target_pack_for_app_builds
 
@@ -163,14 +163,14 @@ jobs:
 
       - name: Lint Windows Rust
         run: |
-          cargo clippy -p appd-cli --all-targets -- -D warnings
+          cargo clippy -p tokamak-cli --all-targets -- -D warnings
           cargo clippy -p windows-shell --all-targets -- -D warnings
 
       - name: Test Windows Rust
         run: |
           cargo test -p windows-shell
-          cargo test -p appd-cli --bin appd selects_platform_package_manager_commands
-          cargo test -p appd-cli --test build builds_windows_app_with_its_runtime_files
+          cargo test -p tokamak-cli --bin tok selects_platform_package_manager_commands
+          cargo test -p tokamak-cli --test build builds_windows_app_with_its_runtime_files
 
   validate:
     name: Validate

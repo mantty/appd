@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@appd/plugin";
+import { FrontendPlugin } from "@tokamak/plugin";
 import * as web from "../web/index.js";
 
 export interface Coordinates {

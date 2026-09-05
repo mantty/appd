@@ -20,11 +20,11 @@ fn show_startup_error(error: &anyhow::Error) {
 
     let message = HSTRING::from(format!("The app could not start.\n\n{error:#}"));
     unsafe {
-        MessageBoxW(None, &message, w!("appd"), MB_OK | MB_ICONERROR);
+        MessageBoxW(None, &message, w!("tokamak"), MB_OK | MB_ICONERROR);
     }
 }
 
 #[cfg(not(windows))]
 fn main() {
-    panic!("appd-shell-windows must be built on Windows");
+    panic!("tokamak-shell-windows must be built on Windows");
 }

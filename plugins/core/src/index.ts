@@ -31,8 +31,8 @@ interface PendingSubscription {
 type Pending = PendingCall | PendingSubscription;
 
 declare global {
-  var __appdNative: NativeTransport | undefined;
-  var __appdReceive: ((response: NativeResponse) => void) | undefined;
+  var __tokamakNative: NativeTransport | undefined;
+  var __tokamakReceive: ((response: NativeResponse) => void) | undefined;
 }
 
 let nextRequestId = 1;
@@ -108,14 +108,14 @@ export abstract class FrontendPlugin {
 }
 
 function nativeTransport(): NativeTransport | undefined {
-  const transport = globalThis.__appdNative;
+  const transport = globalThis.__tokamakNative;
   if (!transport || typeof transport.postMessage !== "function") return undefined;
   if (connected !== transport) {
     connected = transport;
     transport.onmessage = ({ data }) => {
       receive(JSON.parse(data) as NativeResponse);
     };
-    globalThis.__appdReceive = receive;
+    globalThis.__tokamakReceive = receive;
     transport.postMessage(JSON.stringify({ type: "reset", session }));
   }
   return transport;

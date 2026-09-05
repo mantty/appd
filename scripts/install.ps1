@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repository = "mantty/appd"
+$repository = "mantty/tokamak"
 $api = "https://api.github.com/repos/$repository"
 $targets = @(
   "android-arm64",
@@ -16,7 +16,7 @@ $targets = @(
 )
 
 if ($env:OS -ne "Windows_NT" -or -not [Environment]::Is64BitOperatingSystem) {
-  throw "appd requires 64-bit Windows"
+  throw "tokamak requires 64-bit Windows"
 }
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
   throw "InstallRoot must not be empty"
@@ -32,7 +32,7 @@ $apiHeaders = @{
 
 $releases = @(Invoke-RestMethod -Uri "$api/releases?per_page=1" -Headers $apiHeaders)
 if ($releases.Count -eq 0) {
-  throw "no appd release was found"
+  throw "no tokamak release was found"
 }
 $tag = $releases[0].tag_name
 if ($tag -notmatch "^[A-Za-z0-9._-]+$") {
@@ -40,7 +40,7 @@ if ($tag -notmatch "^[A-Za-z0-9._-]+$") {
 }
 
 $releaseUrl = "https://github.com/$repository/releases/download/$tag"
-$temporary = Join-Path ([System.IO.Path]::GetTempPath()) "appd-install-$([guid]::NewGuid())"
+$temporary = Join-Path ([System.IO.Path]::GetTempPath()) "tokamak-install-$([guid]::NewGuid())"
 $stagedCli = $null
 $stagedTargetPacks = $null
 
@@ -49,21 +49,21 @@ try {
   $targetPacks = Join-Path $temporary "target-packs"
   New-Item -ItemType Directory -Force -Path $cliDirectory, $targetPacks | Out-Null
 
-  Write-Output "Downloading appd $tag for windows-x64..."
-  $cliArchive = Join-Path $temporary "appd-cli-windows-x64.zip"
-  Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/appd-cli-windows-x64.zip" -OutFile $cliArchive
+  Write-Output "Downloading tokamak $tag for windows-x64..."
+  $cliArchive = Join-Path $temporary "tokamak-cli-windows-x64.zip"
+  Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/tokamak-cli-windows-x64.zip" -OutFile $cliArchive
   Expand-Archive -LiteralPath $cliArchive -DestinationPath $cliDirectory
-  $cli = Join-Path $cliDirectory "appd.exe"
+  $cli = Join-Path $cliDirectory "tok.exe"
   if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
-    throw "CLI archive does not contain appd.exe"
+    throw "CLI archive does not contain tok.exe"
   }
 
   foreach ($target in $targets) {
     Write-Output "Downloading target pack $target..."
-    $archive = Join-Path $temporary "appd-target-pack-$target.tar.gz"
+    $archive = Join-Path $temporary "tokamak-target-pack-$target.tar.gz"
     $destination = Join-Path $targetPacks $target
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/appd-target-pack-$target.tar.gz" -OutFile $archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/tokamak-target-pack-$target.tar.gz" -OutFile $archive
     & tar -xzf $archive -C $destination
     if ($LASTEXITCODE -ne 0) {
       throw "failed to extract $target"
@@ -75,29 +75,29 @@ try {
 
   $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
   $binDirectory = Join-Path $InstallRoot "bin"
-  $shareDirectory = Join-Path $InstallRoot "share/appd"
+  $shareDirectory = Join-Path $InstallRoot "share/tokamak"
   $targetPackDirectory = Join-Path $shareDirectory "target-packs"
   New-Item -ItemType Directory -Force -Path $binDirectory, $shareDirectory | Out-Null
 
-  $stagedCli = Join-Path $binDirectory ".appd-install-$PID.exe"
+  $stagedCli = Join-Path $binDirectory ".tokamak-install-$PID.exe"
   $stagedTargetPacks = Join-Path $shareDirectory ".target-packs-install-$PID"
   Copy-Item -LiteralPath $cli -Destination $stagedCli
   Copy-Item -LiteralPath $targetPacks -Destination $stagedTargetPacks -Recurse
   Remove-Item -LiteralPath $targetPackDirectory -Recurse -Force -ErrorAction SilentlyContinue
   Move-Item -LiteralPath $stagedTargetPacks -Destination $targetPackDirectory
   $stagedTargetPacks = $null
-  $installedCli = Join-Path $binDirectory "appd.exe"
+  $installedCli = Join-Path $binDirectory "tok.exe"
   Remove-Item -LiteralPath $installedCli -Force -ErrorAction SilentlyContinue
   Move-Item -LiteralPath $stagedCli -Destination $installedCli
   $stagedCli = $null
 
   Write-Output ""
-  Write-Output "Installed appd $tag in $binDirectory"
+  Write-Output "Installed tokamak $tag in $binDirectory"
   Write-Output "Installed target packs in $targetPackDirectory"
   if (@($env:Path -split [System.IO.Path]::PathSeparator) -notcontains $binDirectory) {
     Write-Output "Add $binDirectory to PATH, then open a new terminal."
   }
-  Write-Output "Run appd targets to verify the installation."
+  Write-Output "Run tok targets to verify the installation."
 } finally {
   Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
   if ($stagedCli) {

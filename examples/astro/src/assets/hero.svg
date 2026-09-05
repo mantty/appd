@@ -12,7 +12,7 @@
   <rect width="800" height="400" fill="url(#bg)"/>
   <circle cx="650" cy="120" r="80" fill="url(#accent)" opacity="0.15"/>
   <circle cx="150" cy="300" r="120" fill="url(#accent)" opacity="0.1"/>
-  <text x="400" y="180" text-anchor="middle" font-family="system-ui, sans-serif" font-size="48" font-weight="700" fill="#e0e7ff">appd</text>
+  <text x="400" y="180" text-anchor="middle" font-family="system-ui, sans-serif" font-size="48" font-weight="700" fill="#e0e7ff">tokamak</text>
   <text x="400" y="230" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" fill="#a5b4fc">Web apps, native everywhere</text>
   <rect x="200" y="280" width="400" height="2" rx="1" fill="url(#accent)" opacity="0.3"/>
 </svg>
