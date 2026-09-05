@@ -34,9 +34,7 @@ tokamak doesn't add any external dependencies, but you will need the toolchain f
 
 ## Build an application
 
-tokamak's aim is to take any Cloudflare worker hosted site and turn it into an app.
-
-We do not (currently) support all Cloudflare bindings to additional services they offer, but by and large a basic website written for Cloudflare workers is all you need to build an app.
+We do not (currently) support all Cloudflare bindings to additional services they offer, but by and large a basic fullstack web-app written for Cloudflare workers is all you need to build a native app.
 
 Your project must have a `package.json` build script and a Wrangler config with
 at least `name` and `main`. tokamak runs the build with pnpm, Yarn, or npm based on
@@ -57,10 +55,10 @@ Multiple platforms can be comma-separated, for example `macos,android`.
 
 ## Development
 
-tokamak supports dev mode with HMR via wrangler, proxying to a device for native capabilities.
+tokamak supports dev mode with HMR via wrangler and vite, proxying to a device for native capabilities.
 Dev mode is significantly less performant than a real build, but provides an excellent local dev loop.
 
-List available local devices, simulators, and emulators:
+To list available local devices, simulators, and emulators for dev mode:
 
 ```sh
 tok devices
@@ -72,8 +70,7 @@ Pass a device selector and the framework's development command to `tok dev`:
 tok dev macos --project ./my-app -- pnpm dev
 ```
 
-By default tokamak expects your server to available on `http://localhost:5173` (vite's default port). Use `--server` when the
-framework uses another port.
+By default tokamak expects your server to available on `http://localhost:5173` (vite's default port). Use `--server` when the framework uses another port.
 
 ## Example
 
