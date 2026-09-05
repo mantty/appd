@@ -31,7 +31,7 @@ importers:
 
   geolocation:
     dependencies:
-      '@appd/plugin':
+      '@tokamak/plugin':
         specifier: workspace:*
         version: link:../core
 

@@ -1,4 +1,4 @@
-# appd development mode
+# tokamak development mode
 
 Status: active. The core development loop is implemented; this document is a
 delta plan and intentionally records only the work that remains.
@@ -11,7 +11,7 @@ Cloudflare-compatible runtime:
 
 ```text
 host Worker binding/service
-    -> host-side appd bridge
+    -> host-side tokamak bridge
     -> development relay
     -> device runtime
     -> native plugin implementation
@@ -51,10 +51,10 @@ Add recovery that:
   processes or silently selecting another target.
 
 Physical iOS signing uses the same split as Xcode: an exact valid profile is
-selected when one is already installed, and otherwise `appd dev` asks
+selected when one is already installed, and otherwise `tok dev` asks
 `xcodebuild` to update or register the profile automatically for the selected
-bundle ID and device. Set `APPD_IOS_SIGNING_IDENTITY` together with
-`APPD_IOS_PROVISIONING_PROFILE` when an explicit signing choice is required.
+bundle ID and device. Set `TOKAMAK_IOS_SIGNING_IDENTITY` together with
+`TOKAMAK_IOS_PROVISIONING_PROFILE` when an explicit signing choice is required.
 
 ## 3. Rebuild for native-input changes
 
@@ -62,7 +62,7 @@ The initial development build, installation, and launch are implemented. The
 remaining lifecycle work is to watch native shell and native-plugin inputs
 while the framework process continues running.
 
-When such an input changes, appd should rebuild the same target pack,
+When such an input changes, tokamak should rebuild the same target pack,
 reinstall/relaunch the selected target, and preserve the existing framework
 server, relay, and target selection. JavaScript, styles, public assets, and
 supported Worker edits must continue using the framework's HMR/reload path
@@ -86,8 +86,8 @@ remaining work above:
 - backend native plugin calls once the bridge is available; and
 - native-input rebuild/reinstall without restarting the framework process.
 
-The tests must continue to assert the important split: appd dev uses the
-framework's host Cloudflare runtime and normal HMR machinery, while `appd build`
+The tests must continue to assert the important split: tok dev uses the
+framework's host Cloudflare runtime and normal HMR machinery, while `tok build`
 and packaged-runtime tests exercise the packaged QuickJS runtime.
 
 ## References

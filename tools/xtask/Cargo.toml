@@ -7,8 +7,8 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-appd = { path = "../../appd" }
-appd-cli = { path = "../../appd-cli" }
+tokamak = { path = "../../tokamak" }
+tokamak-cli = { path = "../../tokamak-cli" }
 clap.workspace = true
 walkdir.workspace = true
 

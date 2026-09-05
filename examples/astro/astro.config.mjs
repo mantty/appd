@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   output: "server",
   adapter: cloudflare(),
-  // Set the dev server port to the default expected by appd.
+  // Set the dev server port to the default expected by tokamak.
   server: {
     port: 5173,
     strictPort: true,

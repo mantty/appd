@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use appd::write_worker_compatibility_sources;
-use appd_cli::{
+use tokamak::write_worker_compatibility_sources;
+use tokamak_cli::{
     Artifact, ESBUILD_DIRECTORY, RUNTIME_DIRECTORY, RUNTIME_JAVASCRIPT_DIRECTORY, Target,
     TargetPackManifest, write_manifest,
 };
@@ -18,7 +18,7 @@ const ESBUILD_LICENSE: &str = include_str!("esbuild-license.txt");
 
 pub(crate) fn build_source_target_pack(target: Target) -> Result<PathBuf> {
     let workspace = WorkspaceLayout::from_source()
-        .context("source workspace is unavailable; run this command from an appd checkout")?;
+        .context("source workspace is unavailable; run this command from a tokamak checkout")?;
     build_source_target_pack_at(&workspace, target)
 }
 
@@ -37,7 +37,7 @@ fn build_source_target_pack_at(workspace: &WorkspaceLayout, target: Target) -> R
     validate_artifacts(&pack_dir, &artifacts)?;
 
     let manifest = TargetPackManifest {
-        appd_version: env!("CARGO_PKG_VERSION").to_owned(),
+        tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
         artifacts,
         required_tools: target
@@ -95,7 +95,7 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
     reset_dir(&runtime)?;
     fs::create_dir_all(pack_root.join(ESBUILD_DIRECTORY).join("bin"))?;
     fs::write(
-        pack_root.join(appd_cli::ESBUILD_EXECUTABLE),
+        pack_root.join(tokamak_cli::ESBUILD_EXECUTABLE),
         ESBUILD_LAUNCHER,
     )?;
     fs::write(
@@ -142,7 +142,7 @@ mod tests {
     use std::process::Command;
 
     use super::{deploy_runtime, validate_artifacts};
-    use appd_cli::{Artifact, ArtifactKind, ESBUILD_EXECUTABLE};
+    use tokamak_cli::{Artifact, ArtifactKind, ESBUILD_EXECUTABLE};
 
     use crate::layout::WorkspaceLayout;
 

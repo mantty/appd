@@ -1,9 +1,9 @@
-# @appd/geolocation
+# @tokamak/geolocation
 
-Geolocation for appd applications and the web.
+Geolocation for tokamak applications and the web.
 
 ```ts
-import { geolocation } from "@appd/geolocation";
+import { geolocation } from "@tokamak/geolocation";
 
 const position = await geolocation.getCurrentPosition();
 
@@ -13,7 +13,7 @@ const stop = geolocation.watchPosition(
 );
 ```
 
-The web implementation uses `navigator.geolocation`. Native appd builds use
+The web implementation uses `navigator.geolocation`. Native tokamak builds use
 Core Location on Apple platforms, `LocationManager` on Android, and WebView2's
 geolocation implementation on Windows. Calling the API on a platform without
 geolocation support throws `NotSupportedError`.

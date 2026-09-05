@@ -9,7 +9,7 @@ Simulator process.
 
 | Process | Footprint |
 |---|---:|
-| appd host, including Bare | 57.4 MB |
+| tokamak host, including Bare | 57.4 MB |
 | WebContent | 31.4 MB |
 | Graphics and Media | 18.8 MB |
 | Networking | 8.3 MB |
@@ -29,7 +29,7 @@ allocator and 11.5 MB in the standard small-object allocator.
 The same process had four idle libuv worker threads and loaded a 1.3 MB worker
 bundle.
 
-appd currently initializes Bare with zeroed worklet options. BareKit exposes
+tokamak currently initializes Bare with zeroed worklet options. BareKit exposes
 an `optimize_for_memory` mode which reduces the libuv thread pool from four
 threads to one. The pinned JavaScriptCore adapter does not apply the engine
 part of that setting, so enabling it alone would only produce a modest macOS
@@ -37,13 +37,13 @@ improvement. Bare's per-worklet `memory_limit` is also ignored by that adapter.
 
 The profile does not yet establish:
 
-- whether one libuv worker is sufficient for appd workloads;
+- whether one libuv worker is sufficient for tokamak workloads;
 - how much startup and memory-pressure garbage collection would release;
 - why JavaScriptCore retains almost its entire peak footprint;
 - the memory and performance trade-off from disabling JIT; or
 - the memory and compatibility trade-off from a QuickJS Bare adapter.
 
-A compatible QuickJS adapter could preserve appd's WebView and worker model,
+A compatible QuickJS adapter could preserve tokamak's WebView and worker model,
 but its compatibility and performance are currently unmeasured.
 
 ## Native plugins
@@ -78,7 +78,7 @@ Any lazy implementation must preserve normal property and error semantics.
 ## Worker packaging
 
 The current esbuild invocation does not minify the generated CommonJS worker.
-Minifying the Astro example's `appd-worklet.cjs` reduced it from 639,863 bytes
+Minifying the Astro example's `tokamak-worklet.cjs` reduced it from 639,863 bytes
 to 367,171 bytes, a 42.6% reduction. The complete bundle contains about
 1.14 MB of JavaScript source, so this is useful but cannot explain tens of
 megabytes by itself.
@@ -118,7 +118,7 @@ References:
 ## Evidence gaps
 
 The current measurements do not isolate the native AppKit shell, a blank
-WKWebView, an empty Bare worker, the appd compatibility runtime, and the Astro
+WKWebView, an empty Bare worker, the tokamak compatibility runtime, and the Astro
 application. They also do not show the effect of startup collection or system
 memory pressure.
 

@@ -1,5 +1,5 @@
 {
-  "name": "@appd/plugin",
+  "name": "@tokamak/plugin",
   "version": "0.1.0",
   "type": "module",
   "exports": {

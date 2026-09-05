@@ -1,4 +1,4 @@
-package com.appd.plugins.geolocation
+package com.tokamak.plugins.geolocation
 
 import android.Manifest
 import android.app.Activity
@@ -10,20 +10,20 @@ import android.location.LocationManager
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Looper
-import com.appd.runtime.AppdPlugin
-import com.appd.runtime.AppdPluginError
-import com.appd.runtime.AppdPluginReply
+import com.tokamak.runtime.TokamakPlugin
+import com.tokamak.runtime.TokamakPluginError
+import com.tokamak.runtime.TokamakPluginReply
 
-internal class AppdGeolocationPlugin(
+internal class TokamakGeolocationPlugin(
     private val activity: Activity,
-) : AppdPlugin {
+) : TokamakPlugin {
     override val id = "geolocation"
 
     private val manager =
         activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val permissionRequests = mutableListOf<(Boolean) -> Unit>()
 
-    override fun call(method: String, arguments: Any?, reply: AppdPluginReply) {
+    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         if (method != "getCurrentPosition") {
             super.call(method, arguments, reply)
             return
@@ -36,7 +36,7 @@ internal class AppdGeolocationPlugin(
     override fun subscribe(
         method: String,
         arguments: Any?,
-        reply: AppdPluginReply,
+        reply: TokamakPluginReply,
     ): () -> Unit {
         if (method != "watchPosition") return super.subscribe(method, arguments, reply)
         var cancelled = false
@@ -88,7 +88,7 @@ internal class AppdGeolocationPlugin(
             activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun currentPosition(reply: AppdPluginReply) {
+    private fun currentPosition(reply: TokamakPluginReply) {
         val provider = runCatching(::provider).getOrElse {
             reply(locationFailure(it, "Location is unavailable"))
             return
@@ -109,7 +109,7 @@ internal class AppdGeolocationPlugin(
         }.onFailure { reply(locationFailure(it, "Location is unavailable")) }
     }
 
-    private fun watchPosition(reply: AppdPluginReply): () -> Unit {
+    private fun watchPosition(reply: TokamakPluginReply): () -> Unit {
         val provider = runCatching(::provider).getOrElse {
             reply(locationFailure(it, "Location is unavailable"))
             return {}
@@ -165,10 +165,10 @@ internal class AppdGeolocationPlugin(
         )
 
     private fun permissionDenied(): Result<Any?> =
-        Result.failure(AppdPluginError("NotAllowedError", "Location permission was denied"))
+        Result.failure(TokamakPluginError("NotAllowedError", "Location permission was denied"))
 
     private fun unavailable(message: String): Result<Any?> =
-        Result.failure(AppdPluginError("NotReadableError", message))
+        Result.failure(TokamakPluginError("NotReadableError", message))
 
     private fun locationFailure(error: Throwable?, fallback: String): Result<Any?> =
         if (error is SecurityException) permissionDenied()

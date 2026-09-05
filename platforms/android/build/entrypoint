@@ -27,18 +27,18 @@ application_id=$(printf '%s' "$app_name" | tr '-' '_')
 if [[ "$application_id" =~ ^[0-9] ]]; then
   application_id=app_"$application_id"
 fi
-application_id=com.appd."$application_id"
-project=$(dirname "$output")/.appd
+application_id=com.tokamak."$application_id"
+project=$(dirname "$output")/.tokamak
 app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
 assets=$app/src/main/assets/app
-kotlin=$app/src/main/kotlin/com/appd/runtime
-plugins_root=$app/src/main/kotlin/appd/plugins
+kotlin=$app/src/main/kotlin/com/tokamak/runtime
+plugins_root=$app/src/main/kotlin/tokamak/plugins
 
 rm -rf "$project" "$output"
 mkdir -p "$native" "$assets" "$kotlin" "$plugins_root"
 cp -R "$input/app/." "$assets/"
-cp "$input/runtime/libappd.so" "$native/libappd.so"
+cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"
 cp -R "$input/native-shell/." "$kotlin/"
 
 shopt -s nullglob
@@ -79,7 +79,7 @@ dependencyResolutionManagement {
     mavenCentral()
   }
 }
-rootProject.name = 'appd'
+rootProject.name = 'tokamak'
 include ':app'
 EOF
 
@@ -98,7 +98,7 @@ plugins {
 }
 
 android {
-  namespace 'com.appd.runtime'
+  namespace 'com.tokamak.runtime'
   compileSdk 35
 
   defaultConfig {
@@ -134,11 +134,11 @@ dependencies {
 }
 EOF
 
-registry=$kotlin/AppdPluginRegistry.kt
+registry=$kotlin/TokamakPluginRegistry.kt
 {
-  printf '%s\n\n' 'package com.appd.runtime'
+  printf '%s\n\n' 'package com.tokamak.runtime'
   printf '%s\n\n' 'import android.app.Activity'
-  printf '%s\n' 'internal fun appdPlugins(activity: Activity): List<AppdPlugin> ='
+  printf '%s\n' 'internal fun tokamakPlugins(activity: Activity): List<TokamakPlugin> ='
   printf '%s\n' '    listOf('
   for class in "${plugin_classes[@]}"; do
     printf '        %s(activity),\n' "$class"
@@ -158,12 +158,12 @@ manifest=$app/src/main/AndroidManifest.xml
     done
   done
   printf '  <application android:label="%s" android:usesCleartextTraffic="false">\n' "$app_name"
-  printf '    <meta-data android:name="appd.host" android:value="%s" />\n' "$host"
+  printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
   if [[ -n "$dev_endpoint" ]]; then
-    printf '    <meta-data android:name="appd.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
-    printf '    <meta-data android:name="appd.dev.session-token" android:value="%s" />\n' "$dev_session_token"
+    printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
+    printf '    <meta-data android:name="tokamak.dev.session-token" android:value="%s" />\n' "$dev_session_token"
   fi
-  printf '%s\n' '    <activity android:name=".AppdActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">'
+  printf '%s\n' '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">'
   printf '%s\n' '      <intent-filter>'
   printf '%s\n' '        <action android:name="android.intent.action.MAIN" />'
   printf '%s\n' '        <category android:name="android.intent.category.LAUNCHER" />'

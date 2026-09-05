@@ -1,8 +1,8 @@
-# appd Agent Instructions
+# tokamak Agent Instructions
 
-appd is a cross-platform app framework designed to allow developers to create apps for mobile, desktop, and web from a single web-native codebase using vanilla fullstack web semantics and frameworks.
+tokamak is a cross-platform app framework designed to allow developers to create apps for mobile, desktop, and web from a single web-native codebase using vanilla fullstack web semantics and frameworks.
 
-It aims to be broadly compatible with Cloudflare workers. Any app written for appd should work without changes on Cloudflare workers (though not all apps written for Cloudflare workers will necessarily run on appd). It supports frameworks such as Astro, NextJS, Hono, etc - all via Vite/Cloudflare.
+It aims to be broadly compatible with Cloudflare workers. Any app written for tokamak should work without changes on Cloudflare workers (though not all apps written for Cloudflare workers will necessarily run on tokamak). It supports frameworks such as Astro, NextJS, Hono, etc - all via Vite/Cloudflare.
 
 ## Simple is better than complex
 
@@ -33,15 +33,15 @@ Good: "jitless WebAssembly is supported via V8's own wasm interpreter, DrumBrake
 
 ## Contributor/User Boundary
 
-appd has two distinct audiences:
+tokamak has two distinct audiences:
 
-- appd users: people using appd to build applications.
-- appd contributors: people maintaining appd itself.
+- tokamak users: people using tokamak to build applications.
+- tokamak contributors: people maintaining tokamak itself.
 
 Both groups are 'developers', but with different needs.
 
 Runtime compilation, rust tooling, infrastructure, SDK packaging, and
 runtime-platform build support are contributor concerns.
-Do not put those flows in the appd user CLI unless explicitly requested.
+Do not put those flows in the tokamak user CLI unless explicitly requested.
 Do not conflate the needs of these two groups.
-appd users should never have to consider the internals of appd and how it is made.
+tokamak users should never have to consider the internals of tokamak and how it is made.

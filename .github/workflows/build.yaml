@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: appd-build-${{ github.ref }}
+  group: tokamak-build-${{ github.ref }}
   cancel-in-progress: true
 env:
   NODE_VERSION: "22"
@@ -99,16 +99,16 @@ jobs:
 
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
-        run: cargo test -p appd --features native --test packaged_worker
+        run: cargo test -p tokamak --features native --test packaged_worker
 
       - name: Archive target pack
-        run: tar -czf "appd-target-pack-${{ matrix.target }}.tar.gz" -C "target/appd-target-packs/${{ matrix.target }}" .
+        run: tar -czf "tokamak-target-pack-${{ matrix.target }}.tar.gz" -C "target/tokamak-target-packs/${{ matrix.target }}" .
 
       - name: Upload target pack artifact
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: appd-target-pack-${{ matrix.target }}
-          path: appd-target-pack-${{ matrix.target }}.tar.gz
+          name: tokamak-target-pack-${{ matrix.target }}
+          path: tokamak-target-pack-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -155,29 +155,29 @@ jobs:
           cache-bin: false
 
       - name: Build CLI
-        run: cargo build --locked --package appd-cli --release --target "${{ matrix.target }}"
+        run: cargo build --locked --package tokamak-cli --release --target "${{ matrix.target }}"
 
       - name: Archive CLI
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/appd" dist/appd
-          tar -czf "appd-cli-${{ matrix.name }}.tar.gz" -C dist appd
+          cp "target/${{ matrix.target }}/release/tok" dist/tok
+          tar -czf "tokamak-cli-${{ matrix.name }}.tar.gz" -C dist tok
 
       - name: Archive CLI for Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/appd.exe" "dist/appd.exe"
-          Compress-Archive -Path "dist/appd.exe" -DestinationPath "appd-cli-${{ matrix.name }}.zip" -Force
+          Copy-Item "target/${{ matrix.target }}/release/tok.exe" "dist/tok.exe"
+          Compress-Archive -Path "dist/tok.exe" -DestinationPath "tokamak-cli-${{ matrix.name }}.zip" -Force
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: appd-cli-${{ matrix.name }}
-          path: appd-cli-${{ matrix.name }}.*
+          name: tokamak-cli-${{ matrix.name }}
+          path: tokamak-cli-${{ matrix.name }}.*
           if-no-files-found: error
           retention-days: 1
 
@@ -216,12 +216,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          pnpm --filter '@appd/*' exec pnpm pack --pack-destination "$GITHUB_WORKSPACE/artifacts"
+          pnpm --filter '@tokamak/*' exec pnpm pack --pack-destination "$GITHUB_WORKSPACE/artifacts"
 
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: appd-plugins
+          name: tokamak-plugins
           path: artifacts/*.tgz
           if-no-files-found: error
           retention-days: 1
@@ -243,21 +243,21 @@ jobs:
       - name: Download target pack artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: appd-target-pack-*
+          pattern: tokamak-target-pack-*
           path: artifacts
           merge-multiple: true
 
       - name: Download CLI artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: appd-cli-*
+          pattern: tokamak-cli-*
           path: artifacts
           merge-multiple: true
 
       - name: Download plugin artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          name: appd-plugins
+          name: tokamak-plugins
           path: artifacts
 
       - name: Compute release metadata
@@ -277,7 +277,7 @@ jobs:
           tag="${{ steps.meta.outputs.tag }}"
           gh release delete "$tag" --yes --cleanup-tag || true
           gh release create "$tag" artifacts/* \
-            --title "appd ${{ steps.meta.outputs.version }} ${{ github.run_number }}" \
-            --notes "Automated appd artifacts from ${GITHUB_SHA}." \
+            --title "tokamak ${{ steps.meta.outputs.version }} ${{ github.run_number }}" \
+            --notes "Automated tokamak artifacts from ${GITHUB_SHA}." \
             --prerelease \
             --target "${GITHUB_SHA}"

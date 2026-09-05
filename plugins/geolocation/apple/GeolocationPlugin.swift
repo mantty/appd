@@ -1,14 +1,14 @@
 import CoreLocation
 import Foundation
 
-final class AppdGeolocationPlugin: NSObject, AppdPlugin,
+final class TokamakGeolocationPlugin: NSObject, TokamakPlugin,
   CLLocationManagerDelegate
 {
   let id = "geolocation"
 
   private let manager = CLLocationManager()
-  private var current: [AppdPluginReply] = []
-  private var watchers: [UUID: AppdPluginReply] = [:]
+  private var current: [TokamakPluginReply] = []
+  private var watchers: [UUID: TokamakPluginReply] = [:]
 
   override init() {
     super.init()
@@ -19,7 +19,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
   func call(
     method: String,
     arguments: Any,
-    reply: @escaping AppdPluginReply
+    reply: @escaping TokamakPluginReply
   ) {
     guard method == "getCurrentPosition" else {
       reply(.failure(.notSupported("\(id).\(method) is not supported")))
@@ -32,7 +32,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
   func subscribe(
     method: String,
     arguments: Any,
-    reply: @escaping AppdPluginReply
+    reply: @escaping TokamakPluginReply
   ) -> (() -> Void) {
     guard method == "watchPosition" else {
       reply(.failure(.notSupported("\(id).\(method) is not supported")))
@@ -55,7 +55,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
       manager.startUpdatingLocation()
     case .denied, .restricted:
       fail(
-        AppdPluginError(
+        TokamakPluginError(
           name: "NotAllowedError",
           message: "Location permission was denied"
         ))
@@ -71,7 +71,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     didUpdateLocations locations: [CLLocation]
   ) {
     guard let location = locations.last else { return }
-    let result = Result<Any?, AppdPluginError>.success(position(location))
+    let result = Result<Any?, TokamakPluginError>.success(position(location))
     let waiting = current
     current.removeAll()
     for reply in waiting {
@@ -105,7 +105,7 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
       manager.requestWhenInUseAuthorization()
     case .denied, .restricted:
       fail(
-        AppdPluginError(
+        TokamakPluginError(
           name: "NotAllowedError",
           message: "Location permission was denied"
         ))
@@ -114,8 +114,8 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     }
   }
 
-  private func fail(_ error: AppdPluginError) {
-    let result = Result<Any?, AppdPluginError>.failure(error)
+  private func fail(_ error: TokamakPluginError) {
+    let result = Result<Any?, TokamakPluginError>.failure(error)
     let replies = current + Array(watchers.values)
     current.removeAll()
     for reply in replies {
@@ -126,9 +126,9 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     }
   }
 
-  private func locationError(_ error: Error) -> AppdPluginError {
+  private func locationError(_ error: Error) -> TokamakPluginError {
     if (error as NSError).code == CLError.Code.denied.rawValue {
-      return AppdPluginError(
+      return TokamakPluginError(
         name: "NotAllowedError",
         message: "Location permission was denied"
       )
@@ -136,8 +136,8 @@ final class AppdGeolocationPlugin: NSObject, AppdPlugin,
     return unavailable(error.localizedDescription)
   }
 
-  private func unavailable(_ message: String) -> AppdPluginError {
-    AppdPluginError(name: "NotReadableError", message: message)
+  private func unavailable(_ message: String) -> TokamakPluginError {
+    TokamakPluginError(name: "NotReadableError", message: message)
   }
 
   private func stopIfIdle() {

@@ -1,4 +1,4 @@
-# appd Astro Example
+# tokamak Astro Example
 
 Astro SSR app using the Cloudflare adapter. It exercises server rendering, one
 prerendered route, asset serving, navigation, and a WebSocket endpoint.
@@ -11,12 +11,12 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-Build a target pack from the appd workspace, then package it:
+Build a target pack from the tokamak workspace, then package it:
 
 ```sh
 cargo run -p xtask -- target-pack --target macos-arm64
-APPD_TARGET_PACK_DIR=../../target/appd-target-packs \
-  cargo run -p appd-cli -- build macos --project . --config dist/server/wrangler.json
+TOKAMAK_TARGET_PACK_DIR=../../target/tokamak-target-packs \
+  cargo run -p tokamak-cli -- build macos --project . --config dist/server/wrangler.json
 ```
 
 The example intentionally uses no WebAssembly. It covers server rendering,

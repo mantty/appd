@@ -4,10 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, bail};
-use appd::{
-    Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
-    app_host, frontend_url,
-};
 use base64::Engine;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
@@ -17,6 +13,10 @@ use tao::event::{Event as TaoEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
+use tokamak::{
+    Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
+    app_host, frontend_url,
+};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
     COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
@@ -87,7 +87,7 @@ pub(crate) fn run() -> Result<()> {
             if is_app_origin(&url, &new_window_host) {
                 let url = HSTRING::from(url);
                 if let Err(error) = unsafe { features.opener.webview.Navigate(&url) } {
-                    eprintln!("appd could not reuse its WebView for a new window: {error}");
+                    eprintln!("tokamak could not reuse its WebView for a new window: {error}");
                 }
             } else {
                 open_external(&url);
@@ -115,7 +115,7 @@ pub(crate) fn run() -> Result<()> {
         match event {
             TaoEvent::UserEvent(Event::CertificatesRenewed) => {
                 if let Err(error) = identity.replace(&certificates, &host, &client_certificate) {
-                    eprintln!("appd client certificate renewal failed: {error:#}");
+                    eprintln!("tokamak client certificate renewal failed: {error:#}");
                 }
             }
             TaoEvent::WindowEvent {
@@ -166,7 +166,7 @@ fn start_runtime(
                 let _ = events.send_event(event);
             },
         )?),
-        _ => bail!("appd dev endpoint and session token must be provided together"),
+        _ => bail!("tok dev endpoint and session token must be provided together"),
     }
 }
 
@@ -179,18 +179,19 @@ fn executable_dir() -> Result<PathBuf> {
 
 fn read_config(root: &Path) -> Result<ShellConfig> {
     let config: ShellConfig =
-        serde_json::from_slice(&fs::read(root.join("appd.json")).context("read appd.json")?)?;
-    let expected = app_host(&config.name).context("appd.json name is not a DNS label")?;
+        serde_json::from_slice(&fs::read(root.join("tokamak.json")).context("read tokamak.json")?)?;
+    let expected = app_host(&config.name).context("tokamak.json name is not a DNS label")?;
     if config.host == expected {
         Ok(config)
     } else {
-        bail!("appd.json host does not match its app name")
+        bail!("tokamak.json host does not match its app name")
     }
 }
 
 fn state_dir(name: &str) -> Result<PathBuf> {
-    let root = env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is unavailable")?;
-    let path = PathBuf::from(root).join(name).join("appd");
+    let root = env::var_os(concat!("LOCALAPP", "DATA"))
+        .context("Windows local application data directory is unavailable")?;
+    let path = PathBuf::from(root).join(name).join("tokamak");
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -218,12 +219,12 @@ fn open_external(url: &str) {
         )
     };
     if result.0 as usize <= 32 {
-        eprintln!("appd could not open external URL");
+        eprintln!("tokamak could not open external URL");
     }
 }
 
 fn report(event: &Event) {
-    eprintln!("appd runtime: {event:?}");
+    eprintln!("tokamak runtime: {event:?}");
 }
 
 struct ClientIdentity {
@@ -234,15 +235,15 @@ struct ClientIdentity {
 
 impl ClientIdentity {
     fn install(certificates: &Certificates, host: &str) -> Result<Self> {
-        let appd::Decision::PresentIdentity {
+        let tokamak::Decision::PresentIdentity {
             certificate,
             private_key,
-        } = certificates.decide(&appd::Challenge::ClientCertificate {
+        } = certificates.decide(&tokamak::Challenge::ClientCertificate {
             host,
             previous_failures: 0,
         })
         else {
-            bail!("appd client certificate is unavailable")
+            bail!("tokamak client certificate is unavailable")
         };
         let pfx = pfx(&certificate, &private_key)?;
         let imported = import_pfx(&pfx)?;
@@ -287,7 +288,7 @@ fn pfx(certificate: &[u8], private_key: &[u8]) -> Result<Vec<u8>> {
     let certificate = X509::from_der(certificate)?;
     let private_key = PKey::private_key_from_der(private_key)?;
     Ok(Pkcs12::builder()
-        .name("appd")
+        .name("tokamak")
         .pkey(&private_key)
         .cert(&certificate)
         .build2("")?
@@ -301,14 +302,14 @@ fn import_pfx(data: &[u8]) -> Result<HCERTSTORE> {
     };
     unsafe {
         PFXImportCertStore(&raw const blob, PCWSTR::null(), PKCS12_PREFER_CNG_KSP)
-            .context("import appd client identity")
+            .context("import tokamak client identity")
     }
 }
 
 fn add_to_personal_store(imported: HCERTSTORE, der: &[u8]) -> Result<ClientIdentity> {
     let certificate = unsafe { CertEnumCertificatesInStore(imported, None) };
     if certificate.is_null() {
-        bail!("imported appd client identity contains no certificate")
+        bail!("imported tokamak client identity contains no certificate")
     }
     let store = unsafe { CertOpenSystemStoreW(None, w!("MY")) }
         .context("open personal certificate store")?;
@@ -325,13 +326,13 @@ fn add_to_personal_store(imported: HCERTSTORE, der: &[u8]) -> Result<ClientIdent
         unsafe {
             let _ = CertCloseStore(Some(store), 0);
         }
-        return Err(error).context("install appd client identity");
+        return Err(error).context("install tokamak client identity");
     }
     if added.is_null() {
         unsafe {
             let _ = CertCloseStore(Some(store), 0);
         }
-        bail!("Windows did not return the installed appd client identity")
+        bail!("Windows did not return the installed tokamak client identity")
     }
     Ok(ClientIdentity {
         store,
@@ -567,7 +568,7 @@ mod tests {
 
     #[test]
     fn routes_only_the_app_host_through_the_local_proxy() {
-        let arguments = browser_arguments("app.appd.local", 1234);
+        let arguments = browser_arguments("app.tokamak.local", 1234);
         assert!(
             arguments.contains("--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,")
         );
@@ -576,24 +577,24 @@ mod tests {
     #[test]
     fn recognizes_only_the_exact_app_origin() {
         assert!(is_app_origin(
-            "https://app.appd.local/path",
-            "app.appd.local"
+            "https://app.tokamak.local/path",
+            "app.tokamak.local"
         ));
         assert!(is_app_origin(
-            "HTTPS://APP.APPD.LOCAL:443/path",
-            "app.appd.local"
+            "HTTPS://APP.TOKAMAK.LOCAL:443/path",
+            "app.tokamak.local"
         ));
         assert!(!is_app_origin(
-            "https://app.appd.local.evil/path",
-            "app.appd.local"
+            "https://app.tokamak.local.evil/path",
+            "app.tokamak.local"
         ));
         assert!(!is_app_origin(
-            "https://app.appd.local:444/path",
-            "app.appd.local"
+            "https://app.tokamak.local:444/path",
+            "app.tokamak.local"
         ));
         assert!(!is_app_origin(
-            "http://app.appd.local/path",
-            "app.appd.local"
+            "http://app.tokamak.local/path",
+            "app.tokamak.local"
         ));
     }
 
@@ -601,23 +602,23 @@ mod tests {
     fn permits_only_the_app_origin_to_request_location() {
         assert!(is_app_geolocation_request(
             COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-            "https://app.appd.local/",
-            "app.appd.local",
+            "https://app.tokamak.local/",
+            "app.tokamak.local",
         ));
         assert!(!is_app_geolocation_request(
             COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-            "https://other.appd.local/",
-            "app.appd.local",
+            "https://other.tokamak.local/",
+            "app.tokamak.local",
         ));
         assert!(!is_app_geolocation_request(
             COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-            "https://app.appd.local:444/",
-            "app.appd.local",
+            "https://app.tokamak.local:444/",
+            "app.tokamak.local",
         ));
         assert!(!is_app_geolocation_request(
             COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
-            "https://app.appd.local/",
-            "app.appd.local",
+            "https://app.tokamak.local/",
+            "app.tokamak.local",
         ));
     }
 }

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "appd",
-    "appd-cli",
+    "tokamak",
+    "tokamak-cli",
     "platforms/windows",
     "tools/xtask",
 ]

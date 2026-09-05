@@ -1,4 +1,4 @@
-framework module AppdRuntime {
-  umbrella header "AppdRuntime.h"
+framework module TokamakRuntime {
+  umbrella header "TokamakRuntime.h"
   export *
 }

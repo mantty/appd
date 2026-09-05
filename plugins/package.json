@@ -1,5 +1,5 @@
 {
-  "name": "appd-plugins",
+  "name": "tokamak-plugins",
   "private": true,
   "packageManager": "pnpm@9.9.0",
   "type": "module",

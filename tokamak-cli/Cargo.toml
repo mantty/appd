@@ -1,0 +1,37 @@
+[package]
+name = "tokamak-cli"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "tok"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tokamak = { path = "../tokamak" }
+clap.workspace = true
+getrandom.workspace = true
+netdev.workspace = true
+plist.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "signal", "sync"] }
+walkdir.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+
+[lints]
+workspace = true

@@ -13,14 +13,14 @@ if ($Command -ne "build" -or [string]::IsNullOrWhiteSpace($InputDirectory) -or [
   throw "usage: entrypoint.ps1 build INPUT OUTPUT"
 }
 
-function Read-AppdValue([string] $Name) {
+function Read-TokamakValue([string] $Name) {
   $path = Join-Path $InputDirectory "metadata/$Name"
   return [System.IO.File]::ReadAllText($path).Trim()
 }
 
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
-$appName = Read-AppdValue "app-name"
-$appHost = Read-AppdValue "host"
+$appName = Read-TokamakValue "app-name"
+$appHost = Read-TokamakValue "host"
 $devEndpoint = $null
 $devSessionToken = $null
 $devEndpointPath = Join-Path $InputDirectory "metadata/dev-endpoint"
@@ -41,7 +41,7 @@ if (Test-Path $output) {
 }
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 Copy-Item (Join-Path $InputDirectory "app/*") $app -Recurse -Force
-Copy-Item (Join-Path $InputDirectory "runtime/appd-shell-windows.exe") (Join-Path $output "$appName.exe")
+Copy-Item (Join-Path $InputDirectory "runtime/tokamak-shell-windows.exe") (Join-Path $output "$appName.exe")
 
 $config = [ordered]@{
   name = $appName
@@ -53,4 +53,4 @@ if (-not [string]::IsNullOrWhiteSpace($devEndpoint)) {
 }
 $config = $config | ConvertTo-Json
 $encoding = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText((Join-Path $output "appd.json"), $config, $encoding)
+[System.IO.File]::WriteAllText((Join-Path $output "tokamak.json"), $config, $encoding)
