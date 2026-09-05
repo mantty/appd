@@ -1,7 +1,7 @@
-import TokamakRuntime
 import Foundation
 import Network
 import Security
+import TokamakRuntime
 import WebKit
 
 #if os(macOS)
@@ -48,7 +48,8 @@ private final class RuntimeHost {
     let state = try Self.stateDirectory()
     var error = [CChar](repeating: 0, count: 512)
     if let endpoint = Bundle.main.object(forInfoDictionaryKey: "TokamakDevEndpoint") as? String,
-      let sessionToken = Bundle.main.object(forInfoDictionaryKey: "TokamakDevSessionToken") as? String
+      let sessionToken = Bundle.main.object(forInfoDictionaryKey: "TokamakDevSessionToken")
+        as? String
     {
       handle = state.path.withCString { statePath in
         host.withCString { host in
